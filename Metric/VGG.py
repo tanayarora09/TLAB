@@ -3,7 +3,7 @@ import keras.api.layers as lyr
 from LotteryLayers import * 
 import tensorflow as tf
 import numpy as np 
-from collections import defaultdict
+from collections import defaultdict, deque
 import time
 import h5py
 
@@ -23,7 +23,8 @@ class VGG19(K.Model):
         self.data_augmentation = K.Sequential([
             lyr.RandomCrop(args["crop_size"], args["crop_size"]), 
             lyr.RandomZoom(0.2),
-            lyr.RandomRotation(0.2), 
+            lyr.RandomRotation(0.13),
+            lyr.RandomContrast(0.3),
             lyr.Resizing(224, 224)
         ], name = "Data_Augmentation") 
         
@@ -87,7 +88,9 @@ class VGG19(K.Model):
         self._mask_to_kernel = None
         self._rewind = None
         self._init = None
-        self._iterations = []
+        self._iterations = [] # if first train, save grads at each step every 3rd epoch
+        self._grads = None
+        self._activation_patterns = None
 
         self.strategy = None
 
@@ -114,7 +117,7 @@ class VGG19(K.Model):
         return K.Model(ins, self.call(ins))
 
     @tf.function
-    def train_step(self, data):
+    def train_step(self, data, save_grads):
         x, y = data
 
         with tf.GradientTape() as tape:
@@ -150,7 +153,7 @@ class VGG19(K.Model):
 
     @tf.function
     def distributed_train_step(self, dataset_inputs):
-        per_replica_losses = self.strategy.run(self.train_step, args=(dataset_inputs,))
+        per_replica_losses = self.strategy.run(self.train_step, args=(dataset_inputs))
         return self.strategy.reduce(tf.distribute.ReduceOp.MEAN, per_replica_losses, axis=None)
 
     @tf.function
@@ -173,9 +176,11 @@ class VGG19(K.Model):
         val_log = {}
         best_val_loss = 2**16
         last_update = 0
+        save_grad = False 
         for epoch in range(epochs):
             print(f"Starting epoch {epoch + 1}")
             print(f"Learning rate: {self.optimizer.learning_rate.numpy()}")
+            save_grad = True if epoch % 3 == 0 else False  
             #if epoch + 1 == 80 or epoch + 1 == 120:
             #    self.optimizer.learning_rate.assign(self.optimizer.learning_rate / 10)
             start_time = time.time()
@@ -199,15 +204,18 @@ class VGG19(K.Model):
             
             if logs[(epoch + 1) * cardinality]["val_loss"] < best_val_loss:
                 best_val_loss = logs[(epoch + 1) * cardinality]["val_loss"]
-                #last_update = epoch
+                last_update = epoch
                 print(f"\nUPDATING BEST WEIGHTS TO {epoch + 1}\n")
                 self.save_vars_to_file(f"./WEIGHTS/best_val_loss_{name}")
 
             self.reset_metrics()
-                                            
+            
+            if (epoch - last_update) == 12:
+                return logs, epoch + 1
+
             print(f"TIME: {time.time() - start_time}")
 
-        return logs#, epochs
+        return logs, epochs
 
     def train_IMP(self, dt, dv, epochs, prune_rate, iters, cardinality, name, strategy = None):
 

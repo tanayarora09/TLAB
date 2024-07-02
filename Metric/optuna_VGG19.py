@@ -37,7 +37,7 @@ with strategy.scope():
             raise optuna.TrialPruned()
 
         trial.set_user_attr("LOGS", {key:{k:float(v.numpy()) for k, v in value.items()} for key, value in logs.items()})
-        trial.set_user_att("ARGS_NAME", name)
+        trial.set_user_attr("ARGS_NAME", name)
 
         del model
 

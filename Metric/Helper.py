@@ -11,8 +11,8 @@ def create_optimizer_args(trial):
     kwargs["init_lr"] = trial.suggest_float("sgd_init_learning_rate", 5e-3, 8e-2, log = True)
     kwargs["momentum"] = trial.suggest_float("sgd_momentum", 25e-2, 99e-2, log = True)
     kwargs["weight_decay"] = trial.suggest_float("sgd_weight_decay", 1e-6, 5e-4, log = True)
-    kwargs["crop_size"] = trial.suggest_int("crop_size", 150, 210, log = True)
-    kwargs["num_hidden"] = trial.suggest_int("hidden_layers", 0, 5, step = 1)
+    kwargs["crop_size"] = trial.suggest_int("crop_size", 180, 210, log = True)
+    kwargs["num_hidden"] = trial.suggest_int("hidden_layers", 0, 3, step = 1)
     for i in range(kwargs["num_hidden"]):
         kwargs[f"hidden_{i}"] = trial.suggest_int(f"hidden_size_{i}", 128, 4096, log = True)
     kwargs["drop"] = trial.suggest_float("dropout_rate", 5e-2, 5e-1, log = True)
@@ -101,7 +101,7 @@ def get_cifar():
     def simple_preprocess(img, label):
         img = tf.cast(img, tf.float32)
         img = tf.image.resize(img, [224, 224]) / 255.0
-        #img  = (img - [0.4914, 0.4822, 0.4465]) / [0.2023, 0.1994, 0.2010]
+        img  = (img - [0.4914, 0.4822, 0.4465]) / [0.2023, 0.1994, 0.2010]
         return img, tf.one_hot(label, 10)
     dt, dv = tfds.load('cifar10', split=['train', 'test'], as_supervised = True, shuffle_files=True)
     dt = dt.cache().map(simple_preprocess, num_parallel_calls=tf.data.AUTOTUNE).batch(128).with_options(options)
