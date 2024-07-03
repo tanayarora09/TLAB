@@ -117,7 +117,7 @@ class VGG19(K.Model):
         return K.Model(ins, self.call(ins))
 
     @tf.function
-    def train_step(self, data, save_grads):
+    def train_step(self, data):
         x, y = data
 
         with tf.GradientTape() as tape:
@@ -131,6 +131,9 @@ class VGG19(K.Model):
         grads = tape.gradient(scaled_loss, weights)
         #save grads
         masked_grads = grads # assert grads same mask as masks
+
+        #if save_grad: self._grads.append(masked_grads)
+        #else: {Compute L2 Diff and return}
 
         self.optimizer.apply_gradients(zip(masked_grads, weights))
 
@@ -153,7 +156,7 @@ class VGG19(K.Model):
 
     @tf.function
     def distributed_train_step(self, dataset_inputs):
-        per_replica_losses = self.strategy.run(self.train_step, args=(dataset_inputs))
+        per_replica_losses = self.strategy.run(self.train_step, args=(dataset_inputs, ))
         return self.strategy.reduce(tf.distribute.ReduceOp.MEAN, per_replica_losses, axis=None)
 
     @tf.function
@@ -161,7 +164,7 @@ class VGG19(K.Model):
         per_replica_losses = self.strategy.run(self.test_step, args=(dataset_inputs,))
         return self.strategy.reduce(tf.distribute.ReduceOp.MEAN, per_replica_losses, axis=None)
 
-    def train_one(self, dt, dv, epochs, cardinality, name, strategy = None):
+    def train_one(self, dt, dv, epochs, cardinality, name, first = True, strategy = None):
         """'''
         LOAD: [load_bool, epochs_trained, logs_of_orig_train]
         '''"""
@@ -180,13 +183,13 @@ class VGG19(K.Model):
         for epoch in range(epochs):
             print(f"Starting epoch {epoch + 1}")
             print(f"Learning rate: {self.optimizer.learning_rate.numpy()}")
-            save_grad = True if epoch % 3 == 0 else False  
+            if first: save_grad = True if (epoch % 3 == 0) else False  
             #if epoch + 1 == 80 or epoch + 1 == 120:
             #    self.optimizer.learning_rate.assign(self.optimizer.learning_rate / 10)
             start_time = time.time()
             for step, (x, y) in enumerate(dt):
                 iteration = int(epoch * cardinality + step + 1)
-                train_log = self.distributed_train_step((x, y))
+                train_log = self.distributed_train_step((x, y), save_grad)
                 logs[iteration] = train_log
                 if iteration % 24 == 0 and iteration != 0:
                   print(f"Status at {(iteration - epoch * cardinality) // 24}/16; Accuracy (accumulative): {(logs[iteration]['accuracy'])}, Loss (step): {(logs[iteration]['loss'])}")
@@ -231,6 +234,7 @@ class VGG19(K.Model):
         """
 
         self.call(K.ops.zeros((1,224,224,3)), training = False) # Force build weights if not already
+        self.initialize_custom_metrics()
         self.save_init(name) 
         
         logs = defaultdict(dict)
@@ -240,7 +244,7 @@ class VGG19(K.Model):
         for iter in range(1, iters):
             self.prune_by_rate_mg(prune_rate, iter)
             self.load_weights_from_obj_or_file(name, rewind = True)
-            self.train_one(dt, dv, epochs, cardinality, name, strategy = strategy)
+            self.train_one(dt, dv, epochs, cardinality, name, strategy = strategy, first = False)
         return logs, self._mask
 
     def prune_by_rate_mg(self, rate, iter):
@@ -248,6 +252,11 @@ class VGG19(K.Model):
         threshold = K.ops.quantile(K.ops.abs(all_weights), 1.0 - rate**iter)
         for m in self._mask_list:
             m.assign(tf.cast(K.ops.abs(self._mask_to_kernel(m)) > threshold, dtype = tf.float32))
+
+    def initialize_custom_metrics(self):
+        self._grads = deque(maxlen = 54) # 160 // 3 + 1 (for 0 epoch)
+        self._activation_patterns = defaultdict()
+        # LOGIC HERE
 
     def initialize_masks(self):
         if self._mask_list and self._mask_to_kernel: return
