@@ -7,6 +7,12 @@ from collections import defaultdict
 import time
 import h5py
 
+import torch
+from torch import nn
+from torch.nn import functional as F
+import torchinfo
+
+
 class VGG19(K.Model):
 
     # 160 Epochs, SGD with 0.01 lr (decrease 10x at 80 and 120 epochs), 0.9 momentum, rewind to 100, conv20%
@@ -15,7 +21,7 @@ class VGG19(K.Model):
 
     #FINAL L_R = 0.01, MOMENTUM = 0.9, WEIGHT_DECAY = 0.000125
 
-    def __init__(self, args):
+    def __init__(self, args, input_channels = 3):
         super().__init__()
 
         self.L2_RATE = args["L2_Reg"]
@@ -30,7 +36,7 @@ class VGG19(K.Model):
         self.conv11 = LotteryConv2D(64, (3,3), padding="same", kernel_initializer='glorot_normal', name="block1_conv1", kernel_regularizer=K.regularizers.L2(self.L2_RATE))
         self.relu11 = lyr.ReLU(name = "block1_relu1")
         self.conv12 = LotteryConv2D(64, (3,3), padding="same", kernel_initializer='glorot_normal', name="block1_conv2", kernel_regularizer=K.regularizers.L2(self.L2_RATE))
-        self.bn11 = LotteryBatchNormalization(name = "block1_norm1")
+        self.bn11 = nn.BatchNorm2d(name = "block1_norm1")
         self.relu12 = lyr.ReLU(name = "block1_relu2")
         self.pool1 = lyr.MaxPooling2D((2, 2), strides=(2,2), name="block1_pool")
         
@@ -68,12 +74,12 @@ class VGG19(K.Model):
         self.conv51 = LotteryConv2D(512, (3,3), padding="same", kernel_initializer='glorot_normal', name="block5_conv1", kernel_regularizer=K.regularizers.L2(self.L2_RATE))
         self.relu51 = lyr.ReLU(name = "block5_relu1")
         self.conv52 = LotteryConv2D(512, (3,3), padding="same", kernel_initializer='glorot_normal', name="block5_conv2", kernel_regularizer=K.regularizers.L2(self.L2_RATE))
-        self.bn51 = LotteryBatchNormalization(name = "block5_norm1")
+        self.bn51 = nn.BatchNormalization(name = "block5_norm1")
         self.relu52 = lyr.ReLU(name = "block5_relu2")
         self.conv53 = LotteryConv2D(512, (3,3), padding="same", kernel_initializer='glorot_normal', name="block5_conv3", kernel_regularizer=K.regularizers.L2(self.L2_RATE))
         self.relu53 = lyr.ReLU(name = "block5_relu3")
         self.conv54 = LotteryConv2D(512, (3,3), padding="same", kernel_initializer='glorot_normal', name="block5_conv4", kernel_regularizer=K.regularizers.L2(self.L2_RATE))
-        self.bn52 = LotteryBatchNormalization(name = "block5_norm2")
+        self.bn52 = nn.BatchNorm2(name = "block5_norm2")
         self.relu54 = lyr.ReLU(name = "block5_relu4")
         self.pool5 = lyr.MaxPooling2D((2, 2), strides=(2,2), name="block5_pool")
 
@@ -109,9 +115,8 @@ class VGG19(K.Model):
         self.initialize_masks()
         self._iterations.append(self._mask_list)
 
-    def functional_rep(self):
-        ins = K.Input((224,224,3))
-        return K.Model(ins, self.call(ins))
+    def summary(self):
+        torchinfo.summary(self, (128, 3, 224, 224))
 
     @tf.function
     def train_step(self, data):

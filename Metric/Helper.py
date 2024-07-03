@@ -1,10 +1,10 @@
 import matplotlib.pyplot as plt  
 import matplotlib
-import tensorflow as tf
-import tensorflow_datasets as tfds
 matplotlib.use('Agg')
+import numpy as np
 import pickle
 import h5py
+
 
 def create_optimizer_args(trial):
     kwargs = {}
@@ -85,6 +85,21 @@ def plot_logs(logs, num_epochs, name, steps=391): # SAVES TO FILE
     plt.savefig(f'./PLOTS/accuracy_plot_{name}.jpg')
     plt.close()
 
+def save_images_from_dataset(dt, batches):
+    def save_individual_image(image, fp):
+        image = image.permute(1, 2, 0).cpu().numpy()
+        image = (image * [0.2023, 0.1994, 0.2010]) + [0.4914, 0.4822, 0.4465]
+        image = np.clip(image, 0, 1)
+        plt.imshow(image)
+        plt.axis("off")
+        plt.savefig(fp, bbox_inches='tight')
+        plt.close()
+    for step, (images, labels) in enumerate(dt):
+        if step < batches:
+            for i in range(len(images)):
+                save_individual_image(images[i], f"./data_viewing/{i}.jpg")
+        else:
+            break
 
 def logs_from_pickle(name):
     with open(f"./PICKLES/{name}_logs.pickle", 'rb') as file:
@@ -93,20 +108,6 @@ def logs_from_pickle(name):
 def logs_to_pickle(logs, name):
     with open(f"./PICKLES/{name}_logs.pickle", 'wb') as file:
         pickle.dump(logs, file, protocol=pickle.HIGHEST_PROTOCOL)
-
-def get_cifar():
-    options = tf.data.Options()
-    options.experimental_distribute.auto_shard_policy = tf.data.experimental.AutoShardPolicy.DATA
-    @tf.function
-    def simple_preprocess(img, label):
-        img = tf.cast(img, tf.float32)
-        img = tf.image.resize(img, [224, 224]) / 255.0
-        #img  = (img - [0.4914, 0.4822, 0.4465]) / [0.2023, 0.1994, 0.2010]
-        return img, tf.one_hot(label, 10)
-    dt, dv = tfds.load('cifar10', split=['train', 'test'], as_supervised = True, shuffle_files=True)
-    dt = dt.cache().map(simple_preprocess, num_parallel_calls=tf.data.AUTOTUNE).batch(128).with_options(options)
-    dv = dv.cache().map(simple_preprocess, num_parallel_calls=tf.data.AUTOTUNE).batch(128).with_options(options)
-    return dt, dv
 
 def explore_h5(fp):
     def print_structure(name, obj):
@@ -128,6 +129,3 @@ def explore_h5(fp):
     dv = dv.map(preprocess, num_parallel_calls=tf.data.AUTOTUNE).shuffle(1024).batch(32).prefetch(tf.data.AUTOTUNE)
     return dt, dv
 """
-
-
-
