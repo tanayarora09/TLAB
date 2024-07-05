@@ -85,17 +85,19 @@ def plot_logs(logs, num_epochs, name, steps=391): # SAVES TO FILE
     plt.savefig(f'./PLOTS/accuracy_plot_{name}.jpg')
     plt.close()
 
+def save_individual_image(image, fp):
+    image = image.permute(1, 2, 0).detach().cpu().numpy()
+    image = (image * [0.2023, 0.1994, 0.2010]) + [0.4914, 0.4822, 0.4465]
+    image = np.clip(image, 0, 1)
+    plt.imshow(image)
+    plt.axis("off")
+    plt.savefig(fp, bbox_inches='tight')
+    plt.close()
+
 def save_images_from_dataset(dt, batches):
-    def save_individual_image(image, fp):
-        image = image.permute(1, 2, 0).cpu().numpy()
-        image = (image * [0.2023, 0.1994, 0.2010]) + [0.4914, 0.4822, 0.4465]
-        image = np.clip(image, 0, 1)
-        plt.imshow(image)
-        plt.axis("off")
-        plt.savefig(fp, bbox_inches='tight')
-        plt.close()
     for step, (images, labels) in enumerate(dt):
         if step < batches:
+            print(step)
             for i in range(len(images)):
                 save_individual_image(images[i], f"./data_viewing/{i}.jpg")
         else:

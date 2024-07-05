@@ -1,9 +1,4 @@
 import torch
-import torch.nn.functional as F
-import torchvision
-from torchvision.transforms import v2 as transforms
-from torch.utils.data import DataLoader, Dataset
-from torch.utils.data.distributed import DistributedSampler
 from torch import distributed as dist
 import torch.multiprocessing as mp
 import numpy as np 
@@ -11,51 +6,58 @@ import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')
 
-BICUBIC = torchvision.transforms.InterpolationMode.BICUBIC
+from data import get_cifar, setup_distribute, cleanup_distribute, DataAugmentation, ResizeAndNormalize
+from Helper import save_individual_image
 
-batch_size = 128
+import torch._dynamo as dynamo
+dynamo.config.capture_scalar_outputs = True
+dynamo.config.cache_size_limit = 256
 
-train_transforms = transforms.Compose(
-    [
-        transforms.Resize([224, 224], interpolation = BICUBIC),
-        transforms.RandomCrop([200, 200]),
-        transforms.RandomHorizontalFlip(),
-        transforms.RandomRotation(15, interpolation = BICUBIC),
-        transforms.Resize([224, 224]),
-        transforms.PILToTensor(),
-        transforms.ToDtype(torch.float32, scale = True),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), 
-                            (0.2023, 0.1994, 0.2010))
-    ]
-)
+from posix import fspath
+torch.compiler.allow_in_graph(fspath) # temp solution to graph break in vision dataset
 
-one_hot_transform = transforms.Compose([
-    transforms.Lambda(lambda x: torch.tensor(x, dtype=torch.int64)), 
-    transforms.Lambda(lambda x: F.one_hot(x, num_classes=10).float()) 
-])
+def test_data_device(rank, world_size):
 
-test_transforms = transforms.Compose(
-    [
-        transforms.Resize([224, 224], interpolation = BICUBIC),
-        transforms.PILToTensor(),
-        transforms.ToDtype(torch.float32, scale = True),
-        transforms.Normalize((0.4914, 0.4822, 0.4465), 
-                            (0.2023, 0.1994, 0.2010))
-    ]
-)
+    torch.cuda.set_device(rank)
 
+    setup_distribute(rank, world_size)
+    
+    dt, dv = get_cifar(rank, world_size) 
 
-train_data = torchvision.datasets.CIFAR10("/u/tanaya_guest/tlab/datasets/CIFAR10/", train = True, download = False,
-                                        transform = train_transforms, target_transform = one_hot_transform)
+    dataAug = torch.jit.script(DataAugmentation())
+    preprocess = torch.jit.script(ResizeAndNormalize())
 
-test_data = torchvision.datasets.CIFAR10("/u/tanaya_guest/tlab/datasets/CIFAR10/", train = False, download = False,
-                                        transform = test_transforms, target_transform = one_hot_transform)
+    for step, (x, y) in enumerate(dt):
+        x, y = x.to('cuda'), y.to('cuda')
+        x = preprocess(x)
+        x = dataAug(x)
+        if step == 1: 
+            print(x.shape, y.shape)
+            print(x.device, y.device)
+            print(x[0, 0, 0, 140:170])
+            for i in range(len(x)):
+                save_individual_image(x[i], f"./data_viewing/{i}.jpg")
 
-dt = torch.utils.data.DataLoader(train_data, batch_size = batch_size,  
-                                num_workers = 4, pin_memory = True,
-                                prefetch_factor = 4, pin_memory_device = "cuda")
+        if step % 50 == 0:
+            print(step)
 
-dv = torch.utils.data.DataLoader(test_data, batch_size = batch_size,  
-                                num_workers = 4, pin_memory = True,
-                                prefetch_factor = 4, pin_memory_device = "cuda")
+    for step, (x, y) in enumerate(dt):
+        x, y = x.to('cuda'), y.to('cuda')
+        x = preprocess(x)
+        x = dataAug(x)
+        if step == 1: 
+            print(x.shape, y.shape)
+            print(x.device, y.device)
+            print(x[0, 0, 0, 140: 170])
+        
+        if step % 50 == 0:
+            print(step)
 
+    cleanup_distribute()
+
+def main():
+    world_size = torch.cuda.device_count()
+    torch.multiprocessing.spawn(test_data_device, args=(world_size,), nprocs=world_size, join=True)
+
+if __name__ == "__main__":
+    main()
