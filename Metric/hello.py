@@ -28,35 +28,22 @@ def test_data_device(rank, world_size):
     preprocess = torch.jit.script(ResizeAndNormalize())
 
     for step, (x, y) in enumerate(dt):
-        x, y = x.to('cuda'), y.to('cuda')
-        x = preprocess(x)
-        x = dataAug(x)
-        if step == 1: 
-            print(x.shape, y.shape)
-            print(x.device, y.device)
-            print(x[0, 0, 0, 140:170])
-            for i in range(len(x)):
-                save_individual_image(x[i], f"./data_viewing/{i}.jpg")
+        print(type(x))
+        print(type(y))
+        print(x.shape)
+        print(y)
+        if step > 5:
+            break
 
-        if step % 50 == 0:
-            print(step)
-
-    for step, (x, y) in enumerate(dt):
-        x, y = x.to('cuda'), y.to('cuda')
-        x = preprocess(x)
-        x = dataAug(x)
-        if step == 1: 
-            print(x.shape, y.shape)
-            print(x.device, y.device)
-            print(x[0, 0, 0, 140: 170])
-        
-        if step % 50 == 0:
-            print(step)
 
     cleanup_distribute()
 
 def main():
     world_size = torch.cuda.device_count()
+    seed = torch.randint(1, 10000)
+    with open('./seed.txt', 'w') as f:
+        f.write(str(seed))
+    torch.manual_seed(seed)
     torch.multiprocessing.spawn(test_data_device, args=(world_size,), nprocs=world_size, join=True)
 
 if __name__ == "__main__":
