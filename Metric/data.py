@@ -10,10 +10,10 @@ from typing import Tuple
 from PIL import Image
 
 class DataAugmentation(nn.Module):
-    
+
     def __init__(self):
         super(DataAugmentation, self).__init__()
-    
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if torch.rand(1) > 0.5:
             TF.hflip(x) 
@@ -78,7 +78,7 @@ def setup_distribute(rank, world_size):
 def cleanup_distribute():
     dist.destroy_process_group()
 
-def get_cifar(rank, world_size, batch_size = 64):
+def get_cifar(rank, world_size, batch_size = 128):
 
     train_data = torchvision.datasets.CIFAR10("/u/tanaya_guest/tlab/datasets/CIFAR10/", train = True, download = False, # "/u/tanaya_guest/tlab/datasets/CIFAR10/"
                                               transform = torch.compile(ScriptedToTensor()))

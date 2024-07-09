@@ -8,7 +8,7 @@ from collections import defaultdict
 import inspect
 import LotteryLayers
 import h5py
-
+import math
 
 class TicketCNN:
 
@@ -31,14 +31,17 @@ class TicketCNN:
               data_augmentation_transform: nn.Module, 
               preprocess_transform: nn.Module, 
               loss = F.cross_entropy, weight_decay = 0.0,
-              scaler: bool = True, clipnorm: int = 0.1):
+              scaler: bool = True, clipnorm: float = 2.0):
         
         self.criterion = loss
         self.optim = optim
 
-        self.loss_tr = torch.as_tensor(0.0, device = 'cuda')
-        self.acc_tr = torch.as_tensor(0, device = 'cuda')
-        self.bcount = torch.as_tensor(0, device = 'cuda')
+        if self.ROOT: self.reset_cpu_metrics()
+        self.loss_tr = torch.as_tensor(0.0, dtype = torch.float64, device = 'cuda')
+        self.acc_tr = torch.as_tensor(0.0, dtype = torch.float64, device = 'cuda')
+        self.bcount = torch.as_tensor(0, dtype = torch.int64, device = 'cuda')
+
+        self.L2_sum = torch.as_tensor(0.0, device = 'cuda')
 
         self.L2_NORM = weight_decay
         self.use_amp = scaler
@@ -55,21 +58,33 @@ class TicketCNN:
         self.scaler = torch.amp.GradScaler(enabled = self.use_amp)
 
     @torch.no_grad()
-    def reset_metrics(self):
+    def reset_cpu_metrics(self):
+        self.closs = 0.0
+        self.cacc = 0.0
+        self.cbcnt = 0
+
+    @torch.no_grad()
+    def transfer_metrics(self):
+        self.closs += self.loss_tr.detach().cpu().item()
+        self.cacc += self.acc_tr.detach().cpu().item()
+        self.cbcnt += self.bcount.detach().cpu().item()
+
+    @torch.no_grad()
+    def reset_gpu_metrics(self):
         self.loss_tr.fill_(0.0)
-        self.acc_tr.fill_(0)
+        self.acc_tr.fill_(0.0)
         self.bcount.fill_(0)
     
     @torch.no_grad()
     def collect_metrics(self):
         dist.all_reduce(self.loss_tr)
         dist.all_reduce(self.acc_tr)
-        #dist.all_reduce(self.bcount) #dont think this is necessary
+        dist.all_reduce(self.bcount) #dont think this is necessary
 
     ### EVAL FUNCTIONS
     
     @torch.no_grad()
-    def accuracy_k(self, out: torch.Tensor, y: torch.Tensor, topk: int = 1) -> torch.Tensor:
+    def correct_k(self, out: torch.Tensor, y: torch.Tensor, topk: int = 1) -> torch.Tensor:
         _, out = out.topk(topk, 1, True, True)
         out = out.t()
         correct = out.eq(y.view(1, -1).expand_as(out))
@@ -82,70 +97,99 @@ class TicketCNN:
         output = self.m(x)
         self.loss_tr += self.criterion(output, y)
         self.loss_tr += self.L2_NORM * self.calculate_reg_loss()
-        self.acc_tr += self.accuracy_k(output, y, 1)
-        self.bcount += len(y)
+        self.acc_tr += self.correct_k(output, y, 1).div(len(x))
+        self.bcount += 1
     
     @torch.compile
     @torch.no_grad()
-    def evaluate(self, dv: torch.utils.data.DataLoader) -> dict[str, float]:
+    def evaluate(self, dv: torch.utils.data.DataLoader) -> None:
         
         self.m.eval()
-        self.reset_metrics()
+        
+        self.reset_gpu_metrics()
+        if self.ROOT: self.reset_cpu_metrics()
+        
         dv.sampler.set_epoch(0)
 
         for step, (x, y) in enumerate(dv):
-            if self.ROOT:
-                if step % 25 == 0:
-                    torch._print(str(step))
+            
             x, y = x.to('cuda'), y.to('cuda')
+            
             x = self.preprocess(x)
+            
             self.test_step(x, y)
-            #self.collect_metrics()
+            
+            self.collect_metrics()
 
-        self.collect_metrics()
+            if self.ROOT:
 
-        return {"val_accuracy": (self.acc_tr.div(self.bcount).detach().cpu().item()),
-                "val_loss": (self.loss_tr.div(self.bcount).detach().cpu().item())}
+                self.transfer_metrics()
+
+            self.reset_gpu_metrics()
+    
+    @torch.no_grad()
+    def get_eval_results(self) -> dict[str, float]:
+        return {"accuracy": (self.cacc / self.cbcnt),
+                "loss": (self.closs / self.cbcnt)}
+
 
     ### TRAIN FUNCTIONS
-
+    @torch.no_grad()
     def reduce_learning_rate(self, factor: int):
         for pg in self.optim.param_groups:
             pg['lr'] /= factor
-
+    
+    @torch.compile
     def calculate_reg_loss(self):
-        sum = torch.as_tensor(0.0, device = 'cuda')
+
+        self.L2_sum.fill_(0.0)
+        
         for name, param in self.m.named_parameters():
+        
             if "norm" in name:
                 continue
-            sum += torch.norm(param)
-        return sum
+        
+            self.L2_sum += torch.norm(param, 2)
+        
+        return self.L2_sum
     
     @torch.compile
     @torch.no_grad()
     def mask_grads(self):
-        print("Masking Grads")
+        
+        #print("Masking Grads")
+        
         for name, mask in self.m.named_buffers():
+        
             if not name.endswith("mask"): continue
+        
             self.m.get_parameter(name[:-5]).grad.mul_(mask)
             
     @torch.compile
-    def train_step(self, x: torch.Tensor, y: torch.Tensor, accum: bool) -> None:
+    def train_step(self, x: torch.Tensor, y: torch.Tensor, accum: bool, accum_steps: int) -> None:
 
         with torch.autocast(device_type = 'cuda', dtype = torch.float16, enabled = self.use_amp):
+        
             output = self.m(x)
+        
             loss = self.criterion(output, y)
+        
             loss += self.L2_NORM * self.calculate_reg_loss()
 
+            loss /= accum_steps
+
         if not accum:
+            
             with self.m.no_sync():
-                self.scaler.scale(loss).backward()
+                self.scaler.scale(loss).backward(retain_graph = True)
+            
             return
         
-        self.scaler.scale(loss).backward()
+        self.scaler.scale(loss).backward(retain_graph = True)
 
-        self.unscale_(self.optim)
+        self.scaler.unscale_(self.optim)
         nn.utils.clip_grad_norm_(self.m.parameters(), max_norm = self.clipnorm)
+        
         self.mask_grads()
 
         self.scaler.step(self.optim)
@@ -154,29 +198,41 @@ class TicketCNN:
         self.optim.zero_grad(True)
 
         with torch.no_grad():
+
             self.loss_tr += loss
-            self.acc_tr += self.accuracy_k(output, y, 1)
-            self.bcount += len(y)
+            
+            self.acc_tr += self.correct_k(output, y, 1).div(len(x))
+            
+            self.bcount += 1
 
         return
 
     #@torch.compile
-    def train_one(self, dt: torch.utils.data.DataLoader, dv: torch.utils.data.DataLoader, epochs: int, cardinality: int, name: str, accumulation_steps: int = 1) -> defaultdict:
+    def train_one(self, dt: torch.utils.data.DataLoader, dv: torch.utils.data.DataLoader, epochs: int, cardinality: int, name: str, accumulation_steps: int = 3) -> defaultdict:
 
         logs = defaultdict(dict)
+        
         if self.ROOT: self.save_init(name = name)
+
         best_val_loss = 2**17
+        
         start_time = None
         val_start_time = None
 
         for epoch in range(epochs):
-            torch._print(f"Starting epoch {epoch + 1}")
+            
+            if self.ROOT: torch._print(f"\033[91m\nStarting epoch {epoch + 1}\n\033[0m")
+            
             start_time = time.time() 
+            
             self.m.train()
-            dt.sampler.set_epoch(epoch + 1)
+            dt.sampler.set_epoch(epoch)
+            
             if ((epoch == 79) or (epoch == 119)): self.reduce_learning_rate(10)
             accum = False
+            
             dist.barrier()
+            
             for step, (x, y) in enumerate(dt): # Enumerate
 
                 iter = int(epoch * cardinality + step + 1)
@@ -185,43 +241,54 @@ class TicketCNN:
                 x, y = x.to('cuda'), y.to('cuda')
                 x = self.daug(self.preprocess(x))
                 
-                self.train_step(x, y, accum) # Forward, Backward if accum == True
+                self.train_step(x, y, accum, accumulation_steps) # Forward, Backward if accum == True
 
                 if accum: 
                     
                     self.collect_metrics()
 
-                    if self.ROOT: # Log, ROOT drags process
+                    #torch._print(str(step))
 
-                        logs[iter] = {"loss": self.loss_tr.div(self.bcount).detach().cpu().item(), "accuracy": self.acc_tr.div(self.bcount).detach().cpu().item()} # Add Logs
+                    if self.ROOT: # Log, ROOT drags process
                         
-                        if (step + 1) % 98 == 0 or (step == 781): # Log
-                            torch._print(f"---  Status at {torch.ceil((step + 1) / 50):.0f}/8: ---     Accuracy: {logs[iter]['accuracy']:.4f}   --  Loss: {logs[iter]['loss']:.5f}")
+                        self.transfer_metrics()
+
+                        logs[iter] = self.get_eval_results() # Add Logs; Have to Use Python bc of Bit Overflow
+                        
+                        if (step + 1) % 24 == 0 or (step == 390): # Log
+                            torch._print(f"\033[97m---  Status at {math.ceil((step + 1) / 24):.0f}/16: ---     Accuracy: {logs[iter]['accuracy']:.4f}   --  Loss: {logs[iter]['loss']:.5f}\033[0m")
                         
                         if (iter == 500) and self.ROOT: # Save Rewind
                             self.save_rewind(name = name)
+                    
+                    self.reset_gpu_metrics()
 
-
-            torch._print(f"\033[93mTraining stage took {(time.time() - start_time):.1f} seconds.\033[0m")
+            if self.ROOT: torch._print(f"\033[93mTraining stage took {(time.time() - start_time):.1f} seconds.\033[0m")
 
             val_start_time = time.time()
-            dv.sampler.set_epoch(epoch + 1)
-            val_metrics = self.evaluate(dv)
+            dv.sampler.set_epoch(epoch)
             
-            logs[(epoch + 1) * cardinality].update(val_metrics)
+            self.evaluate(dv)
             
-            torch._print(f"\033[97m||| EPOCH {epoch + 1} |||\033[0m") #LOG
-            for k, v in logs[(epoch + 1) * cardinality].items():
-                torch._print(f"\033[96m\t\t{k}: {v:.6f}\033[0m")
-            
-            if logs[(epoch + 1) * cardinality]["val_loss"] < best_val_loss and self.ROOT:
-                torch._print(f"\n\033[97m -- UPDATING BEST WEIGHTS TO {epoch + 1} -- \033[0m\n")
-                self.save_vars_to_file(f"./WEIGHTS/best_{name}.h5")
+            if self.ROOT:
+                
+                logs[(epoch + 1) * cardinality].update({('val_' + k): v for k, v in self.get_eval_results().items()}) 
+                
+                torch._print(f"\033[91m||| EPOCH {epoch + 1} |||\n\033[0m") #LOG
+                
+                for k, v in logs[(epoch + 1) * cardinality].items():
+                    torch._print(f"\033[96m\t{k}: {v:.6f}\033[0m")            
+                
+                if logs[(epoch + 1) * cardinality]["val_loss"] < best_val_loss and self.ROOT:
+                    torch._print(f"\n\033[95m -- UPDATING BEST WEIGHTS TO {epoch + 1} -- \033[0m\n")
+                    self.save_ckpt(f"./WEIGHTS/best_{name}.h5")
+                
+                self.reset_cpu_metrics()
 
-            self.reset_metrics()
+                torch._print(f"\033[93mValidation stage took {(time.time() - val_start_time):.1f} seconds. \nTotal for Epoch: {(time.time() - start_time):.1f} seconds.\033[0m")
+
+            self.reset_gpu_metrics()
             
-            torch._print(f"\033[93mValidation stage took {(time.time() - val_start_time):.1f} seconds. \nTotal for Epoch: {(time.time() - start_time):.1f} seconds.\033[0m")
-     
         return logs
 
     ###PRUNING FUNCTIONS
