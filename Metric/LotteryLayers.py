@@ -7,8 +7,7 @@ class LotteryDense(nn.Linear):
     def __init__(
         self,
         in_features,
-        out_features,
-        name = None
+        out_features
         ):
         super(LotteryDense, self).__init__(in_features = in_features, out_features = out_features)        
         self.register_buffer("weight_mask", torch.ones_like(self.weight), persistent = False)
@@ -25,12 +24,11 @@ class LotteryConv2D(nn.Conv2d):
         out_channels,
         kernel_size = (3, 3),
         stride = (1, 1),
-        padding = 'same',
-        name = None
+        padding = 'same'
     ):
         super(LotteryConv2D, self).__init__(in_channels, out_channels, kernel_size, stride, padding = padding, bias = False)
-        self.register_buffer("weight_mask", torch.ones_like(self.weight), persistent = False)
-
+        self.register_buffer("weight_mask", torch.ones_like(self.weight, requires_grad = False), persistent = False)#torch.full_like(self.weight, True, dtype = torch.bool, requires_grad = False), persistent = False)
+        
     def forward(self, inputs):
-        kernel = self.weight.mul(self.get_buffer("weight_mask"))
+        kernel = self.weight * self.get_buffer("weight_mask")
         return self._conv_forward(inputs, kernel, self.bias)

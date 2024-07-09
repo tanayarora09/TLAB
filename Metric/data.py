@@ -45,6 +45,7 @@ class ScriptedToTensor(nn.Module):
         x = TF.pil_to_tensor(x)
         #x = x.to('cuda') # to prefetch to gpu?
         x = TF.to_dtype(x, dtype=torch.float32, scale = True)
+        #x = x.to(memory_format = torch.channels_last)
         return x
 """
 class ScriptedOneHot(nn.Module):
@@ -77,17 +78,17 @@ def setup_distribute(rank, world_size):
 def cleanup_distribute():
     dist.destroy_process_group()
 
-def get_cifar(rank, world_size, batch_size = 128):
+def get_cifar(rank, world_size, batch_size = 64):
 
-    train_data = torchvision.datasets.CIFAR10("../DATA/", train = True, download = False, # "/u/tanaya_guest/tlab/datasets/CIFAR10/"
+    train_data = torchvision.datasets.CIFAR10("/u/tanaya_guest/tlab/datasets/CIFAR10/", train = True, download = False, # "/u/tanaya_guest/tlab/datasets/CIFAR10/"
                                               transform = torch.compile(ScriptedToTensor()))
 
-    test_data = torchvision.datasets.CIFAR10("../DATA/", train = False, download = False,
+    test_data = torchvision.datasets.CIFAR10("/u/tanaya_guest/tlab/datasets/CIFAR10/", train = False, download = False,
                                         transform = torch.compile(ScriptedToTensor()))
 
     dt = DisributedLoader(
         train_data,
-        batch_size,
+        batch_size//world_size,
         4,
         rank,
         world_size
@@ -95,7 +96,7 @@ def get_cifar(rank, world_size, batch_size = 128):
 
     dv = DisributedLoader(
         test_data,
-        batch_size,
+        batch_size//world_size,
         4,
         rank,
         world_size

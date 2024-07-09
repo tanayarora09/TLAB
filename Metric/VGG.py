@@ -16,7 +16,7 @@ class VGG19(nn.Module):
         self.block1_norm2 = nn.BatchNorm2d(64)
         self.block1_relu2 = nn.ReLU()
         self.block1_pool = nn.MaxPool2d((2, 2), (2, 2))
-
+        
         # Block 2
         self.block2_conv1 = LotteryConv2D(64, 128, (3, 3), (1, 1), padding="same")
         self.block2_norm1 = nn.BatchNorm2d(128)

@@ -2,7 +2,7 @@ import tensorflow as tf
 import keras as K 
 
 from Helper import * 
-from VGG import VGG19
+from Metric.OLD_VGG import VGG19
 
 strat = tf.distribute.MultiWorkerMirroredStrategy()
 name = "Resize_71_Params"

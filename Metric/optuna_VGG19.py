@@ -2,7 +2,7 @@ import keras as K
 import tensorflow as tf
 
 from Helper import plot_logs, logs_to_pickle, create_optimizer_args, get_cifar
-from VGG import VGG19
+from Metric.OLD_VGG import VGG19
 
 import glob 
 import os

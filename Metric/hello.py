@@ -1,5 +1,6 @@
 import torch
 from torch import distributed as dist
+import torch._dynamo.config
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.multiprocessing as mp
 from torch.utils import benchmark
@@ -18,105 +19,135 @@ from TicketModels import TicketCNN
 import torch._dynamo as dynamo
 dynamo.config.capture_scalar_outputs = True
 
+torch.set_float32_matmul_precision = 'high'
+torch.backends.cudnn.benchmark = True
 
-from posix import fspath
-torch.compiler.allow_in_graph(fspath) # temp solution to graph break in vision dataset
+torch.jit.enable_onednn_fusion(True)
+
+# NOTE: if these fail asserts submit a PR to increase them
+torch._inductor.runtime.hints.TRITON_MAX_BLOCK["X"] =  4096 # tmp solution to triton assert fail; prev 2048
+
+#from posix import fspath
+#torch.compiler.allow_in_graph(fspath) # temp solution to graph break in vision dataset
 
 def temp(rank, world_size):
 
-    torch.cuda.set_device(rank)
+    try:
 
-    setup_distribute(rank, world_size)
-    
-    dt, dv = get_cifar(rank, world_size) 
+        torch.cuda.set_device(rank)
 
-    dataAug = torch.jit.script(DataAugmentation())
-    preprocess = torch.jit.script(ResizeAndNormalize())
+        setup_distribute(rank, world_size)
+        
+        dt, dv = get_cifar(rank, world_size) 
 
-    torch._print("Got Data")
+        dataAug = torch.jit.script(DataAugmentation())
+        preprocess = torch.jit.script(ResizeAndNormalize())
 
-    dynamo.reset()
+        torch._print("Got Data")
 
-    model = VGG19()
-    
-    model.cuda()
+        dynamo.reset()
 
-    model = DDP(model, device_ids = [rank], gradient_as_bucket_view = True)
+        model = VGG19()
+        
+        model.cuda()
 
-    model = torch.compile(model, mode = "max-autotune")
-    
-    torch._print("Got Cuda Model")
+        model = DDP(model, device_ids = [rank],
+                    output_device = rank, 
+                    gradient_as_bucket_view = True,
+                    find_unused_parameters = True)
 
-    T = TicketCNN(model, rank)
+        model = torch.compile(model)
+        
+        torch._print("Got Cuda Model")
 
-    del model
+        T = TicketCNN(model, rank)
 
-    T.build(torch.optim.SGD(T.m.module.parameters(), 0.01, momentum = 0.9), 
-                        data_augmentation_transform = dataAug,
-                        preprocess_transform = preprocess, 
-                        weight_decay = 1e-6)
-    
+        del model
 
-    print(all([param.device == torch.cuda.current_device] for name, param in T.m.named_buffers()))
-    print(all([param.device == torch.cuda.current_device] for name, param in T.m.named_parameters()))
-    T.summary(128)
-    
-    dt = iter(dt)
-    dv = iter(dv)
-    start = time.time()
-    print(dynamo.explain(T.forward(next(dt)[0].to('cuda'))))
-    print(time.time() - start)
-    """
-    def timed(fn):
-        start = torch.cuda.Event(enable_timing=True)
-        end = torch.cuda.Event(enable_timing=True)
-        start.record()
-        result = fn()
-        end.record()
-        torch.cuda.synchronize()
-        return result, start.elapsed_time(end) / 1000
-
-    torch._print("Starting Inference")
-
-    N_ITERS = 18
-    
-    eager_times = []
-    for i in range(N_ITERS):
-        inp = next(t) if (N_ITERS % 2 == 0) else next(v)
-        _, eager_time = timed(lambda: model(inp))
-        eager_times.append(eager_time)
-        print(f"eager eval time {i}: {eager_time}")
-
-    print("~" * 10)
-
-    compile_times = []
-    for i in range(N_ITERS):
-        inp = next(t) if (N_ITERS % 2 == 0) else next(v)
-        _, compile_time = timed(lambda: model(inp))
-        compile_times.append(compile_time)
-        print(f"compile eval time {i}: {compile_time}")
-    print("~" * 10)
+        T.build(torch.optim.SGD(T.m.module.parameters(), 0.01, momentum = 0.9), 
+                data_augmentation_transform = dataAug,
+                preprocess_transform = preprocess, 
+                weight_decay = 1e-6, scaler = True)
 
 
-    eager_med = np.median(eager_times)
-    compile_med = np.median(compile_times)
-    speedup = eager_med / compile_med
-    assert(speedup > 1)
-    print(f"(eval) eager median: {eager_med}, compile median: {compile_med}, speedup: {speedup}x")
-    print("~" * 10)
-    """
-    """
-    model.compile()
-    #model = torch.compile(model)
-    
-    timer = benchmark.Timer(
-    stmt="model.evaluate(dt, 391); model.evaluate(dt, 391); model.evaluate(dt, 391); model.evaluate(dt, 391); model.evaluate(dt, 391); model.evaluate(dt, 391); model.evaluate(dt, 391); model.evaluate(dt, 391); model.evaluate(dt, 391); model.evaluate(dt, 391); model.evaluate(dt, 391); model.evaluate(dt, 391); model.evaluate(dt, 391); model.evaluate(dt, 391); model.evaluate(dt, 391)",
-    globals={"model": model, "dt": dt},
-    label="Evaluation Time")
+        print(all([param.device == torch.cuda.current_device] for name, param in T.m.named_buffers()))
+        print(all([param.device == torch.cuda.current_device] for name, param in T.m.named_parameters()))
+        if rank == 0:
+            #with torch.profiler.profile as prof:
+            dynamo.explain(T.summary)(batch_size = 128)
+        
+        start = time.time()
+        res = T.evaluate(dt)
+        if rank == 0: 
+            torch._print(str(res))
+            torch._print(str(time.time() - start))
+            start = time.time()
+        res = T.evaluate(dv)
+        if rank == 0: 
+            torch._print(str(res))
+            torch._print(str(time.time() - start))
+            start = time.time()
+        
+        start = time.time()
+        res = T.evaluate(dt)
+        if rank == 0: 
+            torch._print(str(res))
+            torch._print(str(time.time() - start))
+            start = time.time()
+        res = T.evaluate(dv)
+        if rank == 0: 
+            torch._print(str(res))
+            torch._print(str(time.time() - start))
+            start = time.time()
+        
+        start = time.time()
+        res = T.evaluate(dt)
+        if rank == 0: 
+            torch._print(str(res))
+            torch._print(str(time.time() - start))
+            start = time.time()
+        res = T.evaluate(dv)
+        if rank == 0: 
+            torch._print(str(res))
+            torch._print(str(time.time() - start))
+            start = time.time()
+        
+        start = time.time()
+        res = T.evaluate(dt)
+        if rank == 0: 
+            torch._print(str(res))
+            torch._print(str(time.time() - start))
+            start = time.time()
+        res = T.evaluate(dv)
+        if rank == 0: 
+            torch._print(str(res))
+            torch._print(str(time.time() - start))
+            start = time.time()
+        
+        start = time.time()
+        res = T.evaluate(dt)
+        if rank == 0: 
+            torch._print(str(res))
+            torch._print(str(time.time() - start))
+            start = time.time()
+        res = T.evaluate(dv)
+        if rank == 0: 
+            torch._print(str(res))
+            torch._print(str(time.time() - start))
+            start = time.time()
+        
 
-    print(timer.blocked_autorange(min_run_time = 330.0))
-    """
-    cleanup_distribute()
+        """
+        timer = benchmark.Timer(
+        stmt="T.evaluate(dt); T.evaluate(dv); T.evaluate(dt); T.evaluate(dv);",
+        globals={"T": T, "dt": dt, "dv": dv},
+        label="Evaluation Time")
+
+        print(timer.blocked_autorange(min_run_time = 240.0))"""
+
+    finally:
+        
+        cleanup_distribute()
 
 def main():
     world_size = torch.cuda.device_count()
