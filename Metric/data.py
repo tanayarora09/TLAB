@@ -17,20 +17,36 @@ class DataAugmentation(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if torch.rand(1) > 0.5:
             TF.hflip(x) 
-        angle = torch.randint(-15, 16, (1,)).item() # Rand Rotate
+        angle = torch.randint(-20, 21, (1,)).item() # Rand Rotate
         x = TF.rotate(x, angle, interpolation=TF.InterpolationMode.BILINEAR)
-        i = torch.randint(0, 224 - 200 + 1, (1, )).item()
-        j = torch.randint(0, 224 - 200 + 1, (1, )).item()
-        x = TF.crop(x, i, j, 200, 200)
+        i = torch.randint(0, 224 - 170 + 1, (1, )).item()
+        j = torch.randint(0, 224 - 170 + 1, (1, )).item()
+        x = TF.crop(x, i, j, 170, 170)
         x = TF.resize(x, [224, 224], interpolation = TF.InterpolationMode.BICUBIC)
         return x
 
-class ResizeAndNormalize(nn.Module):
+class Resize(nn.Module):
     def __init__(self):
-        super(ResizeAndNormalize, self).__init__()
+        super(Resize, self).__init__()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = TF.resize(x, [224, 224], interpolation=TF.InterpolationMode.BICUBIC)
+        return x
+
+class CenterCrop(nn.Module):
+    def __init__(self):
+        super(CenterCrop, self).__init__()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        x = TF.center_crop(x, [200, 200])
+        x = TF.resize(x, [224, 224], interpolation = TF.InterpolationMode.BICUBIC)
+        return x
+
+class Normalize(nn.Module):
+    def __init__(self):
+        super(Normalize, self).__init__()
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = TF.normalize(x, (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010), inplace = True)
         return x
 

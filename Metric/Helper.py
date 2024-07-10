@@ -48,29 +48,32 @@ def plot_loss_curves(history):
 
 def plot_logs(logs, num_epochs, name, steps=391): # SAVES TO FILE
     epochs = range(1, num_epochs + 1)
-    val_loss = [logs[str(epoch * steps)]['val_loss'] for epoch in epochs]
-    acc = [logs[str(epoch * steps)]['accuracy'] for epoch in epochs]
-    val_acc = [logs[str(epoch * steps)]['val_accuracy'] for epoch in epochs]
-    loss = [logs[str(epoch * steps)]['loss'] for epoch in epochs]
+    val_loss = [logs[epoch * steps]['val_loss'] for epoch in epochs]
+    acc = [logs[epoch * steps]['accuracy'] for epoch in epochs]
+    val_acc = [logs[epoch * steps]['val_accuracy'] for epoch in epochs]
+    loss = [logs[epoch * steps]['loss'] for epoch in epochs]
 
+    """
     iterations = range(1, num_epochs * steps + 1)
-    learning_rate = [logs[str(iter)]["learning_rate"] for iter in iterations]
+    learning_rate = [logs[iter]["learning_rate"] for iter in iterations]
 
     # Plot learning rate
+    
     plt.plot(iterations, learning_rate, label="learning_rate", linewidth=0.5)
     plt.title("Learning Rate")
     plt.xlabel("Iterations")
     plt.legend()
     plt.savefig(f'./PLOTS/learning_rate_plot_{name}.jpg')
     plt.close()
-
+    """
+    
     # Plot loss
     plt.plot(epochs, loss, label='training_loss', linewidth=0.5)
     plt.plot(epochs, val_loss, label='val_loss')
     plt.title('Loss')
     plt.xlabel('Epochs')
     plt.legend()
-    plt.ylim(0, 15)
+    #plt.ylim(0, 15)
     plt.savefig(f'./PLOTS/loss_plot_{name}.jpg')
     plt.close()
 
@@ -87,19 +90,19 @@ def plot_logs(logs, num_epochs, name, steps=391): # SAVES TO FILE
 
 def save_individual_image(image, fp):
     image = image.permute(1, 2, 0).detach().cpu().numpy()
-    image = (image * [0.2023, 0.1994, 0.2010]) + [0.4914, 0.4822, 0.4465]
+    #image = (image * [0.2023, 0.1994, 0.2010]) + [0.4914, 0.4822, 0.4465]
     image = np.clip(image, 0, 1)
     plt.imshow(image)
     plt.axis("off")
     plt.savefig(fp, bbox_inches='tight')
     plt.close()
 
-def save_images_from_dataset(dt, batches):
+def save_images_from_dataset(dt, batches, prefix):
     for step, (images, labels) in enumerate(dt):
         if step < batches:
             print(step)
             for i in range(len(images)):
-                save_individual_image(images[i], f"./data_viewing/{i}.jpg")
+                save_individual_image(images[i], f"./data_viewing/{str(prefix)}_{i}.jpg")
         else:
             break
 

@@ -29,7 +29,9 @@ class TicketCNN:
 
     def build(self, optim: torch.optim.Optimizer, 
               data_augmentation_transform: nn.Module, 
-              preprocess_transform: nn.Module, 
+              resize_transform: nn.Module,
+              normalize_transform: nn.Module,
+              evaluate_transform: nn.Module,
               loss = F.cross_entropy, weight_decay = 0.0,
               scaler: bool = True, clipnorm: float = 2.0):
         
@@ -49,13 +51,15 @@ class TicketCNN:
         self.clipnorm = clipnorm
 
         self.daug = data_augmentation_transform
-        self.preprocess = preprocess_transform
+        self.evalT = evaluate_transform
+        self.resize = resize_transform
+        self.normalize = normalize_transform
 
         self.m = self.m
 
     @torch.no_grad()
     def reset_scaler(self):
-        self.scaler = torch.amp.GradScaler(enabled = self.use_amp)
+        self.scaler = torch.amp.GradScaler(device = 'cuda', enabled = self.use_amp)
 
     @torch.no_grad()
     def reset_cpu_metrics(self):
@@ -79,7 +83,7 @@ class TicketCNN:
     def collect_metrics(self):
         dist.all_reduce(self.loss_tr)
         dist.all_reduce(self.acc_tr)
-        dist.all_reduce(self.bcount) #dont think this is necessary
+        dist.all_reduce(self.bcount)
 
     ### EVAL FUNCTIONS
     
@@ -115,14 +119,16 @@ class TicketCNN:
             
             x, y = x.to('cuda'), y.to('cuda')
             
-            x = self.preprocess(x)
+            x = self.resize(x)
+            x = self.evalT(x)
+            #x = self.daug(x)
+            self.normalize(x)
             
             self.test_step(x, y)
             
             self.collect_metrics()
 
             if self.ROOT:
-
                 self.transfer_metrics()
 
             self.reset_gpu_metrics()
@@ -149,7 +155,7 @@ class TicketCNN:
             if "norm" in name:
                 continue
         
-            self.L2_sum += torch.norm(param, 2)
+            self.L2_sum += torch.norm(param.detach(), 2)
         
         return self.L2_sum
     
@@ -157,14 +163,14 @@ class TicketCNN:
     @torch.no_grad()
     def mask_grads(self):
         
-        #print("Masking Grads")
-        
         for name, mask in self.m.named_buffers():
         
             if not name.endswith("mask"): continue
-        
-            self.m.get_parameter(name[:-5]).grad.mul_(mask)
-            
+
+            grad = self.m.get_parameter(name[:-5]).grad
+
+            grad.mul_(mask)
+    
     @torch.compile
     def train_step(self, x: torch.Tensor, y: torch.Tensor, accum: bool, accum_steps: int) -> None:
 
@@ -181,11 +187,11 @@ class TicketCNN:
         if not accum:
             
             with self.m.no_sync():
-                self.scaler.scale(loss).backward(retain_graph = True)
+                self.scaler.scale(loss).backward()#retain_graph = True)
             
             return
         
-        self.scaler.scale(loss).backward(retain_graph = True)
+        self.scaler.scale(loss).backward()#retain_graph = True)
 
         self.scaler.unscale_(self.optim)
         nn.utils.clip_grad_norm_(self.m.parameters(), max_norm = self.clipnorm)
@@ -201,6 +207,8 @@ class TicketCNN:
 
             self.loss_tr += loss
             
+            #print(torch.sum(torch.argmax(output.softmax(dim = 1), dim = 1).eq(y)))
+
             self.acc_tr += self.correct_k(output, y, 1).div(len(x))
             
             self.bcount += 1
@@ -208,11 +216,15 @@ class TicketCNN:
         return
 
     #@torch.compile
-    def train_one(self, dt: torch.utils.data.DataLoader, dv: torch.utils.data.DataLoader, epochs: int, cardinality: int, name: str, accumulation_steps: int = 3) -> defaultdict:
+    def train_one(self, dt: torch.utils.data.DataLoader, dv: torch.utils.data.DataLoader, epochs: int, cardinality: int, name: str, accumulation_steps: int = 1) -> defaultdict:
 
         logs = defaultdict(dict)
         
-        if self.ROOT: self.save_init(name = name)
+        self.reset_gpu_metrics()
+
+        if self.ROOT: 
+            self.save_init(name = name)
+            self.reset_cpu_metrics()
 
         best_val_loss = 2**17
         
@@ -239,8 +251,9 @@ class TicketCNN:
                 accum = ((step + 1) % accumulation_steps == 0) or (step + 1 == cardinality)
 
                 x, y = x.to('cuda'), y.to('cuda')
-                x = self.daug(self.preprocess(x))
-                
+                x = self.daug(self.resize(x))
+                self.normalize(x)
+
                 self.train_step(x, y, accum, accumulation_steps) # Forward, Backward if accum == True
 
                 if accum: 
@@ -251,12 +264,17 @@ class TicketCNN:
 
                     if self.ROOT: # Log, ROOT drags process
                         
+                        #torch._print(str(self.acc_tr))
+                        #torch._print(str(self.bcount))
+
                         self.transfer_metrics()
+                        #torch._print(str(self.cacc))
+                        #torch._print(f"\033[91m{str(self.cbcnt)}\033[0m")
 
                         logs[iter] = self.get_eval_results() # Add Logs; Have to Use Python bc of Bit Overflow
                         
-                        if (step + 1) % 24 == 0 or (step == 390): # Log
-                            torch._print(f"\033[97m---  Status at {math.ceil((step + 1) / 24):.0f}/16: ---     Accuracy: {logs[iter]['accuracy']:.4f}   --  Loss: {logs[iter]['loss']:.5f}\033[0m")
+                        if (step + 1) % 25 == 0 or (step == 390): # Log
+                            torch._print(f"\033[97m---  Status at {math.ceil((step + 1) / 25):.0f}/16: ---     Accuracy: {logs[iter]['accuracy']:.4f}   --  Loss: {logs[iter]['loss']:.5f}\033[0m")
                         
                         if (iter == 500) and self.ROOT: # Save Rewind
                             self.save_rewind(name = name)
@@ -274,12 +292,13 @@ class TicketCNN:
                 
                 logs[(epoch + 1) * cardinality].update({('val_' + k): v for k, v in self.get_eval_results().items()}) 
                 
-                torch._print(f"\033[91m||| EPOCH {epoch + 1} |||\n\033[0m") #LOG
+                torch._print(f"\033[91m\n||| EPOCH {epoch + 1} |||\n\033[0m") #LOG
                 
                 for k, v in logs[(epoch + 1) * cardinality].items():
                     torch._print(f"\033[96m\t{k}: {v:.6f}\033[0m")            
                 
                 if logs[(epoch + 1) * cardinality]["val_loss"] < best_val_loss and self.ROOT:
+                    best_val_loss = logs[(epoch + 1) * cardinality]["val_loss"]
                     torch._print(f"\n\033[95m -- UPDATING BEST WEIGHTS TO {epoch + 1} -- \033[0m\n")
                     self.save_ckpt(f"./WEIGHTS/best_{name}.h5")
                 

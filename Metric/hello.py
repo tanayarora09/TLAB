@@ -1,11 +1,11 @@
 import torch
+from torch import nn
 from torch import distributed as dist
-import torch._dynamo.config
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.multiprocessing as mp
-from torch.utils import benchmark
-from torch.profiler import profile, record_function, ProfilerActivity
-import numpy as np 
+
+import torch._dynamo as dynamo
+
 import time
 import gc
 
@@ -13,12 +13,11 @@ import matplotlib.pyplot as plt
 import matplotlib
 matplotlib.use('Agg')
 
-from data import get_cifar, setup_distribute, cleanup_distribute, DataAugmentation, ResizeAndNormalize
-from Helper import save_individual_image
+from data import get_cifar, setup_distribute, cleanup_distribute, DataAugmentation, Resize, Normalize, CenterCrop
+from Helper import save_individual_image, plot_logs
 from VGG import VGG19
 from TicketModels import TicketCNN
 
-import torch._dynamo as dynamo
 """
 dynamo.config.capture_scalar_outputs = True
 dynamo.config.cache_size_limit = 256
@@ -34,6 +33,7 @@ dynamo.config.capture_scalar_outputs = True
 dynamo.config.cache_size_limit = 256
 
 torch.backends.cudnn.benchmark = True
+#torch.jit.enable_onednn_fusion(True)
 
 from posix import fspath
 torch.compiler.allow_in_graph(fspath) # temp solution to graph break in vision dataset
@@ -47,15 +47,18 @@ def train(rank, world_size):
         setup_distribute(rank, world_size)
     
         dataAug = torch.jit.script(DataAugmentation().to('cuda'))
-        preprocess = torch.compile(ResizeAndNormalize().to('cuda')) #torch.jit.script(ResizeAndNormalize().to('cuda'))
+        resize = torch.jit.script(Resize().to('cuda')) #torch.jit.script(ResizeAndNormalize().to('cuda'))
+        normalize = torch.jit.script(Normalize().to('cuda'))
+        center_crop = torch.jit.script(CenterCrop().to('cuda'))
 
         torch._print("Got Data")
 
         model = VGG19()
         
-        model.to('cuda')
+        #model  = nn.SyncBatchNorm.convert_sync_batchnorm(model) # only necessary if tracking running means (not doing well for eval)
 
-        model = DDP(model, device_ids = [rank],
+        model = DDP(model.to('cuda'), 
+                    device_ids = [rank],
                     output_device = rank, 
                     gradient_as_bucket_view = True,
                     find_unused_parameters = True)
@@ -68,43 +71,43 @@ def train(rank, world_size):
 
         del model
 
-        T.build(torch.optim.SGD(T.m.module.parameters(), 0.01, momentum = 0.9), 
-                data_augmentation_transform = dataAug, preprocess_transform = preprocess, 
-                weight_decay = 0.000125, scaler = True, clipnorm = 2.0)
-
+        T.build(torch.optim.SGD(T.m.module.parameters(), 0.037, momentum = 0.9), #weight_decay = 0.0005),
+                loss = nn.CrossEntropyLoss().to('cuda'), 
+                data_augmentation_transform = dataAug, resize_transform = resize,
+                normalize_transform = normalize, evaluate_transform = center_crop,
+                weight_decay = 0.0005, scaler = True, clipnorm = 2.0)
 
         print(all([param.device == torch.cuda.current_device] for name, param in T.m.named_buffers()))
         print(all([param.device == torch.cuda.current_device] for name, param in T.m.named_parameters()))
-        
-        if rank == 0:
-            T.summary(batch_size = 32)
-            torch.cuda.empty_cache()
-            gc.collect()
-        
+
+        torch.cuda.empty_cache()
+        gc.collect()
+
         dt, dv = get_cifar(rank, world_size) 
-
-        T.evaluate(dt)
         
-        if (rank == 0): print(T.get_eval_results())
+        #T.evaluate(dt)
+        
+        #if (rank == 0): print(T.get_eval_results())
 
-        #with profile(activities = [ProfilerActivity.CPU, ProfilerActivity.CUDA],
-        #             record_shapes = True) as prof:
-            
-        #    with record_function("model_training"):
+        #T.evaluate(dv)
 
-        logs = T.train_one(dt, dv, 5, 391, "TMP")
+        #if (rank == 0): print(T.get_eval_results())
+
+        logs = T.train_one(dt, dv, 25, 391, "TMP")
+
+        dt.sampler.set_epoch(0)
+        dv.sampler.set_epoch(0)
 
         T.evaluate(dt)
 
-        if (rank == 0):
-            print(T.get_eval_results())
+        if (rank == 0): print(T.get_eval_results())
 
         T.evaluate(dv)
 
         if (rank == 0):
             print(T.get_eval_results())
-            print(logs)
-            print(prof.key_averages().table(sort_by="cuda_time_total", row_limit=30))
+            plot_logs(logs, 25, "TMP", 391)
+        
 
     finally:
         
