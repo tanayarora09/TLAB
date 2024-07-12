@@ -15,28 +15,13 @@ matplotlib.use('Agg')
 
 from data import get_cifar, setup_distribute, cleanup_distribute, DataAugmentation, Resize, Normalize, CenterCrop
 from Helper import save_individual_image, plot_logs
-from VGG import VGG19
-from TicketModels import TicketCNN
-
-"""
-dynamo.config.capture_scalar_outputs = True
-dynamo.config.cache_size_limit = 256
-
-torch.set_float32_matmul_precision = 'high'
-torch.backends.cudnn.benchmark = True
-
-torch.jit.enable_onednn_fusion(True)
-
-#torch._inductor.runtime.hints.TRITON_MAX_BLOCK["X"] =  4096 # tmp solution to triton assert fail; prev 2048"""
+from VGG import VGG
+from TrainWrappers import BaseCNNWrapper
 
 dynamo.config.capture_scalar_outputs = True
 dynamo.config.cache_size_limit = 256
 
 torch.backends.cudnn.benchmark = True
-#torch.jit.enable_onednn_fusion(True)
-
-from posix import fspath
-torch.compiler.allow_in_graph(fspath) # temp solution to graph break in vision dataset
 
 def train(rank, world_size):
 
@@ -53,8 +38,8 @@ def train(rank, world_size):
 
         torch._print("Got Data")
 
-        model = VGG19()
-        
+        model = VGG19()#.to(memory_format = torch.channels_last)
+
         #model  = nn.SyncBatchNorm.convert_sync_batchnorm(model) # only necessary if tracking running means (not doing well for eval)
 
         model = DDP(model.to('cuda'), 
@@ -66,16 +51,16 @@ def train(rank, world_size):
         model = torch.compile(model)
         
         torch._print("Got Cuda Model")
-
+        
         T = TicketCNN(model, rank)
 
         del model
 
-        T.build(torch.optim.SGD(T.m.module.parameters(), 0.037, momentum = 0.9), #weight_decay = 0.0005),
+        T.build(torch.optim.SGD(T.m.module.parameters(), 0.01, momentum = 0.9), #weight_decay = 0.0005),
                 loss = nn.CrossEntropyLoss().to('cuda'), 
                 data_augmentation_transform = dataAug, resize_transform = resize,
                 normalize_transform = normalize, evaluate_transform = center_crop,
-                weight_decay = 0.0005, scaler = True, clipnorm = 2.0)
+                weight_decay = 0.00125, scaler = True, clipnorm = 2.0)
 
         print(all([param.device == torch.cuda.current_device] for name, param in T.m.named_buffers()))
         print(all([param.device == torch.cuda.current_device] for name, param in T.m.named_parameters()))
@@ -84,7 +69,18 @@ def train(rank, world_size):
         gc.collect()
 
         dt, dv = get_cifar(rank, world_size) 
-        
+        """
+        for step, (x, y) in enumerate(dt):
+            x, y = x.to('cuda'), y.to('cuda')
+            x = dataAug(resize(x))
+            normalize(x)
+            for i in range(len(x)):
+                print(i)
+                save_individual_image(x[i], f"./data_viewing/{rank}_{step}_{i}")
+
+            if step > 0:
+                break"""
+
         #T.evaluate(dt)
         
         #if (rank == 0): print(T.get_eval_results())
@@ -92,8 +88,8 @@ def train(rank, world_size):
         #T.evaluate(dv)
 
         #if (rank == 0): print(T.get_eval_results())
-
-        logs = T.train_one(dt, dv, 25, 391, "TMP")
+        
+        logs = T.train_one(dt, dv, 30, 391, "TMP")
 
         dt.sampler.set_epoch(0)
         dv.sampler.set_epoch(0)
@@ -106,7 +102,7 @@ def train(rank, world_size):
 
         if (rank == 0):
             print(T.get_eval_results())
-            plot_logs(logs, 25, "TMP", 391)
+            plot_logs(logs, 30, "TMP", 391) 
         
 
     finally:

@@ -1,151 +1,99 @@
 import torch
 from torch import nn
+from typing import Tuple
 
 from LotteryLayers import LotteryConv2D, LotteryDense
 
-class VGG19(nn.Module):
+models = {
+    11: [64, 'M', 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512],
+    13: [64, 64, 'M', 128, 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512],
+    16: [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 'M', 512, 512, 512, 'M', 512, 512, 512],
+    19: [64, 64, 'M', 128, 128, 'M', 256, 256, 256, 256, 'M', 512, 512, 512, 512, 'M', 512, 512, 512, 512],
+}
 
-    def __init__(self, input_channels = 3):
-        super(VGG19, self).__init__()
+valid = (11, 13, 16, 19)
 
-        # Block 1
-        self.block1_conv1 = LotteryConv2D(input_channels, 64, (3, 3), (1, 1), padding="same")
-        self.block1_norm1 = nn.BatchNorm2d(64, track_running_stats = False)
-        self.block1_relu1 = nn.ReLU()
-        self.block1_conv2 = LotteryConv2D(64, 64, (3, 3), (1, 1), padding="same")
-        self.block1_norm2 = nn.BatchNorm2d(64, track_running_stats = False)
-        self.block1_relu2 = nn.ReLU()
-        self.block1_pool = nn.MaxPool2d((2, 2), (2, 2))
+class VGG(nn.Module):
+
+    class ConvBN(nn.Module):
+    
+        def __init__(self, input_channels: int, 
+                        num_filters: int, 
+                        kernel_size: Tuple[int, int] = (3, 3), 
+                        stride: Tuple[int, int] = (1, 1), 
+                        padding: str = "same"): 
+            
+            super(VGG.ConvBN, self).__init__()
+
+            self.register_module("conv", LotteryConv2D(input_channels, num_filters, 
+                                                        kernel_size, stride, padding))
+            
+            self.register_module("norm", nn.BatchNorm2d(num_filters, track_running_stats = False))
+
+            self.register_module("relu", nn.ReLU())
+
+        def forward(self, x):
+            x = self.get_submodule("conv")(x)
+            x = self.get_submodule("norm")(x)
+            return self.get_submodule("relu")(x)
         
-        # Block 2
-        self.block2_conv1 = LotteryConv2D(64, 128, (3, 3), (1, 1), padding="same")
-        self.block2_norm1 = nn.BatchNorm2d(128, track_running_stats = False)
-        self.block2_relu1 = nn.ReLU()
-        self.block2_conv2 = LotteryConv2D(128, 128, (3, 3), (1, 1), padding="same")
-        self.block2_norm2 = nn.BatchNorm2d(128, track_running_stats = False)
-        self.block2_relu2 = nn.ReLU()
-        self.block2_pool = nn.MaxPool2d((2, 2), (2, 2))
+    class OutBlock(nn.Module):
 
-        # Block 3
-        self.block3_conv1 = LotteryConv2D(128, 256, (3, 3), (1, 1), padding="same")
-        self.block3_norm1 = nn.BatchNorm2d(256, track_running_stats = False)
-        self.block3_relu1 = nn.ReLU()
-        self.block3_conv2 = LotteryConv2D(256, 256, (3, 3), (1, 1), padding="same")
-        self.block3_norm2 = nn.BatchNorm2d(256, track_running_stats = False)
-        self.block3_relu2 = nn.ReLU()
-        self.block3_conv3 = LotteryConv2D(256, 256, (3, 3), (1, 1), padding="same")
-        self.block3_norm3 = nn.BatchNorm2d(256, track_running_stats = False)
-        self.block3_relu3 = nn.ReLU()
-        self.block3_conv4 = LotteryConv2D(256, 256, (3, 3), (1, 1), padding="same")
-        self.block3_norm4 = nn.BatchNorm2d(256, track_running_stats = False)
-        self.block3_relu4 = nn.ReLU()
-        self.block3_pool = nn.MaxPool2d((2, 2), (2, 2))
+        def __init__(self, in_features: int, dropout: float):
 
-        # Block 4
-        self.block4_conv1 = LotteryConv2D(256, 512, (3, 3), (1, 1), padding="same")
-        self.block4_norm1 = nn.BatchNorm2d(512, track_running_stats = False)
-        self.block4_relu1 = nn.ReLU()
-        self.block4_conv2 = LotteryConv2D(512, 512, (3, 3), (1, 1), padding="same")
-        self.block4_norm2 = nn.BatchNorm2d(512, track_running_stats = False)
-        self.block4_relu2 = nn.ReLU()
-        self.block4_conv3 = LotteryConv2D(512, 512, (3, 3), (1, 1), padding="same")
-        self.block4_norm3 = nn.BatchNorm2d(512, track_running_stats = False)
-        self.block4_relu3 = nn.ReLU()
-        self.block4_conv4 = LotteryConv2D(512, 512, (3, 3), (1, 1), padding="same")
-        self.block4_norm4 = nn.BatchNorm2d(512, track_running_stats = False)
-        self.block4_relu4 = nn.ReLU()
-        self.block4_pool = nn.MaxPool2d((2, 2), (2, 2))
+            super(VGG.OutBlock, self).__init__()
 
-        # Block 5
-        self.block5_conv1 = LotteryConv2D(512, 512, (3, 3), (1, 1), padding="same")
-        self.block5_norm1 = nn.BatchNorm2d(512, track_running_stats = False)
-        self.block5_relu1 = nn.ReLU()
-        self.block5_conv2 = LotteryConv2D(512, 512, (3, 3), (1, 1), padding="same")
-        self.block5_norm2 = nn.BatchNorm2d(512, track_running_stats = False)
-        self.block5_relu2 = nn.ReLU()
-        self.block5_conv3 = LotteryConv2D(512, 512, (3, 3), (1, 1), padding="same")
-        self.block5_norm3 = nn.BatchNorm2d(512, track_running_stats = False)
-        self.block5_relu3 = nn.ReLU()
-        self.block5_conv4 = LotteryConv2D(512, 512, (3, 3), (1, 1), padding="same")
-        self.block5_norm4 = nn.BatchNorm2d(512, track_running_stats = False)
-        self.block5_relu4 = nn.ReLU()
-        self.block5_pool = nn.MaxPool2d((2, 2), (2, 2))
+            self.gap = nn.AdaptiveAvgPool2d((1, 1))
+            self.drop = nn.Dropout(dropout)
+            self.norm = nn.BatchNorm1d(in_features, track_running_stats = False)
+            self.fc = nn.Linear(in_features, 10)
+        
+        def forward(self, x):
+            x = self.gap(x)
+            x = x.squeeze()
+            x = self.drop(x)
+            x = self.norm(x)
+            x = self.fc(x)
+            return x
 
-        # Output
-        self.GAP_FC = nn.AdaptiveAvgPool2d((1, 1))
-        self.Dropout = nn.Dropout(0.5)
-        self.NORM_OUT = nn.BatchNorm1d(512)
-        self.FC_OUT = nn.Linear(512, 10)
+    def __init__(self, depth: int = 19, input_channels: int = 3):
+        super(VGG, self).__init__()
 
+        if depth not in valid:
+            raise ValueError("VGG architecture must be one of", [f"VGG{n}" for n in valid])
+        
+        curr_block = 1
+        curr_num = 1
+        self.layers = []
+
+        for value in models[depth]:
+            
+            if value == "M":
+                self.register_module(f"block{curr_block}p", nn.MaxPool2d((2, 2), (2, 2)))
+                self.layers.append(f"block{curr_block}p")
+                curr_block += 1
+                curr_num = 1
+
+            else:
+                self.register_module(f"block{curr_block}{curr_num}", self.ConvBN(input_channels, value))
+                self.layers.append(f"block{curr_block}{curr_num}")
+                curr_num += 1
+                input_channels = value
+
+        self.out = self.OutBlock(512, 0.8)
+
+    
+    def reinit_bn(self):
+        for name, module in self.named_modules:
+            if "norm" in name:
+                module.get_parameter("weight").random_()
+        return 
+    
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        # Block 1
-        x = self.block1_conv1(x)
-        x = self.block1_norm1(x)
-        x = self.block1_relu1(x)
-        x = self.block1_conv2(x)
-        x = self.block1_norm2(x)
-        x = self.block1_relu2(x)
-        x = self.block1_pool(x)
+        
+        for layer in self.layers:
+            x = self.get_submodule(layer)(x)
 
-        # Block 2
-        x = self.block2_conv1(x)
-        x = self.block2_norm1(x)
-        x = self.block2_relu1(x)
-        x = self.block2_conv2(x)
-        x = self.block2_norm2(x)
-        x = self.block2_relu2(x)
-        x = self.block2_pool(x)
-
-        # Block 3
-        x = self.block3_conv1(x)
-        x = self.block3_norm1(x)
-        x = self.block3_relu1(x)
-        x = self.block3_conv2(x)
-        x = self.block3_norm2(x)
-        x = self.block3_relu2(x)
-        x = self.block3_conv3(x)
-        x = self.block3_norm3(x)
-        x = self.block3_relu3(x)
-        x = self.block3_conv4(x)
-        x = self.block3_norm4(x)
-        x = self.block3_relu4(x)
-        x = self.block3_pool(x)
-
-        # Block 4
-        x = self.block4_conv1(x)
-        x = self.block4_norm1(x)
-        x = self.block4_relu1(x)
-        x = self.block4_conv2(x)
-        x = self.block4_norm3(x)
-        x = self.block4_relu2(x)
-        x = self.block4_conv3(x)
-        x = self.block4_norm3(x)
-        x = self.block4_relu3(x)
-        x = self.block4_conv4(x)
-        x = self.block4_norm4(x)
-        x = self.block4_relu4(x)
-        x = self.block4_pool(x)
-
-        # Block 5
-        x = self.block5_conv1(x)
-        x = self.block5_norm1(x)
-        x = self.block5_relu1(x)
-        x = self.block5_conv2(x)
-        x = self.block5_norm2(x)
-        x = self.block5_relu2(x)
-        x = self.block5_conv3(x)
-        x = self.block5_norm3(x)
-        x = self.block5_relu3(x)
-        x = self.block5_conv4(x)
-        x = self.block5_norm4(x)
-        x = self.block5_relu4(x)
-        x = self.block5_pool(x)
-
-        #Output
-        x = self.GAP_FC(x)
-        x.squeeze_()
-        x = self.Dropout(x)
-        x = self.NORM_OUT(x)
-        x = self.FC_OUT(x)
+        x = self.out(x)
 
         return x

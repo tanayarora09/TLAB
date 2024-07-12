@@ -6,7 +6,6 @@ from torch import distributed as dist
 import torchvision
 from torchvision.transforms.v2 import functional as TF
 import os
-from typing import Tuple
 from PIL import Image
 
 class DataAugmentation(nn.Module):
@@ -14,21 +13,51 @@ class DataAugmentation(nn.Module):
     def __init__(self):
         super(DataAugmentation, self).__init__()
 
+    @torch.no_grad()
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        if torch.rand(1) > 0.5:
-            TF.hflip(x) 
-        angle = torch.randint(-20, 21, (1,)).item() # Rand Rotate
+        
+        device = x.device
+
+        if torch.rand(1) > 0.5: # Horizontal Flip
+            TF.hflip(x)
+        
+        noise = torch.normal(0.0, 0.1, x.shape, device = device) # Gaussian Noise
+        x += noise
+
+        brightness_factor = torch.empty((1, )).uniform_(0.8, 1.2).item() # Brightness
+        x = TF.adjust_brightness(x, brightness_factor)
+
+        topleft = [ int(torch.randint(0, 40, size=(1,), device = device).item()), # Perspective
+            int(torch.randint(0, 40, size=(1,), device = device).item()),]
+        topright = [ int(torch.randint(184, 224, size=(1,), device = device).item()),
+            int(torch.randint(0, 40, size=(1,), device = device).item()),]
+        botright = [ int(torch.randint(184, 224, size=(1,), device = device).item()),
+            int(torch.randint(184, 224, size=(1,), device = device).item()),]
+        botleft = [ int(torch.randint(0, 40, size=(1,), device = device).item()),
+            int(torch.randint(184, 224, size=(1,), device = device).item()),]
+        
+        x = TF.perspective(x, [[0, 0], [223, 0], [223, 223], [0, 223]], 
+                           [topleft, topright, botright, botleft],
+                           interpolation = TF.InterpolationMode.BILINEAR)
+
+        angle = torch.randint(-20, 21, (1,)).item() # Rotate
         x = TF.rotate(x, angle, interpolation=TF.InterpolationMode.BILINEAR)
-        i = torch.randint(0, 224 - 170 + 1, (1, )).item()
-        j = torch.randint(0, 224 - 170 + 1, (1, )).item()
-        x = TF.crop(x, i, j, 170, 170)
-        x = TF.resize(x, [224, 224], interpolation = TF.InterpolationMode.BICUBIC)
+        
+        i = torch.randint(0, 224 - 170 + 1, (1, ), device = device).item() # Crop
+        j = torch.randint(0, 224 - 170 + 1, (1, ), device = device).item()
+        x = x[..., i: i + 170, j: j + 170]
+        
+        x = TF.resize(x, [224, 224], interpolation = TF.InterpolationMode.BICUBIC) # Resize
+
+        x.clip(0, 1)
+        
         return x
 
 class Resize(nn.Module):
     def __init__(self):
         super(Resize, self).__init__()
 
+    @torch.no_grad()
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = TF.resize(x, [224, 224], interpolation=TF.InterpolationMode.BICUBIC)
         return x
@@ -37,6 +66,7 @@ class CenterCrop(nn.Module):
     def __init__(self):
         super(CenterCrop, self).__init__()
 
+    @torch.no_grad()
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = TF.center_crop(x, [200, 200])
         x = TF.resize(x, [224, 224], interpolation = TF.InterpolationMode.BICUBIC)
@@ -46,6 +76,7 @@ class Normalize(nn.Module):
     def __init__(self):
         super(Normalize, self).__init__()
 
+    @torch.no_grad()
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x = TF.normalize(x, (0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010), inplace = True)
         return x
@@ -56,21 +87,17 @@ class ScriptedToTensor(nn.Module):
     def __init__(self):
         super(ScriptedToTensor, self).__init__()
 
-    
+    @torch.no_grad()
     def forward(self, x: Image.Image) -> torch.Tensor:
         x = TF.pil_to_tensor(x)
-        #x = x.to('cuda') # to prefetch to gpu?
         x = TF.to_dtype(x, dtype=torch.float32, scale = True)
-        #x = x.to(memory_format = torch.channels_last)
         return x
-"""
-class ScriptedOneHot(nn.Module):
 
-    def __init__(self):
-        super(ScriptedOneHot, self).__init__()
-
-    def forward(self, x: int) -> torch.Tensor:
-        return F.one_hot(torch.as_tensor(x), num_classes = 10).float()"""
+class CIFAR10WithID(torchvision.datasets.CIFAR10):
+    def __getitem__(self, index):
+        data, target = super().__getitem__(index)
+        unique_id = f'{index}'
+        return data, target, unique_id
 
 class DisributedLoader(DataLoader):
 
@@ -96,10 +123,10 @@ def cleanup_distribute():
 
 def get_cifar(rank, world_size, batch_size = 128):
 
-    train_data = torchvision.datasets.CIFAR10("/u/tanaya_guest/tlab/datasets/CIFAR10/", train = True, download = False, # "/u/tanaya_guest/tlab/datasets/CIFAR10/"
+    train_data = CIFAR10WithID("/u/tanaya_guest/tlab/datasets/CIFAR10/", train = True, download = False,
                                               transform = torch.compile(ScriptedToTensor()))
 
-    test_data = torchvision.datasets.CIFAR10("/u/tanaya_guest/tlab/datasets/CIFAR10/", train = False, download = False,
+    test_data = CIFAR10WithID("/u/tanaya_guest/tlab/datasets/CIFAR10/", train = False, download = False,
                                         transform = torch.compile(ScriptedToTensor()))
 
     dt = DisributedLoader(

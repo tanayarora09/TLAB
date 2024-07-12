@@ -69,7 +69,7 @@ def plot_logs(logs, num_epochs, name, steps=391): # SAVES TO FILE
     
     # Plot loss
     plt.plot(epochs, loss, label='training_loss', linewidth=0.5)
-    plt.plot(epochs, val_loss, label='val_loss')
+    plt.plot(epochs, val_loss, label='validation_loss')
     plt.title('Loss')
     plt.xlabel('Epochs')
     plt.legend()
@@ -90,7 +90,7 @@ def plot_logs(logs, num_epochs, name, steps=391): # SAVES TO FILE
 
 def save_individual_image(image, fp):
     image = image.permute(1, 2, 0).detach().cpu().numpy()
-    #image = (image * [0.2023, 0.1994, 0.2010]) + [0.4914, 0.4822, 0.4465]
+    image = (image * [0.2023, 0.1994, 0.2010]) + [0.4914, 0.4822, 0.4465]
     image = np.clip(image, 0, 1)
     plt.imshow(image)
     plt.axis("off")

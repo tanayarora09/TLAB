@@ -10,11 +10,12 @@ class LotteryDense(nn.Linear):
         out_features
         ):
         super(LotteryDense, self).__init__(in_features = in_features, out_features = out_features)        
-        self.register_buffer("weight_mask", torch.ones_like(self.weight), persistent = False)
+        self.register_buffer("weight_mask", torch.ones_like(self.weight, requires_grad = False), persistent = False)
+        nn.init.kaiming_normal_(self.weight)
 
     def forward(self, inputs):
-        masked_kernel = self.weight.mul(self.get_buffer("weight_mask"))
-        return F.linear(inputs, masked_kernel, self.bias)
+        kernel = self.weight * self.get_buffer("weight_mask")
+        return F.linear(inputs, kernel, self.bias)
 
 class LotteryConv2D(nn.Conv2d):
 
@@ -28,6 +29,7 @@ class LotteryConv2D(nn.Conv2d):
     ):
         super(LotteryConv2D, self).__init__(in_channels, out_channels, kernel_size, stride, padding = padding, bias = False)
         self.register_buffer("weight_mask", torch.ones_like(self.weight, requires_grad = False), persistent = False)#torch.full_like(self.weight, True, dtype = torch.bool, requires_grad = False), persistent = False)
+        nn.init.kaiming_normal_(self.weight)
         
     def forward(self, inputs):
         kernel = self.weight * self.get_buffer("weight_mask")

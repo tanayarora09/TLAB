@@ -1,30 +1,93 @@
-import tensorflow as tf
-import keras as K 
+import torch
+from torch import nn
+from torch import distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
+import torch.multiprocessing as mp
 
-from Helper import * 
-from Metric.OLD_VGG import VGG19
+import torch._dynamo as dynamo
 
-strat = tf.distribute.MultiWorkerMirroredStrategy()
-name = "Resize_Original_Params_Higher_WD"
+import time
+import gc
 
-with strat.scope():
+import matplotlib.pyplot as plt
+import matplotlib
+matplotlib.use('Agg')
 
-    dt, dv = get_cifar()
-    dt, dv = strat.experimental_distribute_dataset(dt), strat.experimental_distribute_dataset(dv)
+from data import get_cifar, setup_distribute, cleanup_distribute, DataAugmentation, Resize, Normalize, CenterCrop
+from Helper import save_individual_image, plot_logs
+from VGG import VGG
+from TrainWrappers import BaseCNNTrainer
 
-    loss = K.losses.CategoricalCrossentropy()
-    #lr_sched = K.optimizers.schedules.ExponentialDecay(0.1, 2450, 0.96)#K.optimizers.schedules.PolynomialDecay(0.03654534632021443, 15680, 0.02814257665, power = 0.5)#
-    optim = K.optimizers.LossScaleOptimizer(K.optimizers.SGD(0.01, 0.9, weight_decay = 0.00625), dynamic_growth_steps = 1955) 
+dynamo.config.capture_scalar_outputs = True
+dynamo.config.cache_size_limit = 256
 
-    model = VGG19()
-    model.compile(loss = loss, optimizer = optim, metrics = ["accuracy"])
+torch.backends.cudnn.benchmark = True
 
-    model.call(K.ops.zeros((128, 224, 224, 3)), training = False)
+def train(rank, world_size):
 
-    logs = model.train_one(dt, dv, 160, cardinality = int(dt.cardinality), name = name, strategy = strat)
+    try:
 
-    logs_to_pickle(logs, name)
+        torch.cuda.set_device(rank)
 
-    plot_logs(logs, 160, name = name)
+        setup_distribute(rank, world_size)
+    
+        dataAug = torch.jit.script(DataAugmentation().to('cuda'))
+        resize = torch.jit.script(Resize().to('cuda'))
+        normalize = torch.jit.script(Normalize().to('cuda'))
+        center_crop = torch.jit.script(CenterCrop().to('cuda'))
 
-    model.save_vars_to_file(f"./WEIGHTS/final_model_{name}")
+        torch._print("Got Data")
+
+        model = VGG(19)
+
+        model = DDP(model.to('cuda'), 
+                    device_ids = [rank],
+                    output_device = rank, 
+                    gradient_as_bucket_view = True,
+                    find_unused_parameters = True)
+
+        model = torch.compile(model)
+        
+        torch._print("Got Cuda Model")
+        
+        T = BaseCNNTrainer(model, rank)
+
+        del model
+
+        T.build(optimizer = torch.optim.SGD(T.m.parameters(), 0.01, momentum = 0.9, weight_decay = 1e-4),
+                loss = nn.CrossEntropyLoss(reduction = "summ").to('cuda'),
+                collective_transforms = [resize], train_transforms = [dataAug],
+                eval_transforms = [center_crop], final_collective_transforms = [normalize],
+                scale_loss = True, gradient_clipnorm = 2.0)
+
+        print(all([param.device == torch.cuda.current_device] for name, param in T.m.named_buffers()))
+        print(all([param.device == torch.cuda.current_device] for name, param in T.m.named_parameters()))
+
+        torch.cuda.empty_cache()
+        gc.collect()
+
+        dt, dv = get_cifar(rank, world_size) 
+        
+        logs = T.fit(dt, dv, 20, 391, "TMP")
+
+        T.evaluate(dt)
+
+        if (rank == 0): print(T.metric_results())
+
+        T.evaluate(dv)
+
+        if (rank == 0):
+            print(T.metric_results())
+            plot_logs(logs, 30, "TMP", 391) 
+        
+
+    finally:
+        
+        cleanup_distribute()
+
+def main():
+    world_size = torch.cuda.device_count()
+    mp.spawn(train, args=(world_size,), nprocs=world_size, join=True)
+
+if __name__ == "__main__":
+    main()
