@@ -4,7 +4,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.multiprocessing as mp
 import torch._dynamo as dynamo
 
-from TrainWrappers import BaseVGGIMP
+from TrainWrappers import VGGPOC
 
 import gc
 
@@ -47,15 +47,15 @@ def train(rank, world_size):
         
         torch._print("Got Cuda Model")
         
-        T = BaseVGGIMP(model, rank)
+        T = VGGPOC(model, rank)
 
         del model
 
-        T.build(optimizer = torch.optim.SGD(T.m.parameters(), 0.1, momentum = 0.9, weight_decay = 5e-3),
+        T.build(optimizer = torch.optim.SGD(T.m.parameters(), 0.1, momentum = 0.9,),
                 loss = nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
-                collective_transforms = (resize, normalize,), train_transforms = (dataAug,),
-                eval_transforms = (center_crop,), final_collective_transforms = tuple(),#[normalize],
-                scale_loss = True, gradient_clipnorm = 2.0, decay = 1e-2)
+                collective_transforms = [resize], train_transforms = [dataAug],
+                eval_transforms = [center_crop], final_collective_transforms = [normalize],
+                scale_loss = True, gradient_clipnorm = float('inf'), decay = 0.008)
 
         print(all([param.device == torch.cuda.current_device] for name, param in T.m.named_buffers()))
         print(all([param.device == torch.cuda.current_device] for name, param in T.m.named_parameters()))
@@ -65,9 +65,13 @@ def train(rank, world_size):
         torch.cuda.empty_cache()
         gc.collect()
 
-        dt, dv = get_cifar(rank, world_size, iterate = True) 
-        
-        logs = T.fit(dt, dv, 160, 391, "FULL_VGG_STRONG_LR")
+        dt, dv = get_cifar(rank, world_size) 
+
+
+
+        T.load_ckpt("FULL_VGG", "best")
+
+        T.m.get_buffer("module.block11.conv.weight_mask").fill_(1.0)
 
         T.evaluate(dt)
 
@@ -77,18 +81,7 @@ def train(rank, world_size):
 
         if (rank == 0):
             print(T.metric_results())
-            plot_logs(logs, 160, "FULL_VGG_STRONG_LR", 391) 
 
-        T.load_ckpt("FULL_VGG_STRONG_LR", "best")
-        
-        T.evaluate(dt)
-
-        if (rank == 0): print(T.metric_results())
-
-        T.evaluate(dv)
-
-        if (rank == 0):
-            print(T.metric_results())
 
     finally:
         

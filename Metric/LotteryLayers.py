@@ -11,7 +11,7 @@ class LotteryDense(nn.Linear):
         ):
         super(LotteryDense, self).__init__(in_features = in_features, out_features = out_features)        
         self.register_buffer("weight_mask", torch.ones_like(self.weight, requires_grad = False), persistent = False)
-        nn.init.kaiming_normal_(self.weight)
+        #nn.init.kaiming_normal_(self.weight)
 
     def forward(self, inputs):
         kernel = self.weight * self.get_buffer("weight_mask")
@@ -28,8 +28,8 @@ class LotteryConv2D(nn.Conv2d):
         padding = 'same'
     ):
         super(LotteryConv2D, self).__init__(in_channels, out_channels, kernel_size, stride, padding = padding, bias = False)
-        self.register_buffer("weight_mask", torch.ones_like(self.weight, requires_grad = False), persistent = False)#torch.full_like(self.weight, True, dtype = torch.bool, requires_grad = False), persistent = False)
-        nn.init.kaiming_normal_(self.weight)
+        self.register_buffer("weight_mask", torch.ones_like(self.weight, requires_grad = False), persistent = False)
+        #nn.init.kaiming_normal_(self.weight)
         
     def forward(self, inputs):
         kernel = self.weight * self.get_buffer("weight_mask")

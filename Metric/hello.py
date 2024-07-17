@@ -89,7 +89,7 @@ def train(rank, world_size):
 
         #if (rank == 0): print(T.get_eval_results())
         
-        logs = T.train_one(dt, dv, 30, 391, "TMP")
+        logs = T.train_one(dt, dv, 35, 391, "TMP")
 
         dt.sampler.set_epoch(0)
         dv.sampler.set_epoch(0)
@@ -102,7 +102,7 @@ def train(rank, world_size):
 
         if (rank == 0):
             print(T.get_eval_results())
-            plot_logs(logs, 30, "TMP", 391) 
+            plot_logs(logs, 35, "TMP", 391) 
         
 
     finally:

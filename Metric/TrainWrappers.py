@@ -2,6 +2,7 @@ import torch
 from torch import nn
 import torch.distributed as dist
 
+import torch.optim.optimizer
 import torchinfo
 
 from typing import List, Tuple, Callable
@@ -33,13 +34,13 @@ class BaseCNNTrainer:
         self.RANK = rank
         self.IsRoot = rank == 0
 
-    def build(self, optimizer: torch.optim.optimizer, 
-              collective_transforms: List[nn.Module],
-              train_transforms: List[nn.Module],
-              eval_transforms: List[nn.Module],
-              final_collective_transforms: List[nn.Module],
+    def build(self, optimizer: torch.optim.Optimizer, 
+              collective_transforms: Tuple[nn.Module],
+              train_transforms: Tuple[nn.Module],
+              eval_transforms: Tuple[nn.Module],
+              final_collective_transforms: Tuple[nn.Module],
               loss: Callable = nn.CrossEntropyLoss(reduction = "sum"), 
-              scale_loss: bool = False, 
+              scale_loss: bool = False, decay: float = 0.0,
               gradient_clipnorm: float = float('inf')):
         
         """
@@ -47,7 +48,7 @@ class BaseCNNTrainer:
 
         Loss must use reduction = sum.
         
-        If transforms have already been implemented, you can pass [] to all of the transforms.
+        If transforms have already been implemented, ycou can pass [] to all of the transforms.
         
         I implement optional gradient clipping and loss scaling / mixed_precision.
 
@@ -67,12 +68,19 @@ class BaseCNNTrainer:
 
         self.gClipNorm = gradient_clipnorm
 
+        self.LD = decay
+
         self.loss_tr = torch.as_tensor(0.0, dtype = torch.float64, device = 'cuda')
         self.acc_tr = torch.as_tensor(0, dtype = torch.int64, device = 'cuda')
         self.count_tr = torch.as_tensor(0, dtype = torch.int64, device = 'cuda')
 
+        self.eloss = torch.as_tensor(0.0, dtype = torch.float64, device = 'cuda')
+        self.eacc = torch.as_tensor(0, dtype = torch.int64, device = 'cuda')
+        self.ecount = torch.as_tensor(0, dtype = torch.int64, device = 'cuda')
+
         self._COLORS = {
-            "reset": f"\033[0m",           # Logging Helper
+            "reset": f"\033[0m",
+            "default": f"\033[0m",           # Logging Helper
             "red": f"\033[38;2;255;0;0m",
             "green": f"\033[38;2;0;255;0m",
             "blue": f"\033[38;2;0;0;255m",
@@ -98,7 +106,7 @@ class BaseCNNTrainer:
         _, output = output.topk(topk, 1)
         output.t_()
         output.eq_(labels.view(1, -1).expand_as(output))
-        return output[:topk].view(-1).float().sum(0)
+        return output[:topk].view(-1).to(torch.int64).sum(0)
 
     @torch.no_grad()
     def metric_results(self) -> dict[str, float]:
@@ -106,11 +114,18 @@ class BaseCNNTrainer:
         Return Loss and Accuracy. 
         Should be called from root process.
         """
-        return {"loss": (self.loss_tr.div(self.count_tr).detach().item()),
-                "accuracy": (self.acc_tr.div(self.count_tr).detach().item())}
+        return {"loss": (self.eloss.div(self.ecount).detach().item()),
+                "accuracy": (self.eacc.div(self.ecount).detach().item())}
     
     @torch.no_grad()
     def reset_metrics(self):
+        self.eloss.fill_(0.0)
+        self.eacc.fill_(0)
+        self.ecount.fill_(0)
+        self.reset_running_metrics()
+
+    @torch.no_grad()
+    def reset_running_metrics(self):
         """
         Reset Loss, Accuracy, and Sample Count.
         Should be called from all processes.
@@ -118,15 +133,24 @@ class BaseCNNTrainer:
         self.loss_tr.fill_(0.0)
         self.acc_tr.fill_(0)
         self.count_tr.fill_(0)
+    
+    @torch.no_grad()
+    def transfer_metrics(self):
+        """
+        Move from running metrics.
+        This
+        """
+        self._collect_metrics()
+        self.eloss += self.loss_tr
+        self.eacc += self.acc_tr
+        self.ecount += self.count_tr
+        self.reset_running_metrics()
 
     @torch.no_grad()
-    def collect_metrics(self):
+    def _collect_metrics(self):
         """
         Collects Loss, Accuracy, and Sample Count.
-        Should be called from all processes.
-
-        Technically, it only has to be called from root process, 
-        but calling from all is good practice.
+        Do not directly call. Use transfer_metrics instead.
         """
         dist.all_reduce(self.loss_tr, op = dist.ReduceOp.SUM)
         dist.all_reduce(self.acc_tr, op = dist.ReduceOp.SUM)
@@ -135,7 +159,7 @@ class BaseCNNTrainer:
     #------------------------------------------ MAIN TRAIN FUNCTIONS -------------------------------------- #
 
     def fit(self, train_data: torch.utils.data.DataLoader, validation_data: torch.utils.data.DataLoader,
-            epochs: int, train_cardinality: int, name: str, accumulation_steps: int = 1):
+            epochs: int, train_cardinality: int, name: str, accumulation_steps: int = 1) -> dict:
         """
         Basic Training Run Implementation.
         Override by Copy and Pasting.
@@ -146,7 +170,7 @@ class BaseCNNTrainer:
 
         """
 
-        if self.IsRoot: logs = defaultdict(dict)
+        logs = defaultdict(dict)
         self.reset_metrics()
         self.save_ckpt(name = name, prefix = "init")
         
@@ -182,11 +206,11 @@ class BaseCNNTrainer:
                     
                     if (step + 1) % 24 == 0 or (step + 1 == train_cardinality): # Synchronize and Log.
                         
-                        self.collect_metrics()
+                        self.transfer_metrics()
                         
                         if self.IsRoot: logs[iter] = self.metric_results()
                         
-                        if (step + 1) % 48 == 0:
+                        if (step + 1) % 48 == 0 and self.IsRoot:
                             
                             self.print(f"----  Status at {math.ceil((step + 1) / 48):.0f}/8: ----     Accuracy: {logs[iter]['accuracy']:.4f}   --  Loss: {logs[iter]['loss']:.5f} --", 'white')
 
@@ -215,15 +239,17 @@ class BaseCNNTrainer:
 
                 self.print(f"Validation stage took {(time.time() - val_start):.1f} seconds. \nTotal for Epoch: {(time.time() - train_start):.1f} seconds.", 'yellow')
 
+        
         return logs
-    
+ 
+
     @torch.compile
     def train_step(self, x: torch.Tensor, y: torch.Tensor, accum: bool = True, accum_steps: int = 1):
         
         with torch.autocast('cuda', dtype = torch.float16, enabled = self.AMP):
 
             output = self.m(x)
-            loss = self.criterion(output, y)
+            loss = self.criterion(output, y) #+ self.LD * self.calculate_custom_regularization()
             loss /= accum_steps
 
         if not accum:
@@ -241,7 +267,7 @@ class BaseCNNTrainer:
         self.lossScaler.step(self.optim)
         self.lossScaler.update()
 
-        self.optim.zero_grad(True)
+        self.optim.zero_grad(set_to_none = True)
 
         with torch.no_grad():
 
@@ -264,7 +290,7 @@ class BaseCNNTrainer:
         self.m.eval()
         self.reset_metrics()
 
-        for step, (x, y) in enumerate(test_data):
+        for x, y in test_data:
 
             x, y = x.to('cuda'), y.to('cuda')
             
@@ -274,7 +300,7 @@ class BaseCNNTrainer:
 
             self.test_step(x, y)
         
-        self.collect_metrics()
+        self.transfer_metrics()
         return
 
     @torch.compile
@@ -282,7 +308,7 @@ class BaseCNNTrainer:
     def test_step(self, x: torch.Tensor, y: torch.Tensor) -> None:
 
         output = self.m(x)
-        loss = self.criterion(output, y)
+        loss = self.criterion(output, y)  #+ self.LD * self.calculate_custom_regularization()
 
         self.loss_tr += loss
         self.acc_tr += self.correct_k(output, y)
@@ -300,8 +326,8 @@ class BaseCNNTrainer:
         Can be accessed with same name and prefix from load_ckpt.
         """
         if not self.IsRoot: return
-        fp = f"./WEIGHTS/{self.fromNamePrefix(name, prefix)}.pth.tar"
-        ckpt = {'model': self.m.module.state_dict(),
+        fp = f"./WEIGHTS/{self.fromNamePrefix(name, prefix)}.pt"
+        ckpt = {'model': self.m.state_dict(),
                 'optim': self.optim.state_dict(),
                 'scaler': self.lossScaler.state_dict()}
         torch.save(ckpt, fp)        
@@ -312,9 +338,10 @@ class BaseCNNTrainer:
         Loads Model, Optimizer, and LossScaler state_dicts.
         Meant to be used with save_ckpt.
         """
-        fp = f"./WEIGHTS/{self.fromNamePrefix(name, prefix)}.pth.tar"
-        ckpt = torch.load(fp, map_location = {'cuda:%d' % 0: 'cuda:%d' % self.RANK}) # Assumes rank = 0 is Root.
-        self.m.module.load_state_dict(ckpt['model'])
+        fp = f"./WEIGHTS/{self.fromNamePrefix(name, prefix)}.pt"
+        ckpt = torch.load(fp, map_location = {'cuda:%d' % 0: 'cuda:%d' % self.RANK},
+                          weights_only = True) # Assumes rank = 0 is Root.
+        self.m.load_state_dict(ckpt['model'])
         self.optim.load_state_dict(ckpt['optim'])
         self.lossScaler.load_state_dict(ckpt['scaler'])
 
@@ -337,6 +364,7 @@ class BaseCNNTrainer:
         """
         Prints torchinfo summary of model.
         """
+        if not self.IsRoot: return
         torchinfo.summary(self.m.module, (batch_size, 3, 224, 224))
 
     ### Training
@@ -346,12 +374,167 @@ class BaseCNNTrainer:
         Reset Cuda Loss Scaler - Use with Mixed Precision.
         Should be reset every 
         """
-        self.lossScaler = torch.amp.GradScaler(device = 'cuda', enabled = self.use_amp)
+        self.lossScaler = torch.amp.GradScaler(device = 'cuda', enabled = self.AMP)
 
     @torch.no_grad()
     def reduce_learning_rate(self, factor: int):
         for pg in self.optim.param_groups:
             pg['lr'] /= factor
 
-
     ### Metrics
+
+    @torch.compile
+    def calculate_custom_regularization(self):
+        running_regularization_loss = torch.as_tensor(0.0, device = "cuda")
+        for name, buffer in self.m.named_buffers():
+            if not name.endswith("mask"): continue
+            running_regularization_loss += torch.norm(buffer * self.m.get_parameter(name[:-5]), p = 2)
+        for name, param in self.m.named_parameters():
+            if name.endswith("bias") or "out" in name and "norm" not in name:
+                running_regularization_loss += torch.norm(param, p = 2)
+        return running_regularization_loss
+
+
+class BaseVGGIMP(BaseCNNTrainer):
+
+    def fit(self, train_data: torch.utils.data.DataLoader, validation_data: torch.utils.data.DataLoader,
+        epochs: int, train_cardinality: int, name: str, accumulation_steps: int = 1, isfirst: bool = True) -> dict:
+        """
+        Basic Training Run Implementation.
+        Override by Copy and Pasting.
+
+        train_data and validation_data are expected to be sharded and batched, and use DistributedSampler
+
+        train_cardinality is the number of batches of the train set. It is used for logging.
+
+        """
+
+        logs = defaultdict(dict)
+        self.reset_metrics()
+        if isfirst: self.save_ckpt(name = name, prefix = "init")
+        
+        best_val_loss = float('inf')
+
+        train_start = None
+        val_start = None
+
+        for epoch in range(epochs):
+
+            self.print(f"\nStarting Epoch {epoch + 1}\n", 'red')
+            train_start = time.time()
+            self.m.train()
+
+            accum = False
+
+            self.reset_metrics()
+
+            if (epoch + 1) % 32 == 0:
+                self.reduce_learning_rate(10)
+
+            for step, (x, y) in enumerate(train_data):
+
+                iter = int(epoch * train_cardinality + step + 1)
+                accum = ((step + 1) % accumulation_steps == 0) or (step + 1 == train_cardinality)
+
+                x, y = x.to('cuda'), y.to('cuda')
+
+                for T in self.cT: x = T(x) # Transforms
+                for T in self.tT: x = T(x)
+                for T in self.fcT: x = T(x)
+
+                self.train_step(x, y, accum, accumulation_steps)
+
+                if accum:
+                    
+                    if (step + 1) % 24 == 0 or (step + 1 == train_cardinality): # Synchronize and Log.
+                        
+                        self.transfer_metrics()
+                        
+                        if self.IsRoot: logs[iter] = self.metric_results()
+                        
+                        if (step + 1) % 48 == 0 and self.IsRoot:
+                            
+                            self.print(f"----  Status at {math.ceil((step + 1) / 48):.0f}/8: ----     Accuracy: {logs[iter]['accuracy']:.4f}   --  Loss: {logs[iter]['loss']:.5f} --", 'white')
+
+                if iter == 500 and isfirst:
+                    self.save_ckpt(name = name, prefix = "rewind")
+
+            self.print(f"Training stage took {(time.time() - train_start):.1f} seconds.", 'yellow')
+
+            val_start = time.time()
+
+            self.evaluate(validation_data)
+
+            if self.IsRoot:
+
+                logs[(epoch + 1) * train_cardinality].update({('val_' + k): v for k, v in self.metric_results().items()})
+
+                self.print(f"\n||| EPOCH {epoch + 1} |||\n", 'orange')
+
+                for k, v in logs[(epoch + 1) * train_cardinality].items():
+                    self.print(f"\t{k}: {v:.6f}", 'cyan')
+
+                if logs[(epoch + 1) * train_cardinality]['val_loss'] < best_val_loss:
+                    best_val_loss = logs[(epoch + 1) * train_cardinality]['val_loss']
+                    self.print(f"\n -- UPDATING BEST WEIGHTS TO {epoch + 1} -- \n", "magenta")
+                    self.save_ckpt(name = name, prefix = "best")
+
+                self.print(f"Validation stage took {(time.time() - val_start):.1f} seconds. \nTotal for Epoch: {(time.time() - train_start):.1f} seconds.", 'yellow')
+
+        
+        return logs
+
+    #------------------------------------------ LTH IMP FUNCTIONS -------------------------------------- #
+
+    def TicketIMP(self, train_data: torch.utils.data.DataLoader, validation_data: torch.utils.data.DataLoader, 
+                  epochs_per_run: int, train_cardinality: int, name: str, prune_rate: float, prune_iters: int):
+
+        """
+        Find Winning Ticket Through IMP with Rewinding. Calls Trainer.fit(); See description for argument requirements.
+
+        prune_rate should be a float that indicates what percent of weights to prune per training run. 
+        I.E. to prune 20% per iteration, prune_rate = 0.8
+
+        prune_iters should be the number of iterations to run IMP for.
+        
+        Final sparsity = prune_rate ** prune_iters
+        """
+        
+        total_logs = defaultdict()
+        current_sparsity = 1.0
+        self.pre_IMP_hook()
+
+        total_logs[0] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_IMP_{(current_sparsity * 100):.0f}", isfirst = True)
+
+        for iter in range(1, prune_iters + 1):
+            
+            self.prune_by_mg(prune_rate, iter)
+            
+            current_sparsity *= prune_rate
+        
+            self.export_ticket(f"{name}_IMP_{(current_sparsity * 100):.0f}")
+
+            self.load_ckpt(name + f"_IMP_{(current_sparsity * 100):.0f}", prefix = "rewind")
+
+            self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_IMP_{(current_sparsity * 100):.0f}", isfirst = False)
+
+        return total_logs
+
+
+    def prune_by_mg(self, rate, iter):
+
+        all_weights = torch.cat([(self.m.get_parameter(name[:-5]) * buffer).reshape([-1]) for name, buffer 
+                                 in self.m.named_buffers() if name.endswith("mask")], dim = 0)
+        
+        threshold = all_weights.abs_().quantile(1.0 - rate**iter)
+        
+        for name, buffer in self.m.named_buffers():
+        
+            if not name.endswith("mask"): continue
+        
+            buffer.copy_((self.m.get_parameter(name[:-5]).abs().gt(threshold)).to(torch.float32))
+
+
+    def pre_IMP_hook(self):
+        return
+    

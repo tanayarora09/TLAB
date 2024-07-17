@@ -32,6 +32,8 @@ class VGG(nn.Module):
 
             self.register_module("relu", nn.ReLU())
 
+            #self.get_parameter("norm.weight").data = torch.rand(self.get_parameter("norm.weight").shape) # Reinit BN 
+
         def forward(self, x):
             x = self.get_submodule("conv")(x)
             x = self.get_submodule("norm")(x)
@@ -43,17 +45,19 @@ class VGG(nn.Module):
 
             super(VGG.OutBlock, self).__init__()
 
-            self.gap = nn.AdaptiveAvgPool2d((1, 1))
-            self.drop = nn.Dropout(dropout)
-            self.norm = nn.BatchNorm1d(in_features, track_running_stats = False)
-            self.fc = nn.Linear(in_features, 10)
+            self.register_module("gap", nn.AdaptiveAvgPool2d((1, 1)))
+            self.register_module("drop", nn.Dropout(dropout))
+            self.register_module("norm", nn.BatchNorm1d(in_features))
+            self.register_module("fc", nn.Linear(in_features, 10))
+
+            #self.get_parameter("norm.weight").data = torch.rand(self.get_parameter("norm.weight").shape)
         
         def forward(self, x):
-            x = self.gap(x)
+            x = self.get_submodule("gap")(x)
             x = x.squeeze()
-            x = self.drop(x)
-            x = self.norm(x)
-            x = self.fc(x)
+            x = self.get_submodule("drop")(x)
+            x = self.get_submodule("norm")(x)
+            x = self.get_submodule("fc")(x)
             return x
 
     def __init__(self, depth: int = 19, input_channels: int = 3):
@@ -80,14 +84,7 @@ class VGG(nn.Module):
                 curr_num += 1
                 input_channels = value
 
-        self.out = self.OutBlock(512, 0.8)
-
-    
-    def reinit_bn(self):
-        for name, module in self.named_modules:
-            if "norm" in name:
-                module.get_parameter("weight").random_()
-        return 
+        self.out = self.OutBlock(512, 0.4)
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         
