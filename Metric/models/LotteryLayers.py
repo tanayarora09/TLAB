@@ -2,7 +2,12 @@ import torch
 from torch import nn
 import torch.nn.functional as F
 
-class LotteryDense(nn.Linear):
+class Lottery:
+
+    def __init__(self):
+        return
+
+class LotteryDense(nn.Linear, Lottery):
 
     def __init__(
         self,
@@ -17,7 +22,7 @@ class LotteryDense(nn.Linear):
         kernel = self.weight * self.get_buffer("weight_mask")
         return F.linear(inputs, kernel, self.bias)
 
-class LotteryConv2D(nn.Conv2d):
+class LotteryConv2D(nn.Conv2d, Lottery):
 
     def __init__(
         self,

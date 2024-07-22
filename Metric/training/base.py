@@ -2,23 +2,17 @@ import torch
 from torch import nn
 import torch.distributed as dist
 
-import torch.optim.optimizer
+import numpy as np
+
 import torchinfo
 
-from typing import List, Tuple, Callable
+from typing import Callable, Tuple
 from collections import defaultdict
 import time
 import math
 
-from contextlib import contextmanager
-
-@contextmanager
-def conditional_no_grad(condition):
-    if condition:
-        with torch.no_grad():
-            yield
-    else:
-        yield
+import h5py
+from models.LotteryLayers import Lottery
 
 class BaseCNNTrainer:
 
@@ -244,7 +238,7 @@ class BaseCNNTrainer:
  
 
     @torch.compile
-    def train_step(self, x: torch.Tensor, y: torch.Tensor, accum: bool = True, accum_steps: int = 1):
+    def train_step(self, x: torch.Tensor, y: torch.Tensor, accum: bool = True, accum_steps: int = 1, id: str = None):
         
         with torch.autocast('cuda', dtype = torch.float16, enabled = self.AMP):
 
@@ -301,6 +295,7 @@ class BaseCNNTrainer:
             self.test_step(x, y)
         
         self.transfer_metrics()
+        self.print(f"Evaluated on {self.ecount.detach().item()} samples.")
         return
 
     @torch.compile
@@ -349,11 +344,11 @@ class BaseCNNTrainer:
 
     ### Logging
 
-    def print(self, input, color: str = 'default') -> None:
+    def print(self, input, color: str = 'default' , rank: int = 0) -> None:
         """
         Prints with color. Make sure input has a __repr__ attribute.
         """
-        if not self.IsRoot: return
+        if not self.RANK == rank: return
         torch._print(self._COLORS[color] + str(input) + self._COLORS["reset"])
         return
     
@@ -395,94 +390,12 @@ class BaseCNNTrainer:
         return running_regularization_loss
 
 
-class BaseVGGIMP(BaseCNNTrainer):
 
-    def fit(self, train_data: torch.utils.data.DataLoader, validation_data: torch.utils.data.DataLoader,
-        epochs: int, train_cardinality: int, name: str, accumulation_steps: int = 1, isfirst: bool = True) -> dict:
-        """
-        Basic Training Run Implementation.
-        Override by Copy and Pasting.
 
-        train_data and validation_data are expected to be sharded and batched, and use DistributedSampler
 
-        train_cardinality is the number of batches of the train set. It is used for logging.
 
-        """
 
-        logs = defaultdict(dict)
-        self.reset_metrics()
-        if isfirst: self.save_ckpt(name = name, prefix = "init")
-        
-        best_val_loss = float('inf')
-
-        train_start = None
-        val_start = None
-
-        for epoch in range(epochs):
-
-            self.print(f"\nStarting Epoch {epoch + 1}\n", 'red')
-            train_start = time.time()
-            self.m.train()
-
-            accum = False
-
-            self.reset_metrics()
-
-            if (epoch + 1) % 32 == 0:
-                self.reduce_learning_rate(10)
-
-            for step, (x, y) in enumerate(train_data):
-
-                iter = int(epoch * train_cardinality + step + 1)
-                accum = ((step + 1) % accumulation_steps == 0) or (step + 1 == train_cardinality)
-
-                x, y = x.to('cuda'), y.to('cuda')
-
-                for T in self.cT: x = T(x) # Transforms
-                for T in self.tT: x = T(x)
-                for T in self.fcT: x = T(x)
-
-                self.train_step(x, y, accum, accumulation_steps)
-
-                if accum:
-                    
-                    if (step + 1) % 24 == 0 or (step + 1 == train_cardinality): # Synchronize and Log.
-                        
-                        self.transfer_metrics()
-                        
-                        if self.IsRoot: logs[iter] = self.metric_results()
-                        
-                        if (step + 1) % 48 == 0 and self.IsRoot:
-                            
-                            self.print(f"----  Status at {math.ceil((step + 1) / 48):.0f}/8: ----     Accuracy: {logs[iter]['accuracy']:.4f}   --  Loss: {logs[iter]['loss']:.5f} --", 'white')
-
-                if iter == 500 and isfirst:
-                    self.save_ckpt(name = name, prefix = "rewind")
-
-            self.print(f"Training stage took {(time.time() - train_start):.1f} seconds.", 'yellow')
-
-            val_start = time.time()
-
-            self.evaluate(validation_data)
-
-            if self.IsRoot:
-
-                logs[(epoch + 1) * train_cardinality].update({('val_' + k): v for k, v in self.metric_results().items()})
-
-                self.print(f"\n||| EPOCH {epoch + 1} |||\n", 'orange')
-
-                for k, v in logs[(epoch + 1) * train_cardinality].items():
-                    self.print(f"\t{k}: {v:.6f}", 'cyan')
-
-                if logs[(epoch + 1) * train_cardinality]['val_loss'] < best_val_loss:
-                    best_val_loss = logs[(epoch + 1) * train_cardinality]['val_loss']
-                    self.print(f"\n -- UPDATING BEST WEIGHTS TO {epoch + 1} -- \n", "magenta")
-                    self.save_ckpt(name = name, prefix = "best")
-
-                self.print(f"Validation stage took {(time.time() - val_start):.1f} seconds. \nTotal for Epoch: {(time.time() - train_start):.1f} seconds.", 'yellow')
-
-        
-        return logs
+class BaseIMP(BaseCNNTrainer):
 
     #------------------------------------------ LTH IMP FUNCTIONS -------------------------------------- #
 
@@ -493,48 +406,96 @@ class BaseVGGIMP(BaseCNNTrainer):
         Find Winning Ticket Through IMP with Rewinding. Calls Trainer.fit(); See description for argument requirements.
 
         prune_rate should be a float that indicates what percent of weights to prune per training run. 
-        I.E. to prune 20% per iteration, prune_rate = 0.8
+        I.E. to prune 20% per iteration, prune_rate = 20.0
 
         prune_iters should be the number of iterations to run IMP for.
         
-        Final sparsity = prune_rate ** prune_iters
+        Final sparsity = (1 - prune_rate/100) ** prune_iters
         """
         
         total_logs = defaultdict()
-        current_sparsity = 1.0
-        self.pre_IMP_hook()
+        
+        sparsities = [None] * (prune_iters + 1)
+        current_sparsity = 100.0
+        sparsities[0] = current_sparsity
+        
+        self.pre_IMP_hook(name)
 
-        total_logs[0] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_IMP_{(current_sparsity * 100):.0f}", isfirst = True)
+        self.print(f"RUNNING IMP ON {self.m.module.num_prunable} PRUNABLE WEIGHTS.", "purple")
 
-        for iter in range(1, prune_iters + 1):
+        total_logs[0] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_IMP_{(current_sparsity):.1f}", isfirst = True)
+        
+        for iteration in range(1, prune_iters + 1):
             
-            self.prune_by_mg(prune_rate, iter)
+            self.prune_by_mg(prune_rate, iteration)
             
-            current_sparsity *= prune_rate
-        
-            self.export_ticket(f"{name}_IMP_{(current_sparsity * 100):.0f}")
+            current_sparsity = self.m.module.sparsity
 
-            self.load_ckpt(name + f"_IMP_{(current_sparsity * 100):.0f}", prefix = "rewind")
+            sparsities[iteration] = current_sparsity
 
-            self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_IMP_{(current_sparsity * 100):.0f}", isfirst = False)
+            self.print(f"SPARSITY: {current_sparsity:.1f}", "purple")
 
-        return total_logs
+            self.post_prune_hook(iteration, epochs_per_run)
+
+            self.export_ticket(f"{name}_IMP_{(current_sparsity):.1f}")
+
+            self.load_ckpt(name + f"_IMP_{(100.0):.1f}", prefix = "rewind") 
+
+            self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_IMP_{(current_sparsity):.1f}", isfirst = False)
+
+        self.post_IMP_hook()
+
+        return total_logs, sparsities
 
 
-    def prune_by_mg(self, rate, iter):
+    def prune_by_mg(self, rate: float, iteration: float):
 
-        all_weights = torch.cat([(self.m.get_parameter(name[:-5]) * buffer).reshape([-1]) for name, buffer 
-                                 in self.m.named_buffers() if name.endswith("mask")], dim = 0)
-        
-        threshold = all_weights.abs_().quantile(1.0 - rate**iter)
-        
+        all_weights = torch.cat([(self.m.get_parameter(name[:-5]) * buffer).reshape([-1]) for name, buffer in self.m.named_buffers() if name.endswith("mask")], dim = 0)
+
+        threshold = np.quantile(all_weights.abs_().detach().cpu().numpy(), q = 1.0 - rate ** iteration, method = "higher")
+
         for name, buffer in self.m.named_buffers():
-        
+
             if not name.endswith("mask"): continue
-        
-            buffer.copy_((self.m.get_parameter(name[:-5]).abs().gt(threshold)).to(torch.float32))
 
+            buffer.copy_((self.m.get_parameter(name[:-5]).abs().ge(threshold)).to(torch.float32))
 
-    def pre_IMP_hook(self):
+        return 
+
+    @torch._dynamo.disable
+    @torch.no_grad()
+    def export_ticket(self, name):
+        if not self.IsRoot: return
+        with h5py.File(f"./TICKETS/{name}.h5", 'w') as f:
+            for n, mask in self.m.named_buffers():   
+                if not n.endswith("mask"): continue
+                f.create_dataset(n, data = mask.detach().cpu().numpy())
+
+    @torch._dynamo.disable         
+    @torch.no_grad()
+    def load_ticket(self, name):
+
+        if self.IsRoot:
+            with h5py.File(f"./TICKETS/{name}.h5", 'r') as f:
+                data = {n: torch.as_tensor(f[n][:], device = "cuda") for n, mask in self.m.named_buffers() if n.endswith("mask")}
+        else:
+            data = {n: torch.empty_like(mask) for n, mask in self.m.named_buffers() if n.endswith("mask")}
+
+        for n, tensor in data.items():
+
+            dist.broadcast(tensor, src=0)
+
+            for buffer_name, mask in self.m.named_buffers():
+                if buffer_name == n:
+                    mask.copy_(tensor)
+
+            dist.barrier()        
+
+    def pre_IMP_hook(self, name: str):
+        return    
+
+    def post_IMP_hook(self):
         return
-    
+
+    def post_prune_hook(self, iteration: int, num_epochs: int):
+        return
