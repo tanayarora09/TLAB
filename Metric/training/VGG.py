@@ -39,7 +39,7 @@ class VGG_IMP(BaseIMP):
 
         for epoch in range(epochs):
 
-            self.print(f"\nStarting Epoch {epoch + 1}\n", 'red')
+            self.print(f"\nStarting Epoch {epoch + 1} -- LEARNING RATE = {self.optim.param_groups[0]['lr']}\n", 'red')
             train_start = time.time()
             self.m.train()
 
@@ -49,8 +49,7 @@ class VGG_IMP(BaseIMP):
 
             self.reset_metrics()
 
-            if epoch == 79 or epoch == 119:
-                self.reduce_learning_rate(10)
+            train_data.sampler.set_epoch(epoch)
 
             for step, (x, y, id) in enumerate(train_data):
 
@@ -85,6 +84,8 @@ class VGG_IMP(BaseIMP):
             self.print(f"Training stage took {(time.time() - train_start):.1f} seconds.", 'yellow')
 
             val_start = time.time()
+            
+            validation_data.sampler.set_epoch(epoch)
 
             self.evaluate(validation_data)
 
@@ -103,6 +104,9 @@ class VGG_IMP(BaseIMP):
                     self.save_ckpt(name = name, prefix = "best")
 
                 self.print(f"Validation stage took {(time.time() - val_start):.1f} seconds. \nTotal for Epoch: {(time.time() - train_start):.1f} seconds.", 'yellow')
+
+            if epoch == 78 or epoch == 118: # Epochs 80, 120
+                self.reduce_learning_rate(10)
 
         return logs
 

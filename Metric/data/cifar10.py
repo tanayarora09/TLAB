@@ -5,6 +5,10 @@ import torchvision
 from torchvision.transforms.v2 import functional as TF
 from PIL import Image
 
+from typing import List
+
+from utils.data_utils import jitToList2D
+
 class DataAugmentation(nn.Module):
 
     """
@@ -22,41 +26,59 @@ class DataAugmentation(nn.Module):
         super(DataAugmentation, self).__init__()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        
         device = x.device
+        batch_size = x.size(0)
 
-        if torch.rand(1) > 0.5: # Horizontal Flip
-            TF.hflip(x)
-        
-        noise = torch.normal(0.0, 0.25, x.shape, device = device) # Gaussian Noise
+        # Horizontal Flip
+        flip_mask = torch.rand(batch_size, device=device) > 0.5
+        x[flip_mask] = TF.hflip(x[flip_mask])
+
+        # Gaussian Noise
+        noise = torch.normal(0.0, 0.25, x.shape, device=device)
         x += noise
 
-        brightness_factor = torch.empty((1, )).uniform_(0.85, 1.15).item() # Brightness
-        x = TF.adjust_brightness(x, brightness_factor)
+        # Brightness
+        brightness_factors = torch.empty(batch_size, device=device).uniform_(0.85, 1.15)
+        brightness_factors = brightness_factors.view(-1, 1, 1, 1)
+        x = x * brightness_factors
 
-        topleft = [ int(torch.randint(0, 26, size=(1,), device = device).item()), # Perspective
-            int(torch.randint(0, 26, size=(1,), device = device).item()),] # 12 = int(0.1 * 112) + 1
-        topright = [ int(torch.randint(198, 224, size=(1,), device = device).item()), # 212 = 224 - 12 
-            int(torch.randint(0, 26, size=(1,), device = device).item()),]
-        botright = [ int(torch.randint(198, 224, size=(1,), device = device).item()),
-            int(torch.randint(198, 224, size=(1,), device = device).item()),]
-        botleft = [ int(torch.randint(0, 26, size=(1,), device = device).item()),
-            int(torch.randint(198, 224, size=(1,), device = device).item()),]
-        
-        x = TF.perspective(x, [[0, 0], [223, 0], [223, 223], [0, 223]], 
-                           [topleft, topright, botright, botleft],
-                           interpolation = TF.InterpolationMode.BILINEAR)
+        # Perspective Transformation
+        top_left = torch.randint(0, 26, (batch_size, 2), device=device) # 26 = int(0.225 * 112) + 1
+        top_right = torch.cat([torch.randint(198, 224, (batch_size, 1), device=device), torch.randint(0, 26, (batch_size, 1), device=device)], dim=1)
+        bottom_right = torch.randint(198, 224, (batch_size, 2), device=device)
+        bottom_left = torch.cat([torch.randint(0, 26, (batch_size, 1), device=device), torch.randint(198, 224, (batch_size, 1), device=device)], dim=1)
 
-        angle = torch.randint(-15, 16, (1,)).item() # Rotate
-        x = TF.rotate(x, angle, interpolation=TF.InterpolationMode.BILINEAR)
-        
-        i = torch.randint(0, 224 - 190 + 1, (1, ), device = device).item() # Crop
-        j = torch.randint(0, 224 - 190 + 1, (1, ), device = device).item()
-        x = x[..., i: i + 190, j: j + 190]
-        
-        x = TF.resize(x, [224, 224], interpolation = TF.InterpolationMode.BICUBIC) # Resize
+        startpoints = torch.tensor([[0, 0], [223, 0], [223, 223], [0, 223]], device=device).repeat(batch_size, 1, 1)
+        endpoints = torch.stack([top_left, top_right, bottom_right, bottom_left], dim=1)
+
+        # Use helper function for perspective transformation
+        x = self.apply_perspective(x, startpoints, endpoints)
+
+        # Rotate
+        angles = torch.randint(-16, 17, (batch_size,), device=device)
+        x = torch.stack([TF.rotate(img, angle.item(), interpolation=TF.InterpolationMode.BILINEAR) for img, angle in zip(x, angles)])
+
+        # Crop
+        i = torch.randint(0, 224 - 190 + 1, (batch_size,), device=device)
+        j = torch.randint(0, 224 - 190 + 1, (batch_size,), device=device)
+        x = torch.stack([img[:, i_: i_ + 190, j_: j_ + 190] for img, i_, j_ in zip(x, i, j)])
+
+        # Resize
+        x = TF.resize(x, [224, 224], interpolation=TF.InterpolationMode.BICUBIC)
         
         return x
+
+    @torch.jit.ignore
+    def apply_perspective(self, x: torch.Tensor, startpoints: torch.Tensor, endpoints: torch.Tensor) -> torch.Tensor:
+        batch_size = x.size(0)
+        x_list: List[torch.Tensor] = []
+        for i in range(batch_size):
+            img = x[i]
+            start = startpoints[i].tolist()
+            end = endpoints[i].tolist()
+            transformed_img = TF.perspective(img, start, end, interpolation=TF.InterpolationMode.BILINEAR)
+            x_list.append(transformed_img)
+        return torch.stack(x_list)
 
 class Resize(nn.Module):
 
@@ -104,7 +126,7 @@ class CIFAR10WithID(torchvision.datasets.CIFAR10):
 
 class DisributedLoader(DataLoader):
 
-    def __init__(self, data, batch_size, num_workers, rank, world_size, shuffle = False, prefetch_factor = 4):
+    def __init__(self, data, batch_size, num_workers, rank, world_size, shuffle = True, prefetch_factor = 4):
         self.rank = rank
         self.world_size = world_size
         self.sampler = DistributedSampler(data, num_replicas=world_size, rank=rank, shuffle=shuffle)

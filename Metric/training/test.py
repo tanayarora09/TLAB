@@ -57,6 +57,11 @@ def main(rank, world_size, name: str):
         print(T.metric_results())
         print(T.m.module.sparsity)
 
+    if (rank == 1):
+        import json
+        with open("./tmp/last_grads.json", "w") as f: 
+            json.dump(T.grad_captures, f, ensure_ascii = False, indent = 4)
+
     del T
 
     model = VGG(19)
@@ -97,7 +102,3 @@ def main(rank, world_size, name: str):
             plot_logs(logs[i], 12, name + f"_IMP_{((sparsities[i])):.1f}", 391) 
         logs_to_pickle(logs, name)
 
-    if (rank == 1):
-        import json
-        with open("./tmp/last_grads.json", "w") as f: 
-            json.dump(T.grad_captures, f, ensure_ascii = False, indent = 4)
