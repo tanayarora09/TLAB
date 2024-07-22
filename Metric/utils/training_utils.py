@@ -23,7 +23,7 @@ def plot_logs(logs, num_epochs, name, steps=196):
     plt.title("Learning Rate")
     plt.xlabel("Iterations")
     plt.legend()
-    plt.savefig(f'./PLOTS/learning_rate_plot_{name}.jpg')
+    plt.savefig(f'./logs/PLOTS/learning_rate_plot_{name}.jpg')
     plt.close()
     """
     
@@ -34,7 +34,7 @@ def plot_logs(logs, num_epochs, name, steps=196):
     plt.xlabel('Epochs')
     plt.legend()
     #plt.ylim(0, 15)
-    plt.savefig(f'./PLOTS/loss_plot_{name}.jpg')
+    plt.savefig(f'./logs/PLOTS/loss_plot_{name}.jpg')
     plt.close()
 
     # Plot accuracy
@@ -45,5 +45,5 @@ def plot_logs(logs, num_epochs, name, steps=196):
     plt.xlabel('Epochs')
     plt.ylim(0, 1.0)
     plt.legend()
-    plt.savefig(f'./PLOTS/accuracy_plot_{name}.jpg')
+    plt.savefig(f'./logs/PLOTS/accuracy_plot_{name}.jpg')
     plt.close()

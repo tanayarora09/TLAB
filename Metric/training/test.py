@@ -99,5 +99,5 @@ def main(rank, world_size, name: str):
 
     if (rank == 1):
         import json
-        with open("./tensor_swap/gradients/grads.json", "w") as f: 
+        with open("./tmp/last_grads.json", "w") as f: 
             json.dump(T.grad_captures, f, ensure_ascii = False, indent = 4)

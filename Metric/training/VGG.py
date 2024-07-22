@@ -272,7 +272,7 @@ class VGG_POC(VGG_IMP):
     def pre_IMP_hook(self, name: str):
         self.__CURR_IMP_ITER = 0
         self.NAME = name
-        open(f'tensor_swap/gradients/{name}.h5', 'w').close()
+        open(f'./tmp/swap/gradients/{name}.h5', 'w').close()
         return
 
     def post_IMP_hook(self):

@@ -321,7 +321,7 @@ class BaseCNNTrainer:
         Can be accessed with same name and prefix from load_ckpt.
         """
         if not self.IsRoot: return
-        fp = f"./WEIGHTS/{self.fromNamePrefix(name, prefix)}.pt"
+        fp = f"./logs/WEIGHTS/{self.fromNamePrefix(name, prefix)}.pt"
         ckpt = {'model': self.m.state_dict(),
                 'optim': self.optim.state_dict(),
                 'scaler': self.lossScaler.state_dict()}
@@ -333,7 +333,7 @@ class BaseCNNTrainer:
         Loads Model, Optimizer, and LossScaler state_dicts.
         Meant to be used with save_ckpt.
         """
-        fp = f"./WEIGHTS/{self.fromNamePrefix(name, prefix)}.pt"
+        fp = f"./logs/WEIGHTS/{self.fromNamePrefix(name, prefix)}.pt"
         ckpt = torch.load(fp, map_location = {'cuda:%d' % 0: 'cuda:%d' % self.RANK},
                           weights_only = True) # Assumes rank = 0 is Root.
         self.m.load_state_dict(ckpt['model'])
@@ -466,7 +466,7 @@ class BaseIMP(BaseCNNTrainer):
     @torch.no_grad()
     def export_ticket(self, name):
         if not self.IsRoot: return
-        with h5py.File(f"./TICKETS/{name}.h5", 'w') as f:
+        with h5py.File(f"./logs/TICKETS/{name}.h5", 'w') as f:
             for n, mask in self.m.named_buffers():   
                 if not n.endswith("mask"): continue
                 f.create_dataset(n, data = mask.detach().cpu().numpy())
@@ -476,7 +476,7 @@ class BaseIMP(BaseCNNTrainer):
     def load_ticket(self, name):
 
         if self.IsRoot:
-            with h5py.File(f"./TICKETS/{name}.h5", 'r') as f:
+            with h5py.File(f"./logs/TICKETS/{name}.h5", 'r') as f:
                 data = {n: torch.as_tensor(f[n][:], device = "cuda") for n, mask in self.m.named_buffers() if n.endswith("mask")}
         else:
             data = {n: torch.empty_like(mask) for n, mask in self.m.named_buffers() if n.endswith("mask")}

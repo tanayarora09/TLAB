@@ -22,7 +22,7 @@ def view_data(dataloader, rank, transforms):
             x = T(x)
 
         for i in range(len(x)):
-            save_individual_image(x[i], f"./DATAVIEWING/{rank}_{int(batch)}_{i}.png")
+            save_individual_image(x[i], f"./logs/DATAVIEWING/{rank}_{int(batch)}_{i}.png")
 
         if batch % 20 == 0 and rank == 0:
             print(batch)

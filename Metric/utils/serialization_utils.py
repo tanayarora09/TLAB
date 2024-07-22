@@ -3,11 +3,11 @@ import h5py
 import torch
 
 def logs_from_pickle(name):
-    with open(f"./PICKLES/{name}_logs.pickle", 'rb') as file:
+    with open(f"./logs/PICKLES/{name}_logs.pickle", 'rb') as file:
         return pickle.load(file)
 
 def logs_to_pickle(logs, name):
-    with open(f"./PICKLES/{name}_logs.pickle", 'wb') as file:
+    with open(f"./logs/PICKLES/{name}_logs.pickle", 'wb') as file:
         pickle.dump(logs, file, protocol=pickle.HIGHEST_PROTOCOL)
 
 @torch._dynamo.disable
@@ -15,7 +15,7 @@ def save_tensor(tensor, sub_directory: str, name: str, id: str):
     """
     Save tensor to tensor_swap directory under sub directory
     """
-    with h5py.File(f"./tensor_swap/{sub_directory}/{name}.h5", 'a') as f:
+    with h5py.File(f"./tmp/swap/{sub_directory}/{name}.h5", 'a') as f:
         if id in f:
             data = f[id]
             data[...] = tensor.numpy()
@@ -27,7 +27,7 @@ def read_tensor(sub_directory: str, name: str, id: str):
     """
     Read tensor from tensor_swap directory under sub_directory
     """
-    with h5py.File(f"./tensor_swap/{sub_directory}/{name}.h5", 'r') as f:
+    with h5py.File(f"./tmp/swap/{sub_directory}/{name}.h5", 'r') as f:
         return torch.as_tensor(f[id][:])
 
 def explore_h5(fp):
