@@ -33,10 +33,10 @@ def main(rank, world_size, name: str):
 
     del model
 
-    T.build(optimizer = torch.optim.SGD(T.m.parameters(), 0.1, momentum = 0.9, weight_decay = 5e-4),
+    T.build(optimizer = torch.optim.SGD(T.m.parameters(), 0.1, momentum = 0.9, weight_decay = 1e-3),
             loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
-            collective_transforms = (resize, ), train_transforms = (dataAug,),
-            eval_transforms = (center_crop,), final_collective_transforms = (normalize,),#[normalize],
+            collective_transforms = (resize, normalize), train_transforms = (dataAug,),
+            eval_transforms = (center_crop,), final_collective_transforms = tuple(),#[normalize],
             scale_loss = True, gradient_clipnorm = 2.0)
 
     print(all([param.device == torch.cuda.current_device] for name, param in T.m.named_buffers()))

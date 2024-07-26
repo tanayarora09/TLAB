@@ -400,7 +400,8 @@ class BaseIMP(BaseCNNTrainer):
     #------------------------------------------ LTH IMP FUNCTIONS -------------------------------------- #
 
     def TicketIMP(self, train_data: torch.utils.data.DataLoader, validation_data: torch.utils.data.DataLoader, 
-                  epochs_per_run: int, train_cardinality: int, name: str, prune_rate: float, prune_iters: int):
+                  epochs_per_run: int, train_cardinality: int, name: str, prune_rate: float, prune_iters: int,
+                  type: str = "rewind"):
 
         """
         Find Winning Ticket Through IMP with Rewinding. Calls Trainer.fit(); See description for argument requirements.
@@ -439,7 +440,7 @@ class BaseIMP(BaseCNNTrainer):
 
             self.export_ticket(f"{name}_IMP_{(current_sparsity):.1f}")
 
-            self.load_ckpt(name + f"_IMP_{(100.0):.1f}", prefix = "rewind") 
+            self.load_ckpt(name + f"_IMP_{(100.0):.1f}", prefix = type) 
 
             self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_IMP_{(current_sparsity):.1f}", isfirst = False)
 

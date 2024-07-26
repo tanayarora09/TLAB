@@ -9,6 +9,7 @@ from training.base import BaseIMP
 from utils.serialization_utils import read_tensor, save_tensor
 
 import math
+import os
 
 class VGG_IMP(BaseIMP):
 
@@ -81,6 +82,10 @@ class VGG_IMP(BaseIMP):
                 if iter == 500 and isfirst:
                     self.save_ckpt(name = name, prefix = "rewind")
 
+                self.post_step_hook(id[0])
+
+            self.post_train_hook()
+
             self.print(f"Training stage took {(time.time() - train_start):.1f} seconds.", 'yellow')
 
             val_start = time.time()
@@ -107,6 +112,8 @@ class VGG_IMP(BaseIMP):
 
             if epoch == 78 or epoch == 118: # Epochs 80, 120
                 self.reduce_learning_rate(10)
+
+            self.post_epoch_hook()
 
         return logs
 
@@ -138,7 +145,16 @@ class VGG_IMP(BaseIMP):
     def pre_epoch_hook(self, epoch: int):
         return
     
+    def post_epoch_hook(self):
+        return
+    
     def pre_step_hook(self, step: int, train_cardinality: int):
+        return
+
+    def post_step_hook(self):
+        return
+
+    def post_train_hook(self):
         return
     
     
@@ -173,10 +189,10 @@ class VGG_IMP(BaseIMP):
                             continue
 """
 
-class VGG_POC(VGG_IMP):
+class VGG_POC_GRAD(VGG_IMP):
 
     def __init__(self, model: torch.nn.parallel.DistributedDataParallel, rank: int):
-        super(VGG_POC, self).__init__(model, rank)
+        super(VGG_POC_GRAD, self).__init__(model, rank)
         self.IsGradRoot = rank == 1
 
     def build(self, *args, **kwargs):
@@ -282,6 +298,7 @@ class VGG_POC(VGG_IMP):
     def post_IMP_hook(self):
         self.__CURR_IMP_ITER = None
         self.__CURREPOCH = None
+        if self.IsMetricRoot: os.remove(f"./tmp/swap/gradients/{self.NAME}.h5")
 
         """
         tmp = [None] * dist.get_world_size()
@@ -292,3 +309,169 @@ class VGG_POC(VGG_IMP):
         """
 
         return 
+
+class VGG_POC_ACT(VGG_IMP):
+
+    def __init__(self, model: torch.nn.parallel.DistributedDataParallel, rank: int):
+        super(VGG_POC_ACT, self).__init__(model, rank)
+        self.IsMetricRoot = rank == 1
+
+    def build(self, *args, **kwargs):
+        super().build(*args, **kwargs)
+        self.act_captures = defaultdict(list) ### {IMP_ITER: [{id: score} for epochs]}
+        self.__CURR_IMP_ITER = None
+        self.__CURREPOCH = None
+
+    @torch.compile
+    def train_step(self, x: torch.Tensor, y: torch.Tensor, accum: bool = True, 
+                   accum_steps: int = 1):
+        
+        with torch.autocast('cuda', dtype = torch.float16, enabled = self.AMP):
+
+            output = self.m(x)
+            loss = self.criterion(output, y) #+ self.LD * self.calculate_custom_regularization()
+            loss /= accum_steps
+
+        if not accum:
+            
+            with self.m.no_sync():
+                self.lossScaler.scale(loss).backward()
+
+            return
+        
+        self.lossScaler.scale(loss).backward()
+
+        self.lossScaler.unscale_(self.optim)
+        torch.nn.utils.clip_grad_norm_(self.m.parameters(), max_norm = self.gClipNorm)
+
+        self.lossScaler.step(self.optim)
+        self.lossScaler.update()
+
+        self.optim.zero_grad(set_to_none = True)
+
+        with torch.no_grad():
+
+            self.loss_tr += loss
+            self.acc_tr += self.correct_k(output, y)
+            self.count_tr += y.size(dim = 0)
+        
+        return
+
+    def activation_log(self, id: str) -> None:
+
+        if not self.SAVE_METRICS or not self.IsMetricRoot: 
+            """if not isinstance(self.act_w, list):
+                self.act_w = list()
+            else:
+                self.act_w.clear()"""
+            return
+        
+        self.act_w = torch.cat(self.act_w)
+
+        if self.__CURR_IMP_ITER > 0:
+
+            full = read_tensor("activations", f"{self.NAME}", f"full_{str(self.__CURREPOCH)}_{id}")
+            curr = read_tensor("activations", f"{self.NAME}", f"curr_{str(self.__CURREPOCH)}_{id}")
+        
+            full_norm = torch.linalg.vector_norm(self.act_w - full, ord = 2)# Maybe Use L2
+            curr_norm = torch.linalg.vector_norm(self.act_w - curr, ord = 2)
+
+            self.act_captures[self.__CURR_IMP_ITER][self.__CURREPOCH][id] = (full_norm.item(), curr_norm.item())
+            
+        else:
+            save_tensor(self.act_w, "activations", f"{self.NAME}", f"full_{str(self.__CURREPOCH)}_{id}")
+        
+        save_tensor(self.act_w, "activations", f"{self.NAME}", f"curr_{str(self.__CURREPOCH)}_{id}")
+
+        self.act_w = list()
+
+        return
+
+    def pre_epoch_hook(self, epoch: int):
+        self.__CURREPOCH = epoch
+        return
+    
+    def pre_step_hook(self, step: int, train_cardinality: int):
+        self.SAVE_METRICS = ((step + 1) % 25 == 0 or (step + 1 == train_cardinality)) and (self.__CURREPOCH % 4 == 3) # Save Activations every 4th epoch, 16 times.
+        if self.SAVE_METRICS:
+            self.enable_act_hooks()
+        elif self._act_handles:
+            self.disable_act_hooks()
+        return
+    
+    def post_step_hook(self, id: str):
+        with torch.no_grad():
+            self.activation_log(id)
+        return 
+    
+    def post_prune_hook(self, iteration: int, num_epochs: int):
+        self.__CURR_IMP_ITER = iteration
+        self.act_captures[iteration] = [defaultdict(tuple)] * num_epochs
+        return
+
+    def pre_IMP_hook(self, name: str):
+        self.__CURR_IMP_ITER = 0
+        self.NAME = name
+        self.act_w = list()
+        self._act_handles = False
+        self.init_act_hooks()
+        self.disable_act_hooks()
+        if self.IsMetricRoot: open(f'./tmp/swap/activations/{name}.h5', 'w').close()
+        return
+
+    def post_train_hook(self):
+        self.disable_act_hooks()
+        return
+
+    def post_IMP_hook(self):
+        self.__CURR_IMP_ITER = None
+        self.__CURREPOCH = None
+
+        """
+        tmp = [None] * dist.get_world_size()
+        dist.gather_object(self.grad_captures,
+                           tmp if self.IsRoot else None,
+                           dst = 0)
+        self.grad_captures = tmp
+        """
+
+        if self.IsMetricRoot: os.remove(f"./tmp/swap/activations/{self.NAME}.h5")
+
+        return 
+
+    def disable_act_hooks(self):
+        for name, block in self.m.module.named_children():
+            for name, layer in block.named_children():
+                if name.endswith("relu"):
+                    layer.disable_fw_hooks()
+        self._act_handles = False
+        return 
+
+    def enable_act_hooks(self):
+        for name, block in self.m.module.named_children():
+            for name, layer in block.named_children():
+                if name.endswith("relu"):
+                    layer.enable_fw_hooks()
+        self._act_handles = True
+
+    def init_act_hooks(self):
+        for name, block in self.m.module.named_children():
+            for name, layer in block.named_children():
+                if name.endswith("relu"):
+                    layer.add_fw_hook(self._activation_hook)
+
+    @torch._dynamo.disable
+    def _activation_hook(self, module, input, output) -> None:
+        dist.barrier() # Considerable Slowdown
+        out = [torch.empty_like(output, dtype = torch.float64, device = "cuda", requires_grad = False) for _ in range(dist.get_world_size())] if self.IsMetricRoot else None
+        dist.gather(output.detach().to(torch.float64), out, dst = 1)
+        if not self.IsMetricRoot: return
+        out = torch.cat(out, dim = 0)
+        out = torch.mean(out, dim = 0, keepdim = True) # Average Pooling Reduce
+        self.act_w.append(out.view(-1).cpu())
+        return
+    
+    def sync_activations(self):
+        return 
+        #if not self.SAVE_METRICS: return
+        #return

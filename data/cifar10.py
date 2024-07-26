@@ -21,7 +21,7 @@ class DataAugmentation(nn.Module):
     Zoom
 
     """
-
+    
     def __init__(self):
         super(DataAugmentation, self).__init__()
 
@@ -34,25 +34,28 @@ class DataAugmentation(nn.Module):
         x[flip_mask] = TF.hflip(x[flip_mask])
 
         # Gaussian Noise
-        noise = torch.normal(0.0, 0.25, x.shape, device=device)
+        noise = torch.normal(0.0, 0.625, x.shape, device=device)
         x += noise
 
         # Brightness
         brightness_factors = torch.empty(batch_size, device=device).uniform_(0.85, 1.15)
         brightness_factors = brightness_factors.view(-1, 1, 1, 1)
-        x = x * brightness_factors
+        x *= brightness_factors
 
         # Perspective Transformation
-        top_left = torch.randint(0, 26, (batch_size, 2), device=device) # 26 = int(0.225 * 112) + 1
-        top_right = torch.cat([torch.randint(198, 224, (batch_size, 1), device=device), torch.randint(0, 26, (batch_size, 1), device=device)], dim=1)
-        bottom_right = torch.randint(198, 224, (batch_size, 2), device=device)
-        bottom_left = torch.cat([torch.randint(0, 26, (batch_size, 1), device=device), torch.randint(198, 224, (batch_size, 1), device=device)], dim=1)
+        top_left = torch.randint(0, 29, (batch_size, 2), device=device)
+        top_right = torch.cat([torch.randint(195, 224, (batch_size, 1), device=device), torch.randint(0, 29, (batch_size, 1), device=device)], dim=1)
+        bottom_right = torch.randint(195, 224, (batch_size, 2), device=device)
+        bottom_left = torch.cat([torch.randint(0, 29, (batch_size, 1), device=device), torch.randint(195, 224, (batch_size, 1), device=device)], dim=1)
 
         startpoints = torch.tensor([[0, 0], [223, 0], [223, 223], [0, 223]], device=device).repeat(batch_size, 1, 1)
         endpoints = torch.stack([top_left, top_right, bottom_right, bottom_left], dim=1)
 
-        # Use helper function for perspective transformation
-        x = self.apply_perspective(x, startpoints, endpoints)
+        # Convert to List[List[int]] compatible with TorchScript
+        startpoints_list: List[List[List[int]]] = startpoints.tolist()
+        endpoints_list: List[List[List[int]]] = endpoints.tolist()
+
+        x = torch.stack([TF.perspective(img, start, end, interpolation=TF.InterpolationMode.BILINEAR) for img, start, end in zip(x, startpoints_list, endpoints_list)])
 
         # Rotate
         angles = torch.randint(-16, 17, (batch_size,), device=device)
@@ -68,7 +71,7 @@ class DataAugmentation(nn.Module):
         
         return x
 
-    @torch.jit.ignore
+"""    @torch.jit.ignore
     def apply_perspective(self, x: torch.Tensor, startpoints: torch.Tensor, endpoints: torch.Tensor) -> torch.Tensor:
         batch_size = x.size(0)
         x_list: List[torch.Tensor] = []
@@ -78,7 +81,7 @@ class DataAugmentation(nn.Module):
             end = endpoints[i].tolist()
             transformed_img = TF.perspective(img, start, end, interpolation=TF.InterpolationMode.BILINEAR)
             x_list.append(transformed_img)
-        return torch.stack(x_list)
+        return torch.stack(x_list)"""
 
 class Resize(nn.Module):
 
@@ -126,7 +129,7 @@ class CIFAR10WithID(torchvision.datasets.CIFAR10):
 
 class DisributedLoader(DataLoader):
 
-    def __init__(self, data, batch_size, num_workers, rank, world_size, shuffle = True, prefetch_factor = 4):
+    def __init__(self, data, batch_size, num_workers, rank, world_size, shuffle = False, prefetch_factor = 4):
         self.rank = rank
         self.world_size = world_size
         self.sampler = DistributedSampler(data, num_replicas=world_size, rank=rank, shuffle=shuffle)
