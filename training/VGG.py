@@ -322,9 +322,9 @@ class VGG_POC_ACT(VGG_IMP):
         self.__CURR_IMP_ITER = None
         self.__CURREPOCH = None
 
-    @torch.compile
+    @torch.compile 
     def train_step(self, x: torch.Tensor, y: torch.Tensor, accum: bool = True, 
-                   accum_steps: int = 1, id: str = None):
+                   accum_steps: int = 1, id: str = None): # NO CHANGE, COULD REMOVE WITH NO PENALTY
         
         with torch.autocast('cuda', dtype = torch.float16, enabled = self.AMP):
 

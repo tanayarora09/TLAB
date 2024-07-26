@@ -25,7 +25,7 @@ class HookedReLU(nn.Module):
         o = nn.functional.relu(x)
         if self.isEnabled:
             for H in self.__HOOKS_: H(self, x, o)
-        return x
+        return o
     
     def enable_fw_hooks(self):
         self.isEnabled = True

@@ -44,5 +44,5 @@ if __name__ == "__main__":
 
     name = sys.argv[1]
 
-    from training import train
-    main(train.main, name)
+    from training import test
+    main(test.main, name)
