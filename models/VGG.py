@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from typing import Tuple
+from typing import Tuple, Callable
 
 from models.LotteryLayers import LotteryConv2D, LotteryDense
 from models.base import BaseModel
@@ -13,6 +13,32 @@ modelcfgs = {
 }
 
 valid = (11, 13, 16, 19)
+
+class HookedReLU(nn.Module):
+
+    def __init__(self, *args, **kwargs):
+        super(HookedReLU, self).__init__(*args, **kwargs)
+        self.__HOOKS_ = list()
+        self.isEnabled = False
+
+    def forward(self, x):
+        o = nn.functional.relu(x)
+        if self.isEnabled:
+            for H in self.__HOOKS_: H(self, x, o)
+        return x
+    
+    def enable_fw_hooks(self):
+        self.isEnabled = True
+
+    def disable_fw_hooks(self):
+        self.isEnabled = False
+
+    def init_fw_hook(self, hook: Callable):
+        self.__HOOKS_.append(hook)
+
+    def remove_fw_hooks(self):
+        self.__HOOKS_.clear()
+    
 
 class VGG(BaseModel):
 
@@ -31,7 +57,7 @@ class VGG(BaseModel):
             
             self.register_module("norm", nn.BatchNorm2d(num_filters, track_running_stats = False))
 
-            self.register_module("relu", nn.ReLU())
+            self.register_module("relu", HookedReLU())
 
             #self.get_parameter("norm.weight").data = torch.rand(self.get_parameter("norm.weight").shape) # Reinit BN 
 
@@ -42,7 +68,7 @@ class VGG(BaseModel):
         
     class OutBlock(nn.Module):
 
-        def __init__(self, in_features: int, dropout: float):
+        def __init__(self, in_features: int):
 
             super(VGG.OutBlock, self).__init__()
 
@@ -85,7 +111,7 @@ class VGG(BaseModel):
                 curr_num += 1
                 input_channels = value
 
-        self.out = self.OutBlock(512, 0.0)
+        self.out = self.OutBlock(512)
 
         self.init_prune_info()
     

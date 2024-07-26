@@ -324,7 +324,7 @@ class VGG_POC_ACT(VGG_IMP):
 
     @torch.compile
     def train_step(self, x: torch.Tensor, y: torch.Tensor, accum: bool = True, 
-                   accum_steps: int = 1):
+                   accum_steps: int = 1, id: str = None):
         
         with torch.autocast('cuda', dtype = torch.float16, enabled = self.AMP):
 
@@ -458,7 +458,7 @@ class VGG_POC_ACT(VGG_IMP):
         for name, block in self.m.module.named_children():
             for name, layer in block.named_children():
                 if name.endswith("relu"):
-                    layer.add_fw_hook(self._activation_hook)
+                    layer.init_fw_hook(self._activation_hook)
 
     @torch._dynamo.disable
     def _activation_hook(self, module, input, output) -> None:
