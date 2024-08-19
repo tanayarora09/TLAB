@@ -49,7 +49,7 @@ def main(rank, world_size, name: str):
 
     dt, dv = get_loaders(rank, world_size, iterate = True) 
     
-    logs = T.TicketIMP(dt, dv, 160, 391, name, 0.8, 19, type = "rewind")
+    logs = T.TicketIMP(dt, dv, 4, 391, name, 0.8, 3, type = "rewind")
 
     T.evaluate(dt)
 
@@ -82,5 +82,5 @@ def main(rank, world_size, name: str):
     if (rank == 0):
         print(T.metric_results())
         for i in range(len(logs)):
-            plot_logs(logs[i][0], 160, name + f"_IMP_{((logs[i][1])):.1f}", 391) 
+            plot_logs(logs[i][0], 4, name + f"_IMP_{((logs[i][1])):.1f}", 391) 
         logs_to_pickle(logs, name)
