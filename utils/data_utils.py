@@ -15,7 +15,9 @@ def save_individual_image(image, fp):
 
 def view_data(dataloader, rank, transforms):
 
-    for batch, (x, y, *_) in enumerate(dataloader):
+    for batch, (x, y, *a) in enumerate(dataloader):
+
+        print(a)
 
         x, y = x.to('cuda'), y.to('cuda')
 

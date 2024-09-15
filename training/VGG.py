@@ -82,6 +82,7 @@ class VGG_IMP(BaseIMP):
                 if iter == 500 and isfirst:
                     self.save_ckpt(name = name, prefix = "rewind")
 
+
                 self.post_step_hook(id[0])
 
             self.post_train_hook()
@@ -151,7 +152,7 @@ class VGG_IMP(BaseIMP):
     def pre_step_hook(self, step: int, train_cardinality: int):
         return
 
-    def post_step_hook(self):
+    def post_step_hook(self, *args):
         return
 
     def post_train_hook(self):
