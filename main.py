@@ -20,7 +20,7 @@ def cleanup_distribute():
 def dist_wrapper(rank, world_size, func, name: str):
     setup_distribute(rank, world_size)
     torch.cuda.set_device(rank)
-    set_deterministic()
+    reset_deterministic()
     try:
         func(rank, world_size, name)
     finally:
@@ -35,8 +35,7 @@ def set_dynamo_cfg():
 def set_non_deterministic():
     torch.backends.cudnn.benchmark = True
 
-def set_deterministic():
-    torch.manual_seed(42)
+def reset_deterministic():
     import random
     import numpy as np
     random.seed(42)
@@ -61,3 +60,5 @@ if __name__ == "__main__":
 
     from training import deterministic_test
     main(deterministic_test.main, name)
+    main(deterministic_test.main, name + "2")
+    

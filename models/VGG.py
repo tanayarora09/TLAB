@@ -4,6 +4,7 @@ from typing import Tuple, Callable
 
 from models.LotteryLayers import LotteryConv2D, LotteryDense
 from models.base import BaseModel
+from models.HelperLayers import HReLU, FakeHReLU
 
 modelcfgs = {
     11: [64, 'M', 128, 'M', 256, 256, 'M', 512, 512, 'M', 512, 512],
@@ -13,31 +14,6 @@ modelcfgs = {
 }
 
 valid = (11, 13, 16, 19)
-
-class HookedReLU(nn.Module):
-
-    def __init__(self, *args, **kwargs):
-        super(HookedReLU, self).__init__(*args, **kwargs)
-        self.__HOOKS_ = list()
-        self.isEnabled = False
-
-    def forward(self, x):
-        o = nn.functional.relu(x)
-        if self.isEnabled:
-            for H in self.__HOOKS_: H(self, x, o)
-        return o
-    
-    def enable_fw_hooks(self):
-        self.isEnabled = True
-
-    def disable_fw_hooks(self):
-        self.isEnabled = False
-
-    def init_fw_hook(self, hook: Callable):
-        self.__HOOKS_.append(hook)
-
-    def remove_fw_hooks(self):
-        self.__HOOKS_.clear()
     
 
 class VGG(BaseModel):
@@ -57,7 +33,7 @@ class VGG(BaseModel):
             
             self.register_module("norm", nn.BatchNorm2d(num_filters, track_running_stats = False))
 
-            self.register_module("relu", HookedReLU())
+            self.register_module("relu", HReLU())
 
             #self.get_parameter("norm.weight").data = torch.rand(self.get_parameter("norm.weight").shape) # Reinit BN 
 
@@ -75,6 +51,7 @@ class VGG(BaseModel):
             self.register_module("gap", nn.AdaptiveAvgPool2d((1, 1)))
             #self.register_module("drop", nn.Dropout(dropout))
             #self.register_module("norm", nn.BatchNorm1d(in_features))
+            self.register_module("frelu", FakeHReLU())
             self.register_module("fc", nn.Linear(in_features, 10))
 
             #self.get_parameter("norm.weight").data = torch.rand(self.get_parameter("norm.weight").shape)
@@ -85,6 +62,7 @@ class VGG(BaseModel):
             #x = self.get_submodule("drop")(x)
             #x = self.get_submodule("norm")(x)
             x = self.get_submodule("fc")(x)
+            x = self.get_submodule("frelu")(x)
             return x
 
     def __init__(self, depth: int = 19, input_channels: int = 3):
@@ -113,7 +91,7 @@ class VGG(BaseModel):
 
         self.out = self.OutBlock(512)
 
-        self.init_prune_info()
+        self.init_base()
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         

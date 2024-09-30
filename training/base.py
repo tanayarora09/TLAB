@@ -13,6 +13,7 @@ import math
 
 import h5py
 from models.LotteryLayers import Lottery
+from models.base import BaseModel
 
 class BaseCNNTrainer:
 
@@ -25,6 +26,7 @@ class BaseCNNTrainer:
         Default cuda device should be set.
         """
         self.m = model
+        self.mm: BaseModel  = model.module
         self.RANK = rank
         self.IsRoot = rank == 0
 
@@ -153,7 +155,7 @@ class BaseCNNTrainer:
     #------------------------------------------ MAIN TRAIN FUNCTIONS -------------------------------------- #
 
     def fit(self, train_data: torch.utils.data.DataLoader, validation_data: torch.utils.data.DataLoader,
-            epochs: int, train_cardinality: int, name: str, accumulation_steps: int = 1) -> dict:
+            epochs: int, train_cardinality: int, name: str, accumulation_steps: int = 1, save: bool = True) -> dict:
         """
         Basic Training Run Implementation.
         Override by Copy and Pasting.
@@ -166,7 +168,7 @@ class BaseCNNTrainer:
 
         logs = defaultdict(dict)
         self.reset_metrics()
-        self.save_ckpt(name = name, prefix = "init")
+        if save: self.save_ckpt(name = name, prefix = "init")
         
         best_val_loss = float('inf')
 
@@ -179,14 +181,18 @@ class BaseCNNTrainer:
             train_start = time.time()
             self.m.train()
 
+            self.pre_epoch_hook(epoch)
+
             accum = False
 
             self.reset_metrics()
 
-            for step, (x, y) in enumerate(train_data):
+            for step, (x, y, *_) in enumerate(train_data):
 
                 iter = int(epoch * train_cardinality + step + 1)
                 accum = ((step + 1) % accumulation_steps == 0) or (step + 1 == train_cardinality)
+
+                self.pre_step_hook(step, train_cardinality)
 
                 x, y = x.to('cuda'), y.to('cuda')
 
@@ -208,12 +214,18 @@ class BaseCNNTrainer:
                             
                             self.print(f"----  Status at {math.ceil((step + 1) / 48):.0f}/8: ----     Accuracy: {logs[iter]['accuracy']:.4f}   --  Loss: {logs[iter]['loss']:.5f} --", 'white')
 
-                if iter == 500:
+                if iter == 500 and save:
                     self.save_ckpt(name = name, prefix = "rewind")
+
+                self.post_step_hook(*_)
+
+            self.post_train_hook()
 
             self.print(f"Training stage took {(time.time() - train_start):.1f} seconds.", 'yellow')
 
             val_start = time.time()
+
+            validation_data.sampler.set_epoch(epoch)
 
             self.evaluate(validation_data)
 
@@ -233,7 +245,8 @@ class BaseCNNTrainer:
 
                 self.print(f"Validation stage took {(time.time() - val_start):.1f} seconds. \nTotal for Epoch: {(time.time() - train_start):.1f} seconds.", 'yellow')
 
-        
+            self.post_epoch_hook(epoch)
+
         return logs
  
 
@@ -270,6 +283,24 @@ class BaseCNNTrainer:
             self.count_tr += y.size(dim = 0)
         
         return
+    
+
+    #------------------------------------------ TRAINING HOOKS ----------------------------------------------- #
+
+    def pre_epoch_hook(self, epoch: int) -> None:
+        pass
+    
+    def post_epoch_hook(self) -> None:
+        pass
+    
+    def pre_step_hook(self, step: int, steps_per_epoch: int) -> None:
+        pass
+
+    def post_step_hook(self, *args) -> None:
+        pass
+
+    def post_train_hook(self) -> None:
+        pass
 
     #------------------------------------------ MAIN EVALUATE FUNCTIONS -------------------------------------- #
 
@@ -284,7 +315,7 @@ class BaseCNNTrainer:
         self.m.eval()
         self.reset_metrics()
 
-        for x, y in test_data:
+        for x, y, *_ in test_data:
 
             x, y = x.to('cuda'), y.to('cuda')
             
@@ -303,7 +334,7 @@ class BaseCNNTrainer:
     def test_step(self, x: torch.Tensor, y: torch.Tensor) -> None:
 
         output = self.m(x)
-        loss = self.criterion(output, y)  #+ self.LD * self.calculate_custom_regularization()
+        loss = self.criterion(output, y)
 
         self.loss_tr += loss
         self.acc_tr += self.correct_k(output, y)
@@ -360,7 +391,7 @@ class BaseCNNTrainer:
         Prints torchinfo summary of model.
         """
         if not self.IsRoot: return
-        torchinfo.summary(self.m.module, (batch_size, 3, 224, 224))
+        torchinfo.summary(self.mm, (batch_size, 3, 224, 224))
 
     ### Training
 
@@ -376,26 +407,15 @@ class BaseCNNTrainer:
         for pg in self.optim.param_groups:
             pg['lr'] /= factor
 
-    ### Metrics
-
-    @torch.compile
-    def calculate_custom_regularization(self):
-        running_regularization_loss = torch.as_tensor(0.0, device = "cuda")
-        for name, buffer in self.m.named_buffers():
-            if not name.endswith("mask"): continue
-            running_regularization_loss += torch.norm(buffer * self.m.get_parameter(name[:-5]), p = 2)
-        for name, param in self.m.named_parameters():
-            if name.endswith("bias") or "out" in name and "norm" not in name:
-                running_regularization_loss += torch.norm(param, p = 2)
-        return running_regularization_loss
-
-
-
 
 
 
 
 class BaseIMP(BaseCNNTrainer):
+
+    def __init__(self, model: torch.nn.parallel.DistributedDataParallel, rank: int):
+        super(BaseIMP, self).__init__(model, rank)
+        self.IsTicketRoot = rank == 2
 
     #------------------------------------------ LTH IMP FUNCTIONS -------------------------------------- #
 
@@ -422,15 +442,15 @@ class BaseIMP(BaseCNNTrainer):
         
         self.pre_IMP_hook(name)
 
-        self.print(f"RUNNING IMP ON {self.m.module.num_prunable} PRUNABLE WEIGHTS.", "purple")
+        self.print(f"RUNNING IMP ON {self.mm.num_prunable} PRUNABLE WEIGHTS.", "purple")
 
-        total_logs[0] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_IMP_{(current_sparsity):.1f}", isfirst = True)
+        total_logs[0] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_IMP_{(current_sparsity):.1f}", save = True)
         
         for iteration in range(1, prune_iters + 1):
             
-            self.prune_by_mg(prune_rate, iteration)
+            self.mm.prune_by_mg(prune_rate, iteration)
             
-            current_sparsity = self.m.module.sparsity
+            current_sparsity = self.mm.sparsity
 
             sparsities[iteration] = current_sparsity
 
@@ -438,65 +458,23 @@ class BaseIMP(BaseCNNTrainer):
 
             self.post_prune_hook(iteration, epochs_per_run)
 
-            self.export_ticket(f"{name}_IMP_{(current_sparsity):.1f}")
+            self.mm.export_ticket(f"{name}_IMP_{(current_sparsity):.1f}")
 
             self.load_ckpt(name + f"_IMP_{(100.0):.1f}", prefix = type) 
 
-            self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_IMP_{(current_sparsity):.1f}", isfirst = False)
+            self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_IMP_{(current_sparsity):.1f}", save = False)
 
         self.post_IMP_hook()
 
         return total_logs, sparsities
+        
+    #--------------------------------------------------------------- IMP HOOKS --------------------------------------------------------------#
+    
+    def pre_IMP_hook(self, name: str) -> None:
+        pass    
 
+    def post_IMP_hook(self) -> None:
+        pass
 
-    def prune_by_mg(self, rate: float, iteration: float):
-
-        all_weights = torch.cat([(self.m.get_parameter(name[:-5]) * buffer).reshape([-1]) for name, buffer in self.m.named_buffers() if name.endswith("mask")], dim = 0)
-
-        threshold = np.quantile(all_weights.abs_().detach().cpu().numpy(), q = 1.0 - rate ** iteration, method = "higher")
-
-        for name, buffer in self.m.named_buffers():
-
-            if not name.endswith("mask"): continue
-
-            buffer.copy_((self.m.get_parameter(name[:-5]).abs().ge(threshold)).to(torch.float32))
-
-        return 
-
-    @torch._dynamo.disable
-    @torch.no_grad()
-    def export_ticket(self, name):
-        if not self.IsRoot: return
-        with h5py.File(f"./logs/TICKETS/{name}.h5", 'w') as f:
-            for n, mask in self.m.named_buffers():   
-                if not n.endswith("mask"): continue
-                f.create_dataset(n, data = mask.detach().cpu().numpy())
-
-    @torch._dynamo.disable         
-    @torch.no_grad()
-    def load_ticket(self, name):
-
-        if self.IsRoot:
-            with h5py.File(f"./logs/TICKETS/{name}.h5", 'r') as f:
-                data = {n: torch.as_tensor(f[n][:], device = "cuda") for n, mask in self.m.named_buffers() if n.endswith("mask")}
-        else:
-            data = {n: torch.empty_like(mask) for n, mask in self.m.named_buffers() if n.endswith("mask")}
-
-        for n, tensor in data.items():
-
-            dist.broadcast(tensor, src=0)
-
-            for buffer_name, mask in self.m.named_buffers():
-                if buffer_name == n:
-                    mask.copy_(tensor)
-
-            dist.barrier()        
-
-    def pre_IMP_hook(self, name: str):
-        return    
-
-    def post_IMP_hook(self):
-        return
-
-    def post_prune_hook(self, iteration: int, num_epochs: int):
-        return
+    def post_prune_hook(self, iteration: int, num_epochs: int) -> None:
+        pass
