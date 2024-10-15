@@ -155,7 +155,7 @@ class BaseCNNTrainer:
     #------------------------------------------ MAIN TRAIN FUNCTIONS -------------------------------------- #
 
     def fit(self, train_data: torch.utils.data.DataLoader, validation_data: torch.utils.data.DataLoader,
-            epochs: int, train_cardinality: int, name: str, accumulation_steps: int = 1, save: bool = True) -> dict:
+            epochs: int, train_cardinality: int, name: str, accumulation_steps: int = 1, save: bool = True, verbose: bool = True) -> dict:
         """
         Basic Training Run Implementation.
         Override by Copy and Pasting.
@@ -210,7 +210,7 @@ class BaseCNNTrainer:
                         
                         if self.IsRoot: logs[iter] = self.metric_results()
                         
-                        if (step + 1) % 48 == 0 and self.IsRoot:
+                        if (step + 1) % 48 == 0 and self.IsRoot and verbose:
                             
                             self.print(f"----  Status at {math.ceil((step + 1) / 48):.0f}/8: ----     Accuracy: {logs[iter]['accuracy']:.4f}   --  Loss: {logs[iter]['loss']:.5f} --", 'white')
 
@@ -330,7 +330,7 @@ class BaseCNNTrainer:
         return
 
     @torch.compile
-    @torch.no_grad
+    @torch.no_grad()
     def test_step(self, x: torch.Tensor, y: torch.Tensor) -> None:
 
         output = self.m(x)
@@ -380,7 +380,7 @@ class BaseCNNTrainer:
         Prints with color. Make sure input has a __repr__ attribute.
         """
         if not self.RANK == rank: return
-        torch._print(self._COLORS[color] + str(input) + self._COLORS["reset"])
+        print(self._COLORS[color] + str(input) + self._COLORS["reset"])
         return
     
     def fromNamePrefix(self, name: str, prefix: str):
@@ -436,15 +436,17 @@ class BaseIMP(BaseCNNTrainer):
         
         total_logs = defaultdict()
         
-        sparsities = [None] * (prune_iters + 1)
+        sparsities_d = [None] * (prune_iters + 1)
         current_sparsity = 100.0
-        sparsities[0] = current_sparsity
-        
+        sparsities_d[0] = current_sparsity / 100
+
+        h5py.File(f"./logs/TICKETS/{name}.h5", "w").close() # For logging tickets.
+
         self.pre_IMP_hook(name)
 
         self.print(f"RUNNING IMP ON {self.mm.num_prunable} PRUNABLE WEIGHTS.", "purple")
 
-        total_logs[0] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_IMP_{(current_sparsity):.1f}", save = True)
+        total_logs[0] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_{(100.0):.1f}", save = True, verbose = False)
         
         for iteration in range(1, prune_iters + 1):
             
@@ -452,22 +454,27 @@ class BaseIMP(BaseCNNTrainer):
             
             current_sparsity = self.mm.sparsity
 
-            sparsities[iteration] = current_sparsity
+            sparsities_d[iteration] = current_sparsity.item() / 100
 
             self.print(f"SPARSITY: {current_sparsity:.1f}", "purple")
 
             self.post_prune_hook(iteration, epochs_per_run)
 
-            self.mm.export_ticket(f"{name}_IMP_{(current_sparsity):.1f}")
+            self.mm.export_ticket(name, entry_name = f"{(current_sparsity):.1f}")
 
-            self.load_ckpt(name + f"_IMP_{(100.0):.1f}", prefix = type) 
+            dist.barrier()
 
-            self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_IMP_{(current_sparsity):.1f}", save = False)
+            self.load_ckpt(name + f"_{(100.0):.1f}", prefix = type) 
+
+            dist.barrier()
+
+            total_logs[iteration] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, 
+                                             name + f"_{(current_sparsity):.1f}", save = False, verbose = False)
 
         self.post_IMP_hook()
 
-        return total_logs, sparsities
-        
+        return total_logs, sparsities_d
+    
     #--------------------------------------------------------------- IMP HOOKS --------------------------------------------------------------#
     
     def pre_IMP_hook(self, name: str) -> None:

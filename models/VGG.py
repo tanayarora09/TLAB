@@ -22,8 +22,8 @@ class VGG(BaseModel):
     
         def __init__(self, input_channels: int, 
                         num_filters: int, 
-                        kernel_size: Tuple[int, int] = (3, 3), 
-                        stride: Tuple[int, int] = (1, 1), 
+                        kernel_size: int = 3, 
+                        stride: int = 1, 
                         padding: str = "same"): 
             
             super(VGG.ConvBN, self).__init__()

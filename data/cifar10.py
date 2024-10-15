@@ -5,6 +5,8 @@ import torchvision
 from torchvision.transforms.v2 import functional as TF
 from PIL import Image
 
+import random
+
 from typing import List
 
 from utils.data_utils import jitToList2D

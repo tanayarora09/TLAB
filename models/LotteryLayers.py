@@ -39,14 +39,15 @@ class LotteryConv2D(nn.Conv2d, Lottery):
         self,
         in_channels,
         out_channels,
-        kernel_size = 3,
-        stride = (1, 1),
+        kernel_size: int = 3,
+        stride: int = 1,
         padding = 'same'
     ):
-        super(LotteryConv2D, self).__init__(in_channels, out_channels, (kernel_size, kernel_size), stride, padding = padding, bias = False)
         self.MASK_SHAPE = (out_channels, in_channels, kernel_size, kernel_size)
         self.MASK_NUMEL = in_channels * out_channels * kernel_size * kernel_size
         self.MASKED_NAME = "weight"
+        self.weight_mask = torch.empty(*self.MASK_SHAPE, dtype = torch.bool, device = "cuda")
+        super(LotteryConv2D, self).__init__(in_channels, out_channels, kernel_size = kernel_size, stride = stride, padding = padding, bias = False)
     
     @torch.no_grad()
     def update_mask(self, mask: torch.Tensor, offset: int):
