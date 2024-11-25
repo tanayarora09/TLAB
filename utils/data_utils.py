@@ -13,7 +13,7 @@ def save_individual_image(image, fp):
     plt.savefig(fp, bbox_inches='tight')
     plt.close()
 
-def view_data(dataloader, rank, transforms):
+def view_data(dataloader, rank, transforms, cap: int = 391):
 
     for batch, (x, y, *a) in enumerate(dataloader):
 
@@ -30,6 +30,9 @@ def view_data(dataloader, rank, transforms):
 
         if batch % 20 == 0 and rank == 0:
             print(batch)
+
+        if batch == cap:
+            break
 
     return
 

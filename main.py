@@ -23,6 +23,7 @@ def cleanup_distribute():
 def dist_wrapper(rank, world_size, func, name: str, SEED: int):
     setup_distribute(rank, world_size)
     torch.cuda.set_device(rank)
+    set_dynamo_cfg()
     reset_deterministic(SEED)
     try:
         func(rank, world_size, name)
@@ -63,9 +64,18 @@ if __name__ == "__main__":
     print("SEED: ", SEED)
     print("--------------------------------------------------------------")
 
-    set_dynamo_cfg()
+    with open(f"./logs/SEEDS/{name}_SEED.txt", "w") as f:
+        f.write(str(SEED))
 
+    """
+    from training import test, test2
+
+    main(test.main, name, SEED)
+    main(test2.main, name, SEED)
+    """
+    
+    #"""
     from training import POC_1, POC_2
     main(POC_1.main, name + "1", SEED)
     main(POC_2.main, name + "2", SEED)
-    
+    #"""

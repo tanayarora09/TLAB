@@ -5,6 +5,7 @@ import torch.distributed as dist
 import numpy as np
 
 import torchinfo
+from tqdm import tqdm
 
 from typing import Callable, Tuple
 from collections import defaultdict
@@ -92,65 +93,65 @@ class BaseCNNTrainer:
         }
 
     #------------------------------------------ MAIN METRIC FUNCTIONS -------------------------------------- #
-
-    @torch.no_grad()
+    
     def correct_k(self, output: torch.Tensor, labels: torch.Tensor, topk: int = 1) -> torch.Tensor:
         """
         Returns number of correct prediction.
         Deprecates output tensor.
         """
-        _, output = output.topk(topk, 1)
-        output.t_()
-        output.eq_(labels.view(1, -1).expand_as(output))
-        return output[:topk].view(-1).to(torch.int64).sum(0)
+        with torch.no_grad():
+            _, output = output.topk(topk, 1)
+            output.t_()
+            output.eq_(labels.view(1, -1).expand_as(output))
+            return output[:topk].view(-1).to(torch.int64).sum(0)
 
-    @torch.no_grad()
     def metric_results(self) -> dict[str, float]:
         """
         Return Loss and Accuracy. 
         Should be called from root process.
         """
-        return {"loss": (self.eloss.div(self.ecount).detach().item()),
+        with torch.no_grad():
+            return {"loss": (self.eloss.div(self.ecount).detach().item()),
                 "accuracy": (self.eacc.div(self.ecount).detach().item())}
     
-    @torch.no_grad()
     def reset_metrics(self):
-        self.eloss.fill_(0.0)
-        self.eacc.fill_(0)
-        self.ecount.fill_(0)
-        self.reset_running_metrics()
+        with torch.no_grad():
+            self.eloss.fill_(0.0)
+            self.eacc.fill_(0)
+            self.ecount.fill_(0)
+            self.reset_running_metrics()
 
-    @torch.no_grad()
     def reset_running_metrics(self):
         """
         Reset Loss, Accuracy, and Sample Count.
         Should be called from all processes.
         """
-        self.loss_tr.fill_(0.0)
-        self.acc_tr.fill_(0)
-        self.count_tr.fill_(0)
+        with torch.no_grad():
+            self.loss_tr.fill_(0.0)
+            self.acc_tr.fill_(0)
+            self.count_tr.fill_(0)
     
-    @torch.no_grad()
     def transfer_metrics(self):
         """
         Move from running metrics.
         This
         """
-        self._collect_metrics()
-        self.eloss += self.loss_tr
-        self.eacc += self.acc_tr
-        self.ecount += self.count_tr
-        self.reset_running_metrics()
+        with torch.no_grad():
+            self._collect_metrics()
+            self.eloss += self.loss_tr
+            self.eacc += self.acc_tr
+            self.ecount += self.count_tr
+            self.reset_running_metrics()
 
-    @torch.no_grad()
     def _collect_metrics(self):
         """
         Collects Loss, Accuracy, and Sample Count.
         Do not directly call. Use transfer_metrics instead.
         """
-        dist.all_reduce(self.loss_tr, op = dist.ReduceOp.SUM)
-        dist.all_reduce(self.acc_tr, op = dist.ReduceOp.SUM)
-        dist.all_reduce(self.count_tr, op = dist.ReduceOp.SUM)
+        with torch.no_grad():
+            dist.all_reduce(self.loss_tr, op = dist.ReduceOp.SUM)
+            dist.all_reduce(self.acc_tr, op = dist.ReduceOp.SUM)
+            dist.all_reduce(self.count_tr, op = dist.ReduceOp.SUM)
 
     #------------------------------------------ MAIN TRAIN FUNCTIONS -------------------------------------- #
 
@@ -166,18 +167,23 @@ class BaseCNNTrainer:
 
         """
 
+        if self.IsRoot: 
+            progress_bar = tqdm(total = epochs, unit = "epoch", colour = "green", bar_format="{l_bar}{bar:25}{r_bar}{bar:-25b}", leave = False)
+            print("\n\n\n\n")
+
         logs = defaultdict(dict)
         self.reset_metrics()
         if save: self.save_ckpt(name = name, prefix = "init")
         
         best_val_loss = float('inf')
+        best_epoch = 1
 
         train_start = None
         val_start = None
 
         for epoch in range(epochs):
 
-            self.print(f"\nStarting Epoch {epoch + 1}\n", 'red')
+            #if verbose: self.print(f"\nStarting Epoch {epoch + 1}\n", 'red')
             train_start = time.time()
             self.m.train()
 
@@ -186,6 +192,8 @@ class BaseCNNTrainer:
             accum = False
 
             self.reset_metrics()
+
+            train_data.sampler.set_epoch(epoch)
 
             for step, (x, y, *_) in enumerate(train_data):
 
@@ -202,6 +210,8 @@ class BaseCNNTrainer:
 
                 self.train_step(x, y, accum, accumulation_steps)
 
+                self.post_step_hook(x = x, y = y, _ = _)
+
                 if accum:
                     
                     if (step + 1) % 24 == 0 or (step + 1 == train_cardinality): # Synchronize and Log.
@@ -217,11 +227,9 @@ class BaseCNNTrainer:
                 if iter == 500 and save:
                     self.save_ckpt(name = name, prefix = "rewind")
 
-                self.post_step_hook(*_)
-
             self.post_train_hook()
 
-            self.print(f"Training stage took {(time.time() - train_start):.1f} seconds.", 'yellow')
+            #if verbose: self.print(f"Training stage took {(time.time() - train_start):.1f} seconds.", 'yellow')
 
             val_start = time.time()
 
@@ -233,24 +241,38 @@ class BaseCNNTrainer:
 
                 logs[(epoch + 1) * train_cardinality].update({('val_' + k): v for k, v in self.metric_results().items()})
 
-                self.print(f"\n||| EPOCH {epoch + 1} |||\n", 'orange')
-
-                for k, v in logs[(epoch + 1) * train_cardinality].items():
-                    self.print(f"\t{k}: {v:.6f}", 'cyan')
-
                 if logs[(epoch + 1) * train_cardinality]['val_loss'] < best_val_loss:
                     best_val_loss = logs[(epoch + 1) * train_cardinality]['val_loss']
-                    self.print(f"\n -- UPDATING BEST WEIGHTS TO {epoch + 1} -- \n", "magenta")
+                    #if verbose: self.print(f"\n -- UPDATING BEST WEIGHTS TO {epoch + 1} -- \n", "magenta")
+                    best_epoch = epoch + 1
                     self.save_ckpt(name = name, prefix = "best")
 
-                self.print(f"Validation stage took {(time.time() - val_start):.1f} seconds. \nTotal for Epoch: {(time.time() - train_start):.1f} seconds.", 'yellow')
+                #if verbose: self.print(f"Validation stage took {(time.time() - val_start):.1f} seconds.", 'yellow')
+                
+                self.clear_lines(6)
+
+                print(self.color_str("\nEpoch ", "white") + self.color_str(epoch + 1, "orange")+ self.color_str(f"/{epochs}: ", "white"))
+                for k, v in logs[(epoch + 1) * train_cardinality].items():
+                    self.print(f" {k}: {v:.9f}", 'cyan')
+
+                progress_bar.set_postfix_str(self.color_str(f"Time Taken: {(time.time() - train_start):.2f}s", "green") + ", " + self.color_str(f"Best Epoch: {best_epoch}", "green")) 
+
+                progress_bar.update(1)
+
+                #self.print(f"Total for Epoch: {(time.time() - train_start):.1f} seconds.", 'yellow')
 
             self.post_epoch_hook(epoch)
+
+        if self.IsRoot:
+
+            progress_bar.close()
+
+
 
         return logs
  
 
-    @torch.compile
+    #@torch.compile
     def train_step(self, x: torch.Tensor, y: torch.Tensor, accum: bool = True, accum_steps: int = 1, id: str = None):
         
         with torch.autocast('cuda', dtype = torch.float16, enabled = self.AMP):
@@ -296,7 +318,7 @@ class BaseCNNTrainer:
     def pre_step_hook(self, step: int, steps_per_epoch: int) -> None:
         pass
 
-    def post_step_hook(self, *args) -> None:
+    def post_step_hook(self, x, y, _) -> None:
         pass
 
     def post_train_hook(self) -> None:
@@ -304,83 +326,92 @@ class BaseCNNTrainer:
 
     #------------------------------------------ MAIN EVALUATE FUNCTIONS -------------------------------------- #
 
-    @torch.compile
-    @torch.no_grad()
+    #@torch.compile
     def evaluate(self, test_data: torch.utils.data.DataLoader) -> None:
         """
         Evaluate model on dataloader.
         To retrieve results, call metric_results()
         """
+        with torch.no_grad():
 
-        self.m.eval()
-        self.reset_metrics()
+            self.m.eval()
+            self.reset_metrics()
 
-        for x, y, *_ in test_data:
+            for x, y, *_ in test_data:
 
-            x, y = x.to('cuda'), y.to('cuda')
+                x, y = x.to('cuda'), y.to('cuda')
+                
+                for T in self.cT: x = T(x) # Transforms
+                for T in self.eT: x = T(x)
+                for T in self.fcT: x = T(x)
+
+                self.test_step(x, y)
             
-            for T in self.cT: x = T(x) # Transforms
-            for T in self.eT: x = T(x)
-            for T in self.fcT: x = T(x)
-
-            self.test_step(x, y)
-        
-        self.transfer_metrics()
-        self.print(f"Evaluated on {self.ecount.detach().item()} samples.")
+            self.transfer_metrics()
+        #self.print(f"Evaluated on {self.ecount.detach().item()} samples.")
         return
 
-    @torch.compile
-    @torch.no_grad()
+    #@torch.compile
     def test_step(self, x: torch.Tensor, y: torch.Tensor) -> None:
+        
+        with torch.no_grad():
 
-        output = self.m(x)
-        loss = self.criterion(output, y)
+            output = self.m(x)
+            loss = self.criterion(output, y)
 
-        self.loss_tr += loss
-        self.acc_tr += self.correct_k(output, y)
-        self.count_tr += y.size(dim = 0)
+            self.loss_tr += loss
+            self.acc_tr += self.correct_k(output, y)
+            self.count_tr += y.size(dim = 0)
 
         return
         
 
     #------------------------------------------ SERIALIZATION FUNCTIONS -------------------------------------- #
 
-    @torch.no_grad()
+    
     def save_ckpt(self, name: str, prefix: str = None):
         """
         Saves Model, Optimizer, and LossScaler state_dicts.
         Can be accessed with same name and prefix from load_ckpt.
         """
-        if not self.IsRoot: return
-        fp = f"./logs/WEIGHTS/{self.fromNamePrefix(name, prefix)}.pt"
-        ckpt = {'model': self.m.state_dict(),
-                'optim': self.optim.state_dict(),
-                'scaler': self.lossScaler.state_dict()}
-        torch.save(ckpt, fp)        
+        with torch.no_grad():
+            if not self.IsRoot: return
+            fp = f"./logs/WEIGHTS/{self.fromNamePrefix(name, prefix)}.pt"
+            ckpt = {'model': self.m.state_dict(),
+                    'optim': self.optim.state_dict(),
+                    'scaler': self.lossScaler.state_dict()}
+            torch.save(ckpt, fp)        
 
-    @torch.no_grad()
     def load_ckpt(self, name: str, prefix: str = None):
         """
         Loads Model, Optimizer, and LossScaler state_dicts.
         Meant to be used with save_ckpt.
         """
-        fp = f"./logs/WEIGHTS/{self.fromNamePrefix(name, prefix)}.pt"
-        ckpt = torch.load(fp, map_location = {'cuda:%d' % 0: 'cuda:%d' % self.RANK},
-                          weights_only = True) # Assumes rank = 0 is Root.
-        self.m.load_state_dict(ckpt['model'])
-        self.optim.load_state_dict(ckpt['optim'])
-        self.lossScaler.load_state_dict(ckpt['scaler'])
+        with torch.no_grad():
+                
+            fp = f"./logs/WEIGHTS/{self.fromNamePrefix(name, prefix)}.pt"
+
+            dist.barrier(device_ids = [self.RANK])
+            
+            ckpt = torch.load(fp, map_location = {'cuda:%d' % 0: 'cuda:%d' % self.RANK},
+                            weights_only = True) # Assumes rank = 0 is Root.
+            self.m.load_state_dict(ckpt['model'])
+            self.optim.load_state_dict(ckpt['optim'])
+            self.lossScaler.load_state_dict(ckpt['scaler'])
 
     #------------------------------------------ HELPER FUNCTIONS -------------------------------------- #
 
     ### Logging
+
+    def color_str(self, input: str, color: str):
+        return self._COLORS[color] + str(input) + self._COLORS["reset"]
 
     def print(self, input, color: str = 'default' , rank: int = 0) -> None:
         """
         Prints with color. Make sure input has a __repr__ attribute.
         """
         if not self.RANK == rank: return
-        print(self._COLORS[color] + str(input) + self._COLORS["reset"])
+        print(self.color_str(input, color))
         return
     
     def fromNamePrefix(self, name: str, prefix: str):
@@ -402,11 +433,17 @@ class BaseCNNTrainer:
         """
         self.lossScaler = torch.amp.GradScaler(device = 'cuda', enabled = self.AMP)
 
-    @torch.no_grad()
     def reduce_learning_rate(self, factor: int):
-        for pg in self.optim.param_groups:
-            pg['lr'] /= factor
+        with torch.no_grad():    
+            for pg in self.optim.param_groups:
+                pg['lr'] /= factor
 
+    def clear_lines(self, n: int):
+        """
+        Logging Util
+        """
+        for _ in range(n):
+            print("\033[F\033[K", end="")
 
 
 
@@ -427,11 +464,11 @@ class BaseIMP(BaseCNNTrainer):
         Find Winning Ticket Through IMP with Rewinding. Calls Trainer.fit(); See description for argument requirements.
 
         prune_rate should be a float that indicates what percent of weights to prune per training run. 
-        I.E. to prune 20% per iteration, prune_rate = 20.0
+        I.E. to prune 20% per iteration, prune_rate = 0.2
 
         prune_iters should be the number of iterations to run IMP for.
         
-        Final sparsity = (1 - prune_rate/100) ** prune_iters
+        Final sparsity = prune_rate ** prune_iters
         """
         
         total_logs = defaultdict()
@@ -440,36 +477,34 @@ class BaseIMP(BaseCNNTrainer):
         current_sparsity = 100.0
         sparsities_d[0] = current_sparsity / 100
 
-        h5py.File(f"./logs/TICKETS/{name}.h5", "w").close() # For logging tickets.
+        if self.IsRoot: h5py.File(f"./logs/TICKETS/{name}.h5", "w").close() # For logging tickets.
 
         self.pre_IMP_hook(name)
 
-        self.print(f"RUNNING IMP ON {self.mm.num_prunable} PRUNABLE WEIGHTS.", "purple")
+        self.print(f"\nRUNNING IMP ON {self.mm.num_prunable} PRUNABLE WEIGHTS.", "pink")
 
-        total_logs[0] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_{(100.0):.1f}", save = True, verbose = False)
+        self.print(f"\nSPARSITY: {current_sparsity:.2f}\n", "red")
+
+        total_logs[0] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_{(100.0):.2f}", save = True, verbose = False)
         
         for iteration in range(1, prune_iters + 1):
             
-            self.mm.prune_by_mg(prune_rate, iteration)
+            self.mm.prune_by_mg(prune_rate, iteration, root = 0)
             
             current_sparsity = self.mm.sparsity
 
             sparsities_d[iteration] = current_sparsity.item() / 100
 
-            self.print(f"SPARSITY: {current_sparsity:.1f}", "purple")
+            self.print(f"\nSPARSITY: {current_sparsity:.2f}\n", "red")
 
             self.post_prune_hook(iteration, epochs_per_run)
 
-            self.mm.export_ticket(name, entry_name = f"{(current_sparsity):.1f}")
+            self.mm.export_ticket(name, entry_name = f"{(current_sparsity):.2f}")
 
-            dist.barrier()
-
-            self.load_ckpt(name + f"_{(100.0):.1f}", prefix = type) 
-
-            dist.barrier()
+            self.load_ckpt(name + f"_{(100.0):.2f}", prefix = type) 
 
             total_logs[iteration] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, 
-                                             name + f"_{(current_sparsity):.1f}", save = False, verbose = False)
+                                             name + f"_{(current_sparsity):.2f}", save = False, verbose = False)
 
         self.post_IMP_hook()
 

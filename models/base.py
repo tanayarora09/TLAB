@@ -29,11 +29,13 @@ class BaseModel(nn.Module):
 
     """
 
-    def init_base(self):
+    def init_base(self, rank: int):
 
         """
         Call in __init__ after initializing layers.
         """
+
+        self.RANK = rank
 
         self._prunable_count = 0
 
@@ -44,6 +46,11 @@ class BaseModel(nn.Module):
 
         self.register_buffer("MASK", torch.ones(self._prunable_count, dtype = torch.bool, 
                                                 device = "cuda", requires_grad = False), persistent = False)
+        
+        offset = 0       
+        for layer in self.lottery_layers:
+            layer.update_mask(self.get_buffer("MASK"), offset)
+            offset += layer.MASK_NUMEL
 
 
     @torch.no_grad()
@@ -53,10 +60,10 @@ class BaseModel(nn.Module):
 
         self.get_buffer("MASK").copy_(mask)
 
-        """offset = 0       
-        for layer in self.lottery_layers:
-            layer.update_mask(self.get_buffer("MASK"), offset)
-            offset += layer.MASK_NUMEL"""
+    
+    def reset_ticket(self) -> None:
+
+        self.get_buffer("MASK").fill_(True)
 
     @property
     def sparsity(self):
@@ -77,19 +84,13 @@ class BaseModel(nn.Module):
     def export_ticket_cpu(self) -> torch.Tensor:
 
         return self.get_buffer("MASK").detach().cpu()
-    
-    
-    def reset_ticket(self) -> None:
-
-        self.mask.fill_(True)
 
     
     @torch._dynamo.disable
     @torch.no_grad()
-    def export_ticket(self, name: str, root: int = 2, entry_name: str = "mask") -> None:
-        if not (dist.get_rank() == root): return
+    def export_ticket(self, name: str, root: int = 0, entry_name: str = "mask") -> None:
+        if not (self.RANK == root): return
         with h5py.File(f"./logs/TICKETS/{name}.h5", 'a') as f:
-            print(f"Adding {entry_name} to {name}.")
             f.create_dataset(entry_name, data = self.export_ticket_cpu().numpy())
 
     @torch._dynamo.disable         
@@ -98,22 +99,16 @@ class BaseModel(nn.Module):
         """
         ROOT = 0
         """
-        dist.barrier()
-        print(f"[rank {dist.get_rank()}] Loading {entry_name} from {name}.")
-        if dist.get_rank() == root:
+        
+        if self.RANK == root:
             with h5py.File(f"./logs/TICKETS/{name}.h5", 'r') as f:
                 data = torch.as_tensor(f[entry_name][:], device = "cuda", dtype = torch.bool)
         else:
             data = torch.zeros(self.num_prunable, device = "cuda", dtype = torch.bool) 
 
-        
-        print(f"[rank {torch.distributed.get_rank()}] {data.shape}, {data.device} ")
-        dist.barrier()
+        dist.barrier(device_ids = [self.RANK])
 
         dist.broadcast(data, src=root)
-        
-        dist.barrier()
-        print(f"[rank {torch.distributed.get_rank()}] {data.shape}, {data.device} ")
 
         return data
 
@@ -123,11 +118,13 @@ class BaseModel(nn.Module):
         """
         ROOT = 0
         """
-        if dist.get_rank() == root:
+        if self.RANK == root:
             with h5py.File(f"./logs/TICKETS/{name}.h5", 'r') as f:
                 data = torch.as_tensor(f[entry_name][:], device = "cuda")
         else:
             data = torch.empty(self.num_prunable, device = "cuda") 
+
+        dist.barrier(device_ids = [self.RANK])
 
         dist.broadcast(data, src=root)
 
@@ -135,93 +132,115 @@ class BaseModel(nn.Module):
 
     ### --------------------------------------- PRUNING ----------------------------
 
-    @torch.no_grad()
-    def prune_by_mg(self, rate: float, iteration: float) -> None:
+    def prune_by_mg(self, rate: float, iteration: float, root: int = 0) -> None:
+        with torch.no_grad():
 
-        all_magnitudes = (torch.cat([(layer.get_parameter(layer.MASKED_NAME)).detach().view(-1) for layer in self.lottery_layers], 
-                                 dim = 0) * self.get_buffer("MASK")).abs_().cpu()
+            if self.RANK == root:
+
+                all_magnitudes = (torch.cat([(layer.get_parameter(layer.MASKED_NAME)).detach().view(-1) for layer in self.lottery_layers], 
+                                        dim = 0) * self.get_buffer("MASK")).abs_().cpu()
         
-        threshold = np.quantile(all_magnitudes.numpy(), q = 1.0 - rate ** iteration, method = "higher")
+                threshold = np.quantile(all_magnitudes.numpy(), q = 1.0 - rate ** iteration, method = "higher")
 
-        self.set_ticket(all_magnitudes.ge(threshold))
+                ticket = all_magnitudes.ge(threshold).cuda()
 
-        return 
+            else: 
+                ticket = torch.zeros(self.num_prunable, dtype = torch.bool, device = "cuda")
+
+            dist.barrier(device_ids = [self.RANK])
+
+            dist.broadcast(ticket, src = root)
+
+            self.set_ticket(ticket)
+
+            return 
     
-    @torch.no_grad()
-    def prune_random(self, rate: float, distributed: bool, root: bool = True, rootn: int = 0) -> None:
-        
-        if root: print("Pruning random")
+    #@torch.no_grad()
+    def prune_random(self, rate: float, distributed: bool, root: int = 0) -> None:
+        """
+        Prune 20% randomly -> rate = 0.8
+        """
+        with torch.no_grad():
 
-        if not distributed or root:
+            if not distributed or (self.RANK == root):
+                
+                ticket = self.get_buffer("MASK").clone()
+
+                nonzero_indices = ticket.nonzero(as_tuple=True)[0]
+
+                num_to_prune = int(len(nonzero_indices) * (1.0 - rate))
+
+                prune_indices = nonzero_indices[torch.randperm(len(nonzero_indices))[:num_to_prune]]
+
+                ticket[prune_indices] = False
+
+            elif distributed: 
+                ticket = torch.zeros_like(self.get_buffer("MASK"), device = "cuda", dtype = torch.bool)
             
-            print(f"[rank {dist.get_rank()}] Entered root random prune.")
 
-            ticket = self.get_buffer("MASK").clone()
+            if distributed: 
+                dist.barrier(device_ids = [self.RANK])
+                dist.broadcast(ticket, src = root)
 
-            nonzero = ticket.count_nonzero()
+            self.set_ticket(ticket)
+            
+            return
 
-            prune = ticket.nonzero(as_tuple = True)[0][torch.multinomial(torch.ones(nonzero), int(nonzero * rate), replacement = False)]
-
-            ticket[prune] = False
-
-        elif distributed: 
-            print(f"[rank {dist.get_rank()}] Entered non root random prune")
-            ticket = torch.zeros_like(self.get_buffer("MASK"), device = "cuda", dtype = torch.bool)
-        
-
-        if distributed: 
-            dist.barrier()
-            dist.broadcast(ticket, rootn)
-            print(f"[rank {dist.get_rank()}] Broadcasted random ticket.")
-
-        self.set_ticket(ticket)
-        
-        return
-
-    @torch.no_grad()
+    @torch.compile
     def merge_tickets(self, t1: torch.Tensor, t2: torch.Tensor, t1_weight: float, t2_weight: float) -> torch.Tensor:
         """
         Merges two tickets stochastically (genetic breeding)
 
+        Keep all with both, sample rest with weight going to better fitness
+
         O(N) Runtime and Space Complexity
         """
+        with torch.no_grad():
+                
+            child = t1 & t2
+            
+            remaining = int(t1.sum() - child.sum())
 
-        child = t1 & t2
-        
-        remaining = t1.sum() - child.sum()
+            if remaining == 0: return child
+            
+            available = torch.bitwise_xor(t1, t2)
 
-        if remaining == 0: return child
-        
-        available = torch.bitwise_xor(t1, t2)
+            sample_probs = (t1_weight * t1.float() + t2_weight * t2.float())[available]
 
-        sample_probs = (t1_weight * t1.float() + t2_weight * t2.float())[available]
+            sample_probs = sample_probs / sample_probs.sum()
 
-        sample = torch.multinomial(sample_probs, remaining, replacement = False)
+            available_indices = available.nonzero(as_tuple=True)[0]
 
-        child[available.nonzero(as_tuple = True)[0][sample]] = True
+            sampled_indices = available_indices[torch.randperm(len(available_indices))[:remaining]]
 
-        return child
+            child[sampled_indices] = True
+
+            return child
 
 
     @torch.compile
-    @torch.no_grad()
     def mutate_ticket(self, ticket: torch.Tensor, temperature: float = 0.2) -> torch.Tensor:
         """
         Mutates a given ticket by randomly swapping temperature * min(true_values, false_values) values
         """
-        ticket = ticket.clone()
-        ntrue = ticket.count_nonzero()
-        nfalse = ticket.numel() - ntrue
-        swaps = int(temperature * min(ntrue, nfalse))
+        with torch.no_grad():
+                
+            ticket = ticket.clone()
 
-        swap_true = torch.multinomial(torch.ones(ntrue), swaps, replacement = False)
-        swap_false = torch.multinomial(torch.ones(nfalse), swaps, replacement = False)
+            ntrue = ticket.count_nonzero()
+            nfalse = ticket.numel() - ntrue
 
-        false = (~ticket).nonzero(as_tuple = True)[0] # So swapping trues does not affect it
+            swaps = int(temperature * min(ntrue, nfalse))
 
-        ticket[ticket.nonzero(as_tuple = True)[0][swap_true]] = False 
-        ticket[false[swap_false]] = True
+            if swaps == 0: return ticket
 
-        return ticket
-    
+            true_indices = ticket.nonzero(as_tuple=True)[0]
+            false_indices = (~ticket).nonzero(as_tuple=True)[0]
+
+            swap_true_indices = true_indices[torch.randperm(len(true_indices))[:swaps]]
+            swap_false_indices = false_indices[torch.randperm(len(false_indices))[:swaps]]
+
+            ticket[swap_true_indices] = False
+            ticket[swap_false_indices] = True
+        
 

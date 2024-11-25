@@ -131,10 +131,10 @@ class CIFAR10WithID(torchvision.datasets.CIFAR10):
 
 class DisributedLoader(DataLoader):
 
-    def __init__(self, data, batch_size, num_workers, rank, world_size, shuffle = False, prefetch_factor = 4):
+    def __init__(self, data, batch_size, num_workers, rank, world_size, shuffle = True, prefetch_factor = 4):
         self.rank = rank
         self.world_size = world_size
-        self.sampler = DistributedSampler(data, num_replicas=world_size, rank=rank, shuffle=shuffle, seed = 42)
+        self.sampler = DistributedSampler(data, num_replicas=world_size, rank=rank, shuffle=shuffle, seed = 14)
         super().__init__(data, batch_size=batch_size, sampler=self.sampler, 
                          num_workers=num_workers, pin_memory=True, pin_memory_device = 'cuda',
                          prefetch_factor=prefetch_factor, persistent_workers=True)

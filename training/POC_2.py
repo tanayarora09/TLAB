@@ -14,25 +14,33 @@ import json
 import pickle
 import gc
 
-def build_tickets_dict(last_name: str, model, rank: int):
+import os
+
+def build_tickets_dict(last_name: str, model: VGG, rank: int):
 
     out = dict()
 
-    with open("./tmp/last_sparsities.json", "r", encoding = "utf-8") as f:
+    with open(f"./tmp/sparsities_{last_name}.json", "r", encoding = "utf-8") as f:
         sparsities_d = json.load(f)
-        print(sparsities_d)
-
+        #print(sparsities_d)
+    
     for i in range(1, len(sparsities_d)):
-        dist.barrier()
-        out[i-1] = (model.load_ticket(last_name, rank == 2, f"{(sparsities_d[i]*100):.1f}"), sparsities_d[i])
+        dist.barrier(device_ids = [rank])
+        ticket = model.load_ticket(last_name, 2, f"{(sparsities_d[i]*100):.2f}")
+        with torch.random.fork_rng(devices = ["cuda:0", "cuda:1", "cuda:2", "cuda:3"], enabled = True):
+            dist.barrier(device_ids = [rank])
+            model.prune_random(sparsities_d[i], distributed = True, root = 2)
+        #print(f"[rank {rank}] At {model.sparsity} sparsity, {(ticket.logical_xor(model.get_buffer("MASK"))).sum()} different pruned.")
+        out[i-1] = (ticket, model.export_ticket_cpu())
+        model.reset_ticket()
 
-    print(f"[rank {rank}]", [(k, v[1], v[0].shape) for k,v in out.items()])
+    if rank == 0: os.remove(f"./tmp/sparsities_{last_name}.json")
 
     return out
 
 def main(rank, world_size, name: str, **kwargs):
 
-    EPOCHS = 2
+    EPOCHS = 160
     CARDINALITY = 391
 
     last_name = name[:-1] + "1"
@@ -42,7 +50,7 @@ def main(rank, world_size, name: str, **kwargs):
     normalize = torch.jit.script(Normalize().to('cuda'))
     center_crop = torch.jit.script(CenterCrop().to('cuda'))
 
-    model = VGG(19)
+    model = VGG(depth = 19, rank = rank)
 
     ticket_dict = build_tickets_dict(last_name, model, rank)
 
@@ -51,9 +59,8 @@ def main(rank, world_size, name: str, **kwargs):
                 output_device = rank, 
                 gradient_as_bucket_view = True)
 
-    model = torch.compile(model)
+    #model = torch.compile(model)
     
-    torch._print("Got Cuda Model")
     
     T = VGG_POC(model, rank)
 
@@ -61,16 +68,16 @@ def main(rank, world_size, name: str, **kwargs):
             loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
             collective_transforms = (resize, normalize), train_transforms = (dataAug,),
             eval_transforms = (center_crop,), final_collective_transforms = tuple(),#[normalize],
-            scale_loss = True, gradient_clipnorm = 2.0, tickets_dict = ticket_dict)
+            scale_loss = True, gradient_clipnorm = 2.0 , tickets_dict = ticket_dict)
 
     #T.summary(32)
 
     torch.cuda.empty_cache()
     gc.collect()
 
-    dt, dv = get_loaders(rank, world_size, iterate = True) 
+    dt, dv = get_loaders(rank, world_size, batch_size = 128) 
     
-    logs, sparsities_d = T.TicketIMP(dt, dv, EPOCHS, CARDINALITY, name, 0.8, 2, type = "rewind")
+    logs, sparsities_d = T.TicketIMP(dt, dv, EPOCHS, CARDINALITY, name, 0.8, 19, type = "rewind")
 
     T.evaluate(dt)
 
@@ -84,11 +91,10 @@ def main(rank, world_size, name: str, **kwargs):
         print("Validation Results: ", T.metric_results())
         print("Sparsity: ", T.mm.sparsity)
 
-
-        with open("./tmp/last_activation_log.json", "w", encoding = "utf-8") as f:
+        with open(f"./logs/ACTIVATIONS/activation_log_{name[:-1]}.json", "w", encoding = "utf-8") as f:
             json.dump(T.activation_log, f, ensure_ascii = False, indent = 4)
         
         logs_to_pickle(logs, name)
 
-        for i in range(len(logs)):
-            plot_logs(logs[i], EPOCHS, name + f"_{((sparsities_d[i])):.1f}", CARDINALITY) 
+        #for i in range(len(logs)):
+        #    plot_logs(logs[i], EPOCHS, name + f"_{((sparsities_d[i])):.2f}", CARDINALITY) 
