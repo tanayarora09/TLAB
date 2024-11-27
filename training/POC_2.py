@@ -77,7 +77,7 @@ def main(rank, world_size, name: str, **kwargs):
 
     dt, dv = get_loaders(rank, world_size, batch_size = 128) 
     
-    logs, sparsities_d = T.TicketIMP(dt, dv, EPOCHS, CARDINALITY, name, 0.8, 19, type = "rewind")
+    logs, sparsities_d = T.TicketIMP(dt, dv, EPOCHS, CARDINALITY, name, 0.8, 19, rewind_iter = 250)
 
     T.evaluate(dt)
 

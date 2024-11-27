@@ -50,7 +50,7 @@ def main(rank, world_size, name: str, **kwargs):
     dt, dv = get_loaders(rank, world_size, batch_size = 128) 
     
 
-    logs, sparsities_d = T.TicketIMP(dt, dv, EPOCHS, CARDINALITY, name, 0.8, 20, type = "rewind")
+    logs, sparsities_d = T.TicketIMP(dt, dv, EPOCHS, CARDINALITY, name, 0.8, 20, rewind_iter = 250)
 
     T.evaluate(dt)
 
@@ -67,6 +67,8 @@ def main(rank, world_size, name: str, **kwargs):
         with open(f"./tmp/sparsities_{name}.json", "w", encoding = "utf-8") as f:
             json.dump(sparsities_d, f, ensure_ascii = False, indent = 4)
             
+        logs_to_pickle(logs, name)
+
         #with open(f"./tmp/{name}_IMPs.pickle", 'wb') as file:
         #    pickle.dump(logs, file, protocol=pickle.HIGHEST_PROTOCOL)
 
