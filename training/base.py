@@ -156,7 +156,8 @@ class BaseCNNTrainer:
     #------------------------------------------ MAIN TRAIN FUNCTIONS -------------------------------------- #
 
     def fit(self, train_data: torch.utils.data.DataLoader, validation_data: torch.utils.data.DataLoader,
-            epochs: int, train_cardinality: int, name: str, accumulation_steps: int = 1, save: bool = True, verbose: bool = True) -> dict:
+            epochs: int, train_cardinality: int, name: str, accumulation_steps: int = 1, save: bool = True, 
+            verbose: bool = True, rewind_iter: int = 500) -> dict:
         """
         Basic Training Run Implementation.
         Override by Copy and Pasting.
@@ -173,7 +174,7 @@ class BaseCNNTrainer:
 
         logs = defaultdict(dict)
         self.reset_metrics()
-        if save: self.save_ckpt(name = name, prefix = "init")
+        #if save: self.save_ckpt(name = name, prefix = "init")
         
         best_val_loss = float('inf')
         best_epoch = 1
@@ -200,6 +201,9 @@ class BaseCNNTrainer:
                 iter = int(epoch * train_cardinality + step + 1)
                 accum = ((step + 1) % accumulation_steps == 0) or (step + 1 == train_cardinality)
 
+                if (iter - 1) == rewind_iter and save:
+                    self.save_ckpt(name = name, prefix = "rewind")
+
                 self.pre_step_hook(step, train_cardinality)
 
                 x, y = x.to('cuda'), y.to('cuda')
@@ -223,9 +227,6 @@ class BaseCNNTrainer:
                         if (step + 1) % 48 == 0 and self.IsRoot and verbose:
                             
                             self.print(f"----  Status at {math.ceil((step + 1) / 48):.0f}/8: ----     Accuracy: {logs[iter]['accuracy']:.4f}   --  Loss: {logs[iter]['loss']:.5f} --", 'white')
-
-                if iter == 500 and save:
-                    self.save_ckpt(name = name, prefix = "rewind")
 
             self.post_train_hook()
 
@@ -458,7 +459,7 @@ class BaseIMP(BaseCNNTrainer):
 
     def TicketIMP(self, train_data: torch.utils.data.DataLoader, validation_data: torch.utils.data.DataLoader, 
                   epochs_per_run: int, train_cardinality: int, name: str, prune_rate: float, prune_iters: int,
-                  type: str = "rewind"):
+                  rewind_iter: int = 500):
 
         """
         Find Winning Ticket Through IMP with Rewinding. Calls Trainer.fit(); See description for argument requirements.
@@ -485,7 +486,7 @@ class BaseIMP(BaseCNNTrainer):
 
         self.print(f"\nSPARSITY: {current_sparsity:.2f}\n", "red")
 
-        total_logs[0] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_{(100.0):.2f}", save = True, verbose = False)
+        total_logs[0] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_{(100.0):.2f}", save = True, verbose = False, rewind_iter = rewind_iter)
         
         for iteration in range(1, prune_iters + 1):
             
@@ -501,7 +502,7 @@ class BaseIMP(BaseCNNTrainer):
 
             self.mm.export_ticket(name, entry_name = f"{(current_sparsity):.2f}")
 
-            self.load_ckpt(name + f"_{(100.0):.2f}", prefix = type) 
+            self.load_ckpt(name + f"_{(100.0):.2f}", prefix = "rewind") 
 
             total_logs[iteration] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, 
                                              name + f"_{(current_sparsity):.2f}", save = False, verbose = False)
