@@ -1,6 +1,10 @@
 import torch
 from torch import nn
+import torch.nn.functional as F
+
 import torch.distributed as dist
+
+import torch.multiprocessing as mp 
 
 import numpy as np
 
@@ -20,7 +24,8 @@ class BaseCNNTrainer:
 
     #------------------------------------------ MAIN INIT FUNCTIONS -------------------------------------- #
 
-    def __init__(self, model: torch.nn.parallel.DistributedDataParallel, rank: int):
+    def __init__(self, model: torch.nn.parallel.DistributedDataParallel, 
+                 rank: int, world_size: int):
         """
         Model has to be DDP.
         Non-Distributed Environments Not Supported.
@@ -30,6 +35,7 @@ class BaseCNNTrainer:
         self.mm: BaseModel  = model.module
         self.RANK = rank
         self.IsRoot = rank == 0
+        self.WORLD_SIZE = world_size
 
     def build(self, optimizer: torch.optim.Optimizer, 
               collective_transforms: Tuple[nn.Module],
@@ -38,7 +44,7 @@ class BaseCNNTrainer:
               final_collective_transforms: Tuple[nn.Module],
               loss: Callable = nn.CrossEntropyLoss(reduction = "sum"), 
               scale_loss: bool = False, decay: float = 0.0,
-              gradient_clipnorm: float = float('inf')):
+              gradient_clipnorm: float = float('inf'), ):
         
         """
         Build Trainer.
@@ -172,6 +178,7 @@ class BaseCNNTrainer:
             progress_bar = tqdm(total = epochs, unit = "epoch", colour = "green", bar_format="{l_bar}{bar:25}{r_bar}{bar:-25b}", leave = False)
             print("\n\n\n\n")
 
+
         logs = defaultdict(dict)
         self.reset_metrics()
         #if save: self.save_ckpt(name = name, prefix = "init")
@@ -181,6 +188,7 @@ class BaseCNNTrainer:
 
         train_start = None
         val_start = None
+
 
         for epoch in range(epochs):
 
@@ -206,6 +214,8 @@ class BaseCNNTrainer:
 
                 self.pre_step_hook(step, train_cardinality)
 
+                dist.barrier(device_ids = [self.RANK])
+
                 x, y = x.to('cuda'), y.to('cuda')
 
                 for T in self.cT: x = T(x) # Transforms
@@ -214,7 +224,7 @@ class BaseCNNTrainer:
 
                 self.train_step(x, y, accum, accumulation_steps)
 
-                self.post_step_hook(x = x, y = y, _ = _)
+                self.post_step_hook(x = x, y = y, _ = _, step = step, train_cardinality = train_cardinality, epoch = epoch)
 
                 if accum:
                     
@@ -235,6 +245,8 @@ class BaseCNNTrainer:
             val_start = time.time()
 
             validation_data.sampler.set_epoch(epoch)
+
+            dist.barrier(device_ids = [self.RANK])
 
             self.evaluate(validation_data)
 
@@ -313,13 +325,13 @@ class BaseCNNTrainer:
     def pre_epoch_hook(self, epoch: int) -> None:
         pass
     
-    def post_epoch_hook(self) -> None:
+    def post_epoch_hook(self, epoch) -> None:
         pass
     
     def pre_step_hook(self, step: int, steps_per_epoch: int) -> None:
         pass
 
-    def post_step_hook(self, x, y, _) -> None:
+    def post_step_hook(self, x, y, _, step, train_cardinality, epoch) -> None:
         pass
 
     def post_train_hook(self) -> None:
@@ -521,3 +533,222 @@ class BaseIMP(BaseCNNTrainer):
 
     def post_prune_hook(self, iteration: int, num_epochs: int) -> None:
         pass
+
+
+
+class CNN_DGTS(BaseCNNTrainer):
+
+    """
+    Genetic Search Over CNN
+    Implements Distributed RedBlackBst
+    """
+
+    """
+    Monitor: KL Percentage Differnce
+    """
+
+    class DGTS:
+
+        def __init__(self, rank: int, world_size: int, lock, dynamic_list, 
+                     model: BaseModel, act_w: list, max_size: int = 50):
+            self.lock = lock
+            self.population = dynamic_list
+            del self.population[:]
+            self.RANK = rank
+            self.WORLD_SIZE = world_size
+            self.MAX_SIZE = max_size
+            self.mm = model
+            self.act_w = act_w
+
+        def add_sample(self, mask: torch.Tensor, fitness: float):
+
+            mask.share_memory_()
+
+            with self.lock:
+
+                left, right = 0, len(self.population) - 1
+                while left <= right:
+                    mid = (left + right) // 2
+                    if self.population[mid][1] > fitness:
+                        left = mid + 1
+                    else: 
+                        right = mid - 1
+
+                self.population.insert(left, (mask, fitness, ))
+
+
+        def distribute_parents(self):
+            """
+            Samples Parents - Linear Rank based from SUS sample
+            """
+            
+            fitnesses = [fitness for mask, fitness in self.population]
+
+            total_fitness = sum(fitnesses)
+            pointer_distance = total_fitness / (len(self.population) // self.WORLD_SIZE) 
+            start_point = (torch.rand(1, ) * pointer_distance).item()
+            pointers = [start_point + n * pointer_distance for n in range(len(self.population) // self.WORLD_SIZE)]
+
+            for i in range(1, len(fitnesses)):
+                fitnesses[i] += fitnesses[i - 1]
+
+            sample = list()
+            ptr = 0
+            for i, cum_fit in enumerate(fitnesses):
+                while ptr < (len(self.population) // self.WORLD_SIZE) and pointers[ptr] <= cum_fit:
+                    sample.append(self.population[i])
+                    ptr += 1
+
+
+            probs = np.arange(len(sample), 0, step = -1, dtype = np.float32)
+            probs /= probs.sum()
+            selection = np.random.choice(len(sample), replace = False, p = probs, size = 2)
+
+            return (sample[selection[0]], sample[selection[1]])
+        
+        def clean_population(self):
+            if (self.RANK != 0): return
+            while len(self.population) > self.MAX_SIZE:
+                del self.population[-1]
+    
+        def search_step(self, full_acts: torch.Tensor, inp: torch.Tensor, mutation_rate = 0.1):
+            
+            dist.barrier(device_ids = [self.RANK])
+
+            with torch.no_grad():
+
+                parents = self.distribute_parents()
+                fitness_sum = parents[0][1] + parents[1][1] 
+                child = self.mm.merge_tickets(parents[0][0], parents[1][0], 
+                                              (parents[0][1]/fitness_sum), 
+                                              (parents[1][1]/fitness_sum))
+
+                if (torch.rand(1, ).item() < mutation_rate): child = self.mm.mutate_ticket(child)
+
+                self.mm.set_ticket(child)
+                self.mm(inp)
+                
+                curr_activations = torch.cat(self.act_w)
+                self.act_w.clear()
+                curr_activations = curr_activations.to(torch.float64)
+                curr_activations.div_(curr_activations.sum())
+
+                fitness = F.kl_div((curr_activations + 1e-10).log(), full_acts + 1e-10, reduction = "batchmean").item()
+
+                self.add_sample(child.cpu(), fitness)
+                dist.barrier(device_ids = [self.RANK])
+                self.clean_population()
+                dist.barrier(device_ids = [self.RANK])
+
+        def search(self, sparsity: float, max_iterations: int, full_acts: torch.Tensor, inp: torch.Tensor):
+
+            with torch.no_grad():
+
+                self.mm.eval()
+
+                for _ in range(2):
+                    self.mm.reset_ticket()
+                    self.mm.prune_random(sparsity, distributed = False)
+                    sample = self.mm.export_ticket_cpu().clone()
+
+                    self.mm(inp)
+
+                    curr_activations = torch.cat(self.act_w)
+                    self.act_w.clear()
+                    curr_activations = curr_activations.to(torch.float64)
+                    curr_activations.div_(curr_activations.sum())
+
+                    fitness = F.kl_div((curr_activations + 1e-10).log(), full_acts + 1e-10, reduction = "batchmean").item()
+
+                    self.add_sample(sample.cpu(), fitness)
+
+                dist.barrier(device_ids = [self.RANK])
+
+                for it in range(max_iterations):
+                    self.search_step(full_acts, inp)
+
+                output = self.population[0]
+
+                dist.barrier(device_ids = [self.RANK])
+
+                del self.population[:]
+
+            return output
+
+
+    
+
+    def __init__(self, *args, lock, dynamic_list, **kwargs):
+
+        """
+        self._capture_layers = list[module]
+        self._fcapture_layers = list[(act_func, module)]
+        """
+
+        super(CNN_DGTS, self).__init__(*args, **kwargs)
+        self.LOCK = lock
+        self.SHARED_LIST = dynamic_list
+        
+        self._act_w = list()
+        self._fitness_monitor = list()
+
+        self._capture_layers = list() if not hasattr(self, "_capture_layers") else self._capture_layers
+        self._fcapture_layers = list() if not hasattr(self, "_fcapture_layers") else self._fcapture_layers
+        self._handles = list()
+
+
+
+    def build(self, sparsity_rate, *args, **kwargs):
+        super().build(*args, **kwargs)
+        self.sparsity_rate = sparsity_rate
+
+    def init_capture_hooks(self): 
+        for layer in self._capture_layers:
+            self._handles.append(layer.register_forward_hook(self._capture_hook))
+        for layer, func in self._fcapture_layers:
+            self._handles.append(layer.register_forward_hook(lambda *args, **kwargs: self._fake_capture_hook(func, *args, **kwargs)))
+        return 
+    
+    def remove_handles(self):
+        for handle in self._handles: handle.remove()
+        self._handles.clear()
+
+    def _capture_hook(self, module, input, output: torch.Tensor):
+        self._act_w.append(output.detach().mean(dim = 0).view(-1))
+
+    def _fake_capture_hook(self, func, module, input, output: torch.Tensor):
+        self._act_w.append(func(output.detach()).mean(dim = 0).view(-1))
+
+    def post_step_hook(self, x, y, _, step, train_cardinality, epoch):
+        #self.print(step, color = "red")
+        if (step + 2) % 32 == 7:#(step + 2) == train_cardinality:
+            self.init_capture_hooks()
+        elif (step + 1) % 32 == 7:#((step + 1) == train_cardinality):
+            self.freeze_and_search(x, y)
+            self.remove_handles()
+
+    #def post_train_hook(self):
+    #    self.print(self._act_w, "red")
+    #    dist.barrier()
+
+    def freeze_and_search(self, x, y):
+        with torch.no_grad():
+
+            self.m.eval()
+
+            self.GTS = self.DGTS(self.RANK, self.WORLD_SIZE, 
+                                self.LOCK, self.SHARED_LIST,
+                                self.mm, act_w = self._act_w,
+                                max_size = 50)
+            
+            activation_mask = None
+            if len(self._act_w) != 0: 
+                activation_mask = torch.cat(self._act_w)
+                self._act_w.clear()
+                activation_mask = activation_mask.to(torch.float64)
+
+            winner, fitness = self.GTS.search(self.mm.sparsity * self.sparsity_rate, max_iterations = 48, 
+                            full_acts = activation_mask, inp = x)
+
+            self._fitness_monitor.append(fitness)
+            return

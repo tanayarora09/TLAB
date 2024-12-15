@@ -186,7 +186,7 @@ class BaseModel(nn.Module):
             
             return
 
-    @torch.compile
+    #@torch.compile
     def merge_tickets(self, t1: torch.Tensor, t2: torch.Tensor, t1_weight: float, t2_weight: float) -> torch.Tensor:
         """
         Merges two tickets stochastically (genetic breeding)
@@ -218,7 +218,7 @@ class BaseModel(nn.Module):
             return child
 
 
-    @torch.compile
+    #@torch.compile
     def mutate_ticket(self, ticket: torch.Tensor, temperature: float = 0.2) -> torch.Tensor:
         """
         Mutates a given ticket by randomly swapping temperature * min(true_values, false_values) values

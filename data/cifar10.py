@@ -137,7 +137,7 @@ class DisributedLoader(DataLoader):
         self.sampler = DistributedSampler(data, num_replicas=world_size, rank=rank, shuffle=shuffle, seed = 42)
         super().__init__(data, batch_size=batch_size, sampler=self.sampler, 
                          num_workers=num_workers, pin_memory=True, pin_memory_device = 'cuda',
-                         prefetch_factor=prefetch_factor, persistent_workers=True)
+                         prefetch_factor=prefetch_factor, persistent_workers=False)
     
     @torch.jit.ignore
     def __iter__(self):

@@ -1,6 +1,6 @@
 import matplotlib.pyplot as plt
 
-def plot_logs(logs, num_epochs, name, steps=196):
+def plot_logs(logs, num_epochs, name, steps=391):
 
     """
     Plot Logs Returned by Training Run

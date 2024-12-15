@@ -6,7 +6,7 @@ import torch.distributed as dist
 from collections import defaultdict
 import time
 
-from training.base import BaseIMP
+from training.base import CNN_DGTS, BaseIMP
 
 from utils.serialization_utils import read_tensor, save_tensor
 
@@ -202,3 +202,17 @@ class VGG_POC(BaseIMP):
         with torch.autocast('cuda', dtype = torch.float16, enabled = self.AMP):
             self.collect_activations_and_test(x)
             #self.clear_act_captures()
+
+
+class VGG_DGTS(CNN_DGTS):
+
+    def __init__(self, *args, **kwargs):
+        super(VGG_DGTS, self).__init__(*args, **kwargs)
+        for name, block in self.mm.named_children():
+            for n, layer in block.named_children():
+                if n.endswith("relu"): self._capture_layers.append(layer)
+                elif n.endswith("fc"): self._fcapture_layers.append((layer, nn.ReLU()))
+        
+    def pre_epoch_hook(self, epoch):
+        if (epoch == 79) or (epoch == 119): 
+            self.reduce_learning_rate(10)
