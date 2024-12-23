@@ -671,9 +671,9 @@ class CNN_DGTS(BaseCNNTrainer):
 
                 dist.barrier(device_ids = [self.RANK])
 
-                del self.population[:]
+                del self.population[:] 
 
-            return output
+            return output # ( TICKET, FITNESS )
 
 
     
@@ -690,7 +690,7 @@ class CNN_DGTS(BaseCNNTrainer):
         self.SHARED_LIST = dynamic_list
         
         self._act_w = list()
-        self._fitness_monitor = list()
+        self._fitness_monitor = list() #[fitnesses]
 
         self._capture_layers = list() if not hasattr(self, "_capture_layers") else self._capture_layers
         self._fcapture_layers = list() if not hasattr(self, "_fcapture_layers") else self._fcapture_layers
@@ -724,14 +724,11 @@ class CNN_DGTS(BaseCNNTrainer):
         if (step + 2) % 32 == 7:#(step + 2) == train_cardinality:
             self.init_capture_hooks()
         elif (step + 1) % 32 == 7:#((step + 1) == train_cardinality):
-            self.freeze_and_search(x, y)
+            ticket, fitness = self.search(x, y)
             self.remove_handles()
+            self._fitness_monitor.append(((step + 1 + train_cardinality * epoch), fitness))
 
-    #def post_train_hook(self):
-    #    self.print(self._act_w, "red")
-    #    dist.barrier()
-
-    def freeze_and_search(self, x, y):
+    def search(self, x, y):
         with torch.no_grad():
 
             self.m.eval()
@@ -747,8 +744,4 @@ class CNN_DGTS(BaseCNNTrainer):
                 self._act_w.clear()
                 activation_mask = activation_mask.to(torch.float64)
 
-            winner, fitness = self.GTS.search(self.mm.sparsity * self.sparsity_rate, max_iterations = 48, 
-                            full_acts = activation_mask, inp = x)
-
-            self._fitness_monitor.append(fitness)
-            return
+            return self.GTS.search(self.mm.sparsity * self.sparsity_rate, max_iterations = 48, full_acts = activation_mask, inp = x)

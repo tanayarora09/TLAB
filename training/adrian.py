@@ -67,14 +67,10 @@ def main(rank, world_size, name: str, lock, shared_list, **kwargs):
 
         logs_to_pickle(logs, name)
 
-        with open(f"./tmp/{name}_divergences.pickle", 'wb') as file:
+        with open(f"./logs/PICKLES/{name}_divs.pickle", 'wb') as file:
             pickle.dump(T._fitness_monitor, file, protocol=pickle.HIGHEST_PROTOCOL)
 
         
         plot_logs(logs, EPOCHS, name, steps = CARDINALITY)
-
-
-        #for i in range(len(logs)):
-        #    plot_logs(logs[i], EPOCHS, name + f"_{(sparsities_d[i] * 100):.2f}", CARDINALITY) 
 
     torch.distributed.barrier(device_ids = [rank])
