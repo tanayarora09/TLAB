@@ -122,64 +122,26 @@ class ScriptedToTensor(nn.Module):
         x = TF.to_dtype(x, dtype=torch.float32, scale = True)
         return x
 
-class CIFAR10WithID(torchvision.datasets.CIFAR10):
-    
-    def __getitem__(self, index: int):
-        data, target = super().__getitem__(index)
-        unique_id = str(index)
-        return data, target, unique_id
 
-class DisributedLoader(DataLoader):
-
-    def __init__(self, data, batch_size, num_workers, rank, world_size, shuffle = True, prefetch_factor = 4):
-        self.rank = rank
-        self.world_size = world_size
-        self.sampler = DistributedSampler(data, num_replicas=world_size, rank=rank, shuffle=shuffle, seed = 42)
-        super().__init__(data, batch_size=batch_size, sampler=self.sampler, 
-                         num_workers=num_workers, pin_memory=True, pin_memory_device = 'cuda',
-                         prefetch_factor=prefetch_factor, persistent_workers=False)
-    
-    @torch.jit.ignore
-    def __iter__(self):
-        return super().__iter__()
-
-
-def get_loaders(rank, world_size, batch_size = 128, iterate: bool = False):
+def get_loaders(rank, world_size, batch_size = 128):
     """
     Iterate if there are weird behaviors with sample counts
     """
 
-    train_data = CIFAR10WithID("/u/tanaya_guest/tlab/datasets/CIFAR10/", train = True, download = False,
-                                              transform = torch.compile(ScriptedToTensor()))
+    train_data = torchvision.datasets.CIFAR10("/u/tanaya_guest/tlab/datasets/CIFAR10/", train = True, download = False,
+                                              transform = ScriptedToTensor())
 
-    test_data = CIFAR10WithID("/u/tanaya_guest/tlab/datasets/CIFAR10/", train = False, download = False,
-                                        transform = torch.compile(ScriptedToTensor()))
+    test_data = torchvision.datasets.CIFAR10("/u/tanaya_guest/tlab/datasets/CIFAR10/", train = False, download = False,
+                                        transform = ScriptedToTensor())
 
-    dt = DisributedLoader(
-        train_data,
-        batch_size//world_size,
-        4,
-        rank,
-        world_size
-    )
+    dt = DataLoader(train_data, batch_size = batch_size//world_size, 
+                    sampler = DistributedSampler(train_data), 
+                    pin_memory = True, num_workers = 8, 
+                    persistent_workers = True)
 
-    dv = DisributedLoader(
-        test_data,
-        batch_size//world_size,
-        4,
-        rank,
-        world_size
-    )
+    dv = DataLoader(test_data, batch_size = batch_size//world_size, 
+                    sampler = DistributedSampler(test_data), 
+                    pin_memory = True, num_workers = 8, 
+                    persistent_workers = True)
     
-    if not iterate: 
-
-        return dt, dv
-
-    for step, (x, y, id) in enumerate(dt):
-        x, y = x.to('cuda'), y.to('cuda')
-    
-    for step, (x, y, id) in enumerate(dv):
-        x, y = x.to('cuda'), y.to('cuda')
-        continue
-
     return dt, dv

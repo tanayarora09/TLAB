@@ -228,7 +228,7 @@ class BaseCNNTrainer:
 
                 if accum:
                     
-                    if (step + 1) % 24 == 0 or (step + 1 == train_cardinality): # Synchronize and Log.
+                    if (step + 1) % 48 == 0 or (step + 1 == train_cardinality): # Synchronize and Log.
                         
                         self.transfer_metrics()
                         
@@ -630,7 +630,6 @@ class CNN_DGTS(BaseCNNTrainer):
                 
                 curr_activations = torch.cat(self.act_w)
                 self.act_w.clear()
-                curr_activations = curr_activations.to(torch.float64)
                 curr_activations.div_(curr_activations.sum())
 
                 fitness = F.kl_div((curr_activations + 1e-10).log(), full_acts + 1e-10, reduction = "batchmean").item()
@@ -655,7 +654,6 @@ class CNN_DGTS(BaseCNNTrainer):
 
                     curr_activations = torch.cat(self.act_w)
                     self.act_w.clear()
-                    curr_activations = curr_activations.to(torch.float64)
                     curr_activations.div_(curr_activations.sum())
 
                     fitness = F.kl_div((curr_activations + 1e-10).log(), full_acts + 1e-10, reduction = "batchmean").item()
@@ -714,19 +712,20 @@ class CNN_DGTS(BaseCNNTrainer):
         self._handles.clear()
 
     def _capture_hook(self, module, input, output: torch.Tensor):
-        self._act_w.append(output.detach().mean(dim = 0).view(-1))
+        self._act_w.append(output.detach().to(torch.float64).mean(dim = 0).view(-1))
 
     def _fake_capture_hook(self, func, module, input, output: torch.Tensor):
-        self._act_w.append(func(output.detach()).mean(dim = 0).view(-1))
+        self._act_w.append(func(output.detach().to(torch.float64)).mean(dim = 0).view(-1))
 
     def post_step_hook(self, x, y, _, step, train_cardinality, epoch):
-        #self.print(step, color = "red")
-        if (step + 2) % 32 == 7:#(step + 2) == train_cardinality:
+        if (step + 2) % 128 == 7 and (step + 2 != 7):#(step + 2) == train_cardinality:
+            #self.print("init hooks", color = "red") 
             self.init_capture_hooks()
-        elif (step + 1) % 32 == 7:#((step + 1) == train_cardinality):
+        elif (step + 1) % 128 == 7 and (step + 1 != 7):#((step + 1) == train_cardinality):
             ticket, fitness = self.search(x, y)
             self.remove_handles()
             self._fitness_monitor.append(((step + 1 + train_cardinality * epoch), fitness))
+            #self.print("added fitness", color = "red")
 
     def search(self, x, y):
         with torch.no_grad():
@@ -742,6 +741,5 @@ class CNN_DGTS(BaseCNNTrainer):
             if len(self._act_w) != 0: 
                 activation_mask = torch.cat(self._act_w)
                 self._act_w.clear()
-                activation_mask = activation_mask.to(torch.float64)
 
             return self.GTS.search(self.mm.sparsity * self.sparsity_rate, max_iterations = 48, full_acts = activation_mask, inp = x)

@@ -49,7 +49,7 @@ def main(rank, world_size, name: str, lock, shared_list, **kwargs):
     torch.cuda.empty_cache()
     gc.collect()
 
-    dt, dv = get_loaders(rank, world_size, batch_size = 128, iterate = True) 
+    dt, dv = get_loaders(rank, world_size, batch_size = 128) 
 
     logs = T.fit(dt, dv, EPOCHS, CARDINALITY, name, save = False, verbose = False)
 
