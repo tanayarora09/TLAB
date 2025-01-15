@@ -136,12 +136,12 @@ def get_loaders(rank, world_size, batch_size = 128):
 
     dt = DataLoader(train_data, batch_size = batch_size//world_size, 
                     sampler = DistributedSampler(train_data), 
-                    pin_memory = True, num_workers = 8, 
+                    pin_memory = True, num_workers = 16, 
                     persistent_workers = True)
 
     dv = DataLoader(test_data, batch_size = batch_size//world_size, 
                     sampler = DistributedSampler(test_data), 
-                    pin_memory = True, num_workers = 8, 
+                    pin_memory = True, num_workers = 16, 
                     persistent_workers = True)
     
     return dt, dv

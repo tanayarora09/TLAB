@@ -28,7 +28,8 @@ class VGG(BaseModel):
             super(VGG.ConvBN, self).__init__()
 
             self.register_module("conv", LotteryConv2D(input_channels, num_filters, 
-                                                        kernel_size, stride, padding))
+                                                        kernel_size, stride, padding, 
+                                                        'conv'))
             
             self.register_module("norm", nn.BatchNorm2d(num_filters, track_running_stats = False))
 

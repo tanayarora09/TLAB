@@ -6,7 +6,7 @@ import torch.distributed as dist
 from collections import defaultdict
 import time
 
-from training.base import CNN_DGTS, BaseIMP
+from training.base import CNN_DGTS, BaseIMP, BaseCNNTrainer
 
 from utils.serialization_utils import read_tensor, save_tensor
 
@@ -14,6 +14,13 @@ import math
 import os
 import sys
 import gc
+
+class VGG_CNN(BaseCNNTrainer):
+
+    def post_epoch_hook(self, epoch):
+        if epoch == 78 or epoch == 118: # Epochs 80, 120
+            self.reduce_learning_rate(10)
+        return 
 
 class VGG_POC(BaseIMP):
 
@@ -213,6 +220,6 @@ class VGG_DGTS(CNN_DGTS):
                 if n.endswith("relu"): self._capture_layers.append(layer)
                 elif n.endswith("fc"): self._fcapture_layers.append((layer, nn.ReLU()))
         
-    def pre_epoch_hook(self, epoch):
-        if (epoch == 79) or (epoch == 119): 
+    def pre_epoch_hook(self, epoch, EPOCHS):
+        if (epoch == EPOCHS//2 - 1) or (epoch == (EPOCHS * 3)//4 - 1): 
             self.reduce_learning_rate(10)

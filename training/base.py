@@ -11,7 +11,7 @@ import numpy as np
 import torchinfo
 from tqdm import tqdm
 
-from typing import Callable, Tuple
+from typing import Callable, Tuple, Type
 from collections import defaultdict
 import time
 import math
@@ -37,7 +37,8 @@ class BaseCNNTrainer:
         self.IsRoot = rank == 0
         self.WORLD_SIZE = world_size
 
-    def build(self, optimizer: torch.optim.Optimizer, 
+    def build(self, optimizer: Type[torch.optim.Optimizer], 
+              optim_kwargs : dict[str, object],
               collective_transforms: Tuple[nn.Module],
               train_transforms: Tuple[nn.Module],
               eval_transforms: Tuple[nn.Module],
@@ -59,7 +60,10 @@ class BaseCNNTrainer:
         """
 
         self.criterion = loss
-        self.optim = optimizer
+        self.optimizer = optimizer
+        self.optim_kwargs = optim_kwargs
+        self.reset_optimizer(reset_lr = True)
+
 
         self.cT = collective_transforms
         self.tT = train_transforms
@@ -154,6 +158,7 @@ class BaseCNNTrainer:
         Collects Loss, Accuracy, and Sample Count.
         Do not directly call. Use transfer_metrics instead.
         """
+        dist.barrier(device_ids = [self.RANK])
         with torch.no_grad():
             dist.all_reduce(self.loss_tr, op = dist.ReduceOp.SUM)
             dist.all_reduce(self.acc_tr, op = dist.ReduceOp.SUM)
@@ -196,7 +201,7 @@ class BaseCNNTrainer:
             train_start = time.time()
             self.m.train()
 
-            self.pre_epoch_hook(epoch)
+            self.pre_epoch_hook(epoch, epochs)
 
             accum = False
 
@@ -224,7 +229,10 @@ class BaseCNNTrainer:
 
                 self.train_step(x, y, accum, accumulation_steps)
 
-                self.post_step_hook(x = x, y = y, _ = _, step = step, train_cardinality = train_cardinality, epoch = epoch)
+                #if not self.IsSparse: self.train_step(x, y, accum, accumulation_steps)
+                #else: self.sparse_train_step(x, y, accum, accumulation_steps)
+
+                self.post_step_hook(x = x, y = y, _ = _, step = step, iteration = iter)
 
                 if accum:
                     
@@ -268,13 +276,13 @@ class BaseCNNTrainer:
                 for k, v in logs[(epoch + 1) * train_cardinality].items():
                     self.print(f" {k}: {v:.9f}", 'cyan')
 
-                progress_bar.set_postfix_str(self.color_str(f"Time Taken: {(time.time() - train_start):.2f}s", "green") + ", " + self.color_str(f"Best Epoch: {best_epoch}", "green")) 
+                progress_bar.set_postfix_str(self.color_str(f"Time Taken: {(time.time() - train_start):.2f}s", "green") + ", " + self.color_str(f"Sparsity: {self.mm.sparsity.item()}", "green")) 
 
                 progress_bar.update(1)
 
                 #self.print(f"Total for Epoch: {(time.time() - train_start):.1f} seconds.", 'yellow')
 
-            self.post_epoch_hook(epoch)
+            self.post_epoch_hook(epoch, epochs)
 
         if self.IsRoot:
 
@@ -284,8 +292,6 @@ class BaseCNNTrainer:
 
         return logs
  
-
-    #@torch.compile
     def train_step(self, x: torch.Tensor, y: torch.Tensor, accum: bool = True, accum_steps: int = 1, id: str = None):
         
         with torch.autocast('cuda', dtype = torch.float16, enabled = self.AMP):
@@ -304,7 +310,7 @@ class BaseCNNTrainer:
         self.lossScaler.scale(loss).backward()
 
         self.lossScaler.unscale_(self.optim)
-        nn.utils.clip_grad_norm_(self.m.parameters(), max_norm = self.gClipNorm)
+        nn.utils.clip_grad_norm_(self.m.parameters(), self.gClipNorm)
 
         self.lossScaler.step(self.optim)
         self.lossScaler.update()
@@ -319,19 +325,52 @@ class BaseCNNTrainer:
         
         return
     
+    """def sparse_train_step(self, x: torch.Tensor, y: torch.Tensor, accum: bool = True, accum_steps: int = 1, id: str = None):
+        
+        with torch.autocast('cuda', dtype = torch.float16, enabled = self.AMP):
+
+            output = self.m(x)
+            loss = self.criterion(output, y) #+ self.LD * self.calculate_custom_regularization()
+            loss /= accum_steps
+
+        if not accum:
+            
+            with self.m.no_sync():
+                self.lossScaler.scale(loss).backward()
+
+            return
+        
+        self.lossScaler.scale(loss).backward()
+
+        self.lossScaler.unscale_(self.optim)
+        nn.utils.clip_grad_value_(self.m.parameters(), self.gClipVal)
+
+        self.lossScaler.step(self.optim)
+        self.lossScaler.update()
+
+        self.optim.zero_grad(set_to_none = True)
+
+        with torch.no_grad():
+
+            self.loss_tr += loss
+            self.acc_tr += self.correct_k(output, y)
+            self.count_tr += y.size(dim = 0)
+        
+        return
+    """
 
     #------------------------------------------ TRAINING HOOKS ----------------------------------------------- #
 
-    def pre_epoch_hook(self, epoch: int) -> None:
+    def pre_epoch_hook(self, epoch: int, EPOCHS: int) -> None:
         pass
     
-    def post_epoch_hook(self, epoch) -> None:
+    def post_epoch_hook(self, epoch, EPOCHS: int) -> None:
         pass
     
     def pre_step_hook(self, step: int, steps_per_epoch: int) -> None:
         pass
 
-    def post_step_hook(self, x, y, _, step, train_cardinality, epoch) -> None:
+    def post_step_hook(self, x, y, _, step, iteration) -> None:
         pass
 
     def post_train_hook(self) -> None:
@@ -339,7 +378,6 @@ class BaseCNNTrainer:
 
     #------------------------------------------ MAIN EVALUATE FUNCTIONS -------------------------------------- #
 
-    #@torch.compile
     def evaluate(self, test_data: torch.utils.data.DataLoader) -> None:
         """
         Evaluate model on dataloader.
@@ -363,8 +401,7 @@ class BaseCNNTrainer:
             self.transfer_metrics()
         #self.print(f"Evaluated on {self.ecount.detach().item()} samples.")
         return
-
-    #@torch.compile
+    
     def test_step(self, x: torch.Tensor, y: torch.Tensor) -> None:
         
         with torch.no_grad():
@@ -381,7 +418,6 @@ class BaseCNNTrainer:
 
     #------------------------------------------ SERIALIZATION FUNCTIONS -------------------------------------- #
 
-    
     def save_ckpt(self, name: str, prefix: str = None):
         """
         Saves Model, Optimizer, and LossScaler state_dicts.
@@ -445,6 +481,14 @@ class BaseCNNTrainer:
         Should be reset every 
         """
         self.lossScaler = torch.amp.GradScaler(device = 'cuda', enabled = self.AMP)
+
+    def reset_optimizer(self, reset_lr = False):
+        if not reset_lr: rate = self.optim.param_groups[0]['lr']
+        self.optim = self.optimizer(self.m.parameters(), **self.optim_kwargs)
+        if reset_lr: return
+        new_rate = self.optim.param_groups[0]['lr']
+        self.reduce_learning_rate(new_rate/rate)
+
 
     def reduce_learning_rate(self, factor: int):
         with torch.no_grad():    
@@ -550,7 +594,7 @@ class CNN_DGTS(BaseCNNTrainer):
     class DGTS:
 
         def __init__(self, rank: int, world_size: int, lock, dynamic_list, 
-                     model: BaseModel, act_w: list, max_size: int = 50):
+                     model: BaseModel, act_w: list, max_size: int, strength_percentage):
             self.lock = lock
             self.population = dynamic_list
             del self.population[:]
@@ -559,6 +603,7 @@ class CNN_DGTS(BaseCNNTrainer):
             self.MAX_SIZE = max_size
             self.mm = model
             self.act_w = act_w
+            self._strength_percentage = strength_percentage
 
         def add_sample(self, mask: torch.Tensor, fitness: float):
 
@@ -569,9 +614,9 @@ class CNN_DGTS(BaseCNNTrainer):
                 left, right = 0, len(self.population) - 1
                 while left <= right:
                     mid = (left + right) // 2
-                    if self.population[mid][1] > fitness:
+                    if self.population[mid][1] < fitness:
                         left = mid + 1
-                    else: 
+                    else:
                         right = mid - 1
 
                 self.population.insert(left, (mask, fitness, ))
@@ -599,8 +644,7 @@ class CNN_DGTS(BaseCNNTrainer):
                     sample.append(self.population[i])
                     ptr += 1
 
-
-            probs = np.arange(len(sample), 0, step = -1, dtype = np.float32)
+            probs = np.power(np.arange(len(sample), 0, step = -1, dtype = np.float32), 1)
             probs /= probs.sum()
             selection = np.random.choice(len(sample), replace = False, p = probs, size = 2)
 
@@ -619,13 +663,14 @@ class CNN_DGTS(BaseCNNTrainer):
 
                 parents = self.distribute_parents()
                 fitness_sum = parents[0][1] + parents[1][1] 
-                child = self.mm.merge_tickets(parents[0][0], parents[1][0], 
-                                              (parents[0][1]/fitness_sum), 
-                                              (parents[1][1]/fitness_sum))
+                child = self.mm.merge_tickets(parents[0][0].cuda(), parents[1][0].cuda(), 
+                                              torch.as_tensor(parents[0][1]/fitness_sum), 
+                                              torch.as_tensor(parents[1][1]/fitness_sum))
 
                 if (torch.rand(1, ).item() < mutation_rate): child = self.mm.mutate_ticket(child)
 
                 self.mm.set_ticket(child)
+                child = child.cpu()
                 self.mm(inp)
                 
                 curr_activations = torch.cat(self.act_w)
@@ -643,11 +688,15 @@ class CNN_DGTS(BaseCNNTrainer):
 
             with torch.no_grad():
 
+                original_ticket = self.mm.export_ticket_cpu().clone()
+
                 self.mm.eval()
 
                 for _ in range(2):
                     self.mm.reset_ticket()
-                    self.mm.prune_random(sparsity, distributed = False)
+                    strong_rate = 1.0 - (1.0 - sparsity) * self._strength_percentage
+                    self.mm.prune_by_mg_rand(rate = strong_rate, quant_rate = sparsity)
+                    self.mm.prune_random(sparsity/(strong_rate), distributed = False)
                     sample = self.mm.export_ticket_cpu().clone()
 
                     self.mm(inp)
@@ -666,6 +715,8 @@ class CNN_DGTS(BaseCNNTrainer):
                     self.search_step(full_acts, inp)
 
                 output = self.population[0]
+
+                self.mm.set_ticket(original_ticket)
 
                 dist.barrier(device_ids = [self.RANK])
 
@@ -688,18 +739,40 @@ class CNN_DGTS(BaseCNNTrainer):
         self.SHARED_LIST = dynamic_list
         
         self._act_w = list()
-        self._fitness_monitor = list() #[fitnesses]
+
+        self.prunes = list()
+        self.fitnesses = list()
 
         self._capture_layers = list() if not hasattr(self, "_capture_layers") else self._capture_layers
         self._fcapture_layers = list() if not hasattr(self, "_fcapture_layers") else self._fcapture_layers
         self._handles = list()
 
 
-
     def build(self, sparsity_rate, *args, **kwargs):
         super().build(*args, **kwargs)
-        self.sparsity_rate = sparsity_rate
 
+        self.sparsity_rate = sparsity_rate
+        self._best_fitness = float("inf")
+        self._best_ticket = None
+        self._plateau_epochs = 0
+        self._prune_status = 0 # 0 = Monitoring, 1 = Currently Pruning, 2 = Done Pruning
+        self._last_prune_iter = None # None = Monitoring
+        self._prunes_iters = 0
+
+    def build_experiment(self, args: list[float|int]):
+
+        """
+        Iterations, Size, Spacing, PlateauStopEps, Sparsity
+        """
+        
+        self.search_iters = args[0]
+        self.pop_size = args[1]
+        self.prune_spacing = args[2]
+        self.STOP_PLATEAU = args[3]
+        self.desired_sparsity = args[4]
+        self.strength_percentage = args[5]
+
+        
     def init_capture_hooks(self): 
         for layer in self._capture_layers:
             self._handles.append(layer.register_forward_hook(self._capture_hook))
@@ -717,15 +790,123 @@ class CNN_DGTS(BaseCNNTrainer):
     def _fake_capture_hook(self, func, module, input, output: torch.Tensor):
         self._act_w.append(func(output.detach().to(torch.float64)).mean(dim = 0).view(-1))
 
-    def post_step_hook(self, x, y, _, step, train_cardinality, epoch):
-        if (step + 2) % 128 == 7 and (step + 2 != 7):#(step + 2) == train_cardinality:
-            #self.print("init hooks", color = "red") 
+    def post_step_hook(self, x, y, _, step, iteration):
+        """
+        if (step + 2) == 130:
             self.init_capture_hooks()
-        elif (step + 1) % 128 == 7 and (step + 1 != 7):#((step + 1) == train_cardinality):
+        
+        elif (step + 1) == 130:
             ticket, fitness = self.search(x, y)
             self.remove_handles()
-            self._fitness_monitor.append(((step + 1 + train_cardinality * epoch), fitness))
-            #self.print("added fitness", color = "red")
+            self.fitnesses.append((iteration/391, fitness, (ticket.sum()/ticket.numel()).item()))
+        """
+        """if (self._prune_status == 2): return
+        elif (self._prune_status == 0):
+            if (step + 2) == 390:
+                self.init_capture_hooks()
+            elif (step + 1) == 390:
+                status, ticket, fitness = self.monitor_fitnesses(x, y)
+                self.remove_handles()
+                self.fitnesses.append((iteration/391, fitness))
+                if status:
+                    self.mm.set_ticket(ticket)
+                    self.prunes.append(f"Epoch {iteration//391}: Pruned to {self.mm.sparsity:.3f}% sparsity with fitness: {fitness}.")
+                    self._prunes_iters += 1
+                    self._last_prune_iter = iteration
+                    if self.mm.sparsity_d <= self.desired_sparsity: 
+                        self.prunes.append(f"Finished pruning on epoch {iteration/391}.")
+                        self._prune_status = 2
+                    #self.mm.migrate_to_sparse()
+                    #self.reset_optimizer()
+        """
+        if (self._prune_status == 2): return
+        elif (self._prune_status == 0):
+            if (step + 2) == 390:
+                self.init_capture_hooks()
+            elif (step + 1) == 390:
+                status, ticket, fitness = self.monitor_fitnesses(x, y)
+                self.remove_handles()
+                self.fitnesses.append((iteration/391, fitness))
+                if status:
+                    self.mm.set_ticket(self._best_ticket)
+                    self.prunes.append(f"Epoch {iteration//391}: Pruned to {self.mm.sparsity:.3f}% sparsity with fitness: {self._best_fitness}.")
+                    self._prunes_iters += 1
+                    self._last_prune_iter = iteration
+                    if self.mm.sparsity_d <= self.desired_sparsity: 
+                        self.prunes.append(f"Finished pruning on epoch {iteration/391}.")
+                        self._prune_status = 2
+                    #self.mm.migrate_to_sparse()
+                    #self.reset_optimizer()
+        
+
+        """
+        if self._prune_status == 2:
+            return
+
+        elif self._prune_status == 0:
+
+            if (step+2) == 130:
+                self.init_capture_hooks()
+                
+            elif (step + 1) == 130:
+                status, ticket, fitness = self.monitor_fitnesses(x, y)
+                self.remove_handles()
+                self.fitnesses.append((iteration/391, fitness))
+                if status: 
+                    self.mm.set_ticket(ticket)
+                    self.prunes.append(f"Epoch {iteration//391}: Pruned to {self.mm.sparsity:.3f}% sparsity with fitness: {fitness}.")
+                    self._prunes_iters += 1
+                    self._prune_status = 1
+                    self._last_prune_iter = iteration
+
+        elif self._prune_status == 1: 
+
+            if (iteration - self._last_prune_iter) == self.prune_spacing - 1:
+                self.init_capture_hooks()
+
+            if (iteration - self._last_prune_iter) == self.prune_spacing: 
+                
+                ticket, fitness = self.search(x, y)
+                self.remove_handles()
+                self.mm.set_ticket(ticket)
+                self._last_prune_iter = iteration
+                self._prunes_iters += 1
+
+                self.fitnesses.append((iteration/391, fitness))
+                self.prunes.append(f"Epoch {iteration//391}: Pruned to {self.mm.sparsity:.3f}% sparsity with fitness {fitness}.")
+                
+            
+                if self.mm.sparsity_d <= self.desired_sparsity: 
+                    self.prunes.append(f"Finished pruning on epoch {iteration/391}.")
+                    self._prune_status = 2
+                    #self.mm.migrate_to_sparse()
+                    #self.reset_optimizer()"""
+
+        dist.barrier(device_ids = [self.RANK])
+
+        return
+    
+    def monitor_fitnesses(self, x, y):
+        
+        ticket, fitness = self.search(x, y)
+        
+        if fitness > self._best_fitness:
+            
+            self._plateau_epochs += 1
+
+            if self._plateau_epochs == self.STOP_PLATEAU:    
+                self._best_fitness = float("inf")
+                self._best_ticket = torch.empty_like(self._best_ticket)
+                self._plateau_epochs = 0 
+                return True, ticket, fitness
+
+        else:
+            self._best_fitness = fitness
+            self._best_ticket = ticket
+            self._plateau_epochs = 0
+
+        return False, ticket, fitness
+
 
     def search(self, x, y):
         with torch.no_grad():
@@ -735,11 +916,13 @@ class CNN_DGTS(BaseCNNTrainer):
             self.GTS = self.DGTS(self.RANK, self.WORLD_SIZE, 
                                 self.LOCK, self.SHARED_LIST,
                                 self.mm, act_w = self._act_w,
-                                max_size = 50)
+                                max_size = self.pop_size,
+                                strength_percentage = self.strength_percentage)
             
             activation_mask = None
             if len(self._act_w) != 0: 
                 activation_mask = torch.cat(self._act_w)
                 self._act_w.clear()
+                activation_mask.div_(activation_mask.sum())
 
-            return self.GTS.search(self.mm.sparsity * self.sparsity_rate, max_iterations = 48, full_acts = activation_mask, inp = x)
+            return self.GTS.search(self.mm.sparsity_d.item() * self.sparsity_rate, max_iterations = self.search_iters, full_acts = activation_mask, inp = x)
