@@ -692,7 +692,7 @@ class CNN_DGTS(BaseCNNTrainer):
 
                 self.mm.eval()
 
-                for _ in range(2):
+                for _ in range(4):
                     self.mm.reset_ticket()
                     strong_rate = 1.0 - (1.0 - sparsity) * self._strength_percentage
                     self.mm.prune_by_mg_rand(rate = strong_rate, quant_rate = sparsity)

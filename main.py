@@ -6,6 +6,8 @@ import torch.distributed as dist
 import os
 import sys
 
+import signal
+
 import random
 
 
@@ -57,7 +59,12 @@ def main(func, name: str, SEED: int, args: str):
     world_size = torch.cuda.device_count()
     mp.spawn(dist_wrapper, args=(world_size, func, name, SEED, args, lock, shared_list), nprocs=world_size, join=True)
 
+def exit_handle(signum, frame):
+    print(torch.cuda.memory_snapshot())
+
 if __name__ == "__main__":
+
+    signal.signal(signal.SIGABRT, exit_handle)
 
     print(sys.argv)
     
