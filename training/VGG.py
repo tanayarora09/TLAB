@@ -213,6 +213,8 @@ class VGG_DGTS(CNN_DGTS):
                 if n.endswith("relu"): self._capture_layers.append(layer)
                 elif n.endswith("fc"): self._fcapture_layers.append((layer, nn.ReLU()))
         
-    def pre_epoch_hook(self, epoch):
-        if (epoch == 79) or (epoch == 119): 
+    def pre_epoch_hook(self, epoch, EPOCHS):
+        if (epoch + 1 == 80) or (epoch + 1 == 120):
             self.reduce_learning_rate(10)
+        #if (epoch + 1 == (EPOCHS // 2)) or (epoch + 1 == (EPOCHS * 3 // 4)): 
+        #    self.reduce_learning_rate(10)

@@ -195,52 +195,52 @@ class BaseModel(nn.Module):
 
         O(N) Runtime and Space Complexity
         """
-        with torch.no_grad():
-                
-            child = t1 & t2
-            
-            remaining = int(t1.sum() - child.sum())
-
-            if remaining == 0: return child
-            
-            available = torch.bitwise_xor(t1, t2)
-
-            sample_probs = (t1_weight * t1.float() + t2_weight * t2.float())[available]
-
-            sample_probs = sample_probs / sample_probs.sum()
-
-            available_indices = available.nonzero(as_tuple=True)[0]
-
-            sampled_indices = available_indices[torch.randperm(len(available_indices))[:remaining]]
-
-            child[sampled_indices] = True
-
-            return child
-
+        return merge_tickets_graphed(t1, t2, torch.as_tensor(t1_weight), torch.as_tensor(t2_weight))
 
     #@torch.compile
     def mutate_ticket(self, ticket: torch.Tensor, temperature: float = 0.2) -> torch.Tensor:
         """
         Mutates a given ticket by randomly swapping temperature * min(true_values, false_values) values
         """
-        with torch.no_grad():
-                
-            ticket = ticket.clone()
 
-            ntrue = ticket.count_nonzero()
-            nfalse = ticket.numel() - ntrue
-
-            swaps = int(temperature * min(ntrue, nfalse))
-
-            if swaps == 0: return ticket
-
-            true_indices = ticket.nonzero(as_tuple=True)[0]
-            false_indices = (~ticket).nonzero(as_tuple=True)[0]
-
-            swap_true_indices = true_indices[torch.randperm(len(true_indices))[:swaps]]
-            swap_false_indices = false_indices[torch.randperm(len(false_indices))[:swaps]]
-
-            ticket[swap_true_indices] = False
-            ticket[swap_false_indices] = True
+        return mutate_ticket_graphed(ticket, torch.as_tensor(temperature))
+    
+        
+@torch.compile
+def merge_tickets_graphed(t1: torch.Tensor, t2: torch.Tensor, t1w: torch.Tensor, 
+                          t2w: torch.Tensor) -> torch.Tensor:
+    with torch.no_grad():
+        child = t1 & t2
+        remaining = (t1.sum() - child.sum()).int()
+        if remaining == 0: return child
+        available_indices = torch.bitwise_xor(t1, t2).nonzero().view(-1)
+        sample = (t1w * t1.float() + t2w * t2.float())[available_indices]
+        sample.div_(sample.sum())
+        child[available_indices[torch.multinomial(sample, remaining, replacement = False)]] = True
+        return child
         
 
+
+@torch.compile
+def mutate_ticket_graphed(ticket: torch.Tensor, temperature: torch.Tensor):
+
+    with torch.no_grad():
+
+        ticket = ticket.clone()
+        ntrue = ticket.count_nonzero()
+        nfalse = ticket.numel() - ntrue
+
+        swaps = (temperature * min(ntrue, nfalse)).int()
+
+        if swaps == 0: return ticket
+
+        true_indices = ticket.nonzero().view(-1)
+        false_indices = (~ticket).nonzero().view(-1)
+        
+        swap_true_indices = true_indices[torch.randperm(true_indices.numel())[:swaps]]
+        swap_false_indices = false_indices[torch.randperm(false_indices.numel())[:swaps]]
+
+        ticket[swap_true_indices] = False
+        ticket[swap_false_indices] = True
+
+        return ticket

@@ -13,10 +13,12 @@ import json
 import pickle
 import gc
 
-def main(rank, world_size, name: str, lock, shared_list, **kwargs):
+def main(rank, world_size, name: str, args: list, lock, shared_list, **kwargs):
 
-    EPOCHS = 160
+    EPOCHS = int(args[0])
     CARDINALITY = 391
+    
+    name += "_" + ",".join([str(item) for item in args])
 
     dataAug = torch.jit.script(DataAugmentation().to('cuda'))
     resize = torch.jit.script(Resize().to('cuda'))
@@ -40,7 +42,7 @@ def main(rank, world_size, name: str, lock, shared_list, **kwargs):
             loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
             collective_transforms = (resize, normalize), train_transforms = (dataAug,),
             eval_transforms = (center_crop,), final_collective_transforms = tuple(),
-            scale_loss = True, gradient_clipnorm = 2.0)
+            scale_loss = True, gradient_clipnorm = 2.0, experiment_args = args[1:])
 
     #T.summary(32)
 
@@ -67,10 +69,13 @@ def main(rank, world_size, name: str, lock, shared_list, **kwargs):
 
         logs_to_pickle(logs, name)
 
-        with open(f"./logs/PICKLES/{name}_divs.pickle", 'wb') as file:
-            pickle.dump(T._fitness_monitor, file, protocol=pickle.HIGHEST_PROTOCOL)
+        logs_to_pickle(T.fitnesses, name, suffix = "fitnesses")
 
-        
+        #logs_to_pickle(T.prunes, name, suffix = "prunes")
+
+        with open(f"./logs/PICKLES/{name}_prunes.json", "w") as f:
+            json.dump(T.prunes, f, indent = 6)
+
         plot_logs(logs, EPOCHS, name, steps = CARDINALITY)
 
     torch.distributed.barrier(device_ids = [rank])

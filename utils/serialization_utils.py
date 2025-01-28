@@ -2,12 +2,12 @@ import pickle
 import h5py
 import torch
 
-def logs_from_pickle(name):
-    with open(f"./logs/PICKLES/{name}_logs.pickle", 'rb') as file:
+def logs_from_pickle(name, suffix = "logs"):
+    with open(f"./logs/PICKLES/{name}_{suffix}.pickle", 'rb') as file:
         return pickle.load(file)
 
-def logs_to_pickle(logs, name):
-    with open(f"./logs/PICKLES/{name}_logs.pickle", 'wb') as file:
+def logs_to_pickle(logs, name, suffix = "logs"):
+    with open(f"./logs/PICKLES/{name}_{suffix}.pickle", 'wb') as file:
         pickle.dump(logs, file, protocol=pickle.HIGHEST_PROTOCOL)
 
 @torch._dynamo.disable
