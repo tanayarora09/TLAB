@@ -20,6 +20,8 @@ import h5py
 from models.LotteryLayers import Lottery
 from models.base import BaseModel
 
+from data.cifar10 import custom_fetch_data
+
 class BaseCNNTrainer:
 
     #------------------------------------------ MAIN INIT FUNCTIONS -------------------------------------- #
@@ -163,7 +165,7 @@ class BaseCNNTrainer:
 
     def fit(self, train_data: torch.utils.data.DataLoader, validation_data: torch.utils.data.DataLoader,
             epochs: int, train_cardinality: int, name: str, accumulation_steps: int = 1, save: bool = True, 
-            verbose: bool = True, rewind_iter: int = 500) -> dict:
+            verbose: bool = True, rewind_iter: int = 500, sampler_offset: int = 0, validate: bool = True) -> dict:
         """
         Basic Training Run Implementation.
         Override by Copy and Pasting.
@@ -176,7 +178,7 @@ class BaseCNNTrainer:
 
         if self.IsRoot: 
             progress_bar = tqdm(total = epochs, unit = "epoch", colour = "green", bar_format="{l_bar}{bar:25}{r_bar}{bar:-25b}", leave = False)
-            print("\n\n\n\n")
+            print(f"\n\n\n\n")
 
 
         logs = defaultdict(dict)
@@ -189,6 +191,7 @@ class BaseCNNTrainer:
         train_start = None
         val_start = None
 
+        _break = False
 
         for epoch in range(epochs):
 
@@ -202,15 +205,15 @@ class BaseCNNTrainer:
 
             self.reset_metrics()
 
-            train_data.sampler.set_epoch(epoch)
+            train_data.sampler.set_epoch(epoch + train_cardinality * sampler_offset)
 
             for step, (x, y, *_) in enumerate(train_data):
-
+                if _break: continue
                 iter = int(epoch * train_cardinality + step + 1)
                 accum = ((step + 1) % accumulation_steps == 0) or (step + 1 == train_cardinality)
 
-                if (iter - 1) == rewind_iter and save:
-                    self.save_ckpt(name = name, prefix = "rewind")
+                #if (iter - 1) == rewind_iter and save:
+                #    self.save_ckpt(name = name, prefix = "rewind")
 
                 self.pre_step_hook(step, train_cardinality)
 
@@ -224,7 +227,9 @@ class BaseCNNTrainer:
 
                 self.train_step(x, y, accum, accumulation_steps)
 
-                self.post_step_hook(x = x, y = y, _ = _, step = step, iteration = iter)
+                if not self.post_step_hook(dt = train_data, step = step, iteration = iter, name = name): 
+                    if self.IsRoot: progress_bar.close()
+                    _break = True
 
                 if accum:
                     
@@ -237,32 +242,39 @@ class BaseCNNTrainer:
                         if (step + 1) % 48 == 0 and self.IsRoot and verbose:
                             
                             self.print(f"----  Status at {math.ceil((step + 1) / 48):.0f}/8: ----     Accuracy: {logs[iter]['accuracy']:.4f}   --  Loss: {logs[iter]['loss']:.5f} --", 'white')
+            
+            if _break: return logs
 
             self.post_train_hook()
 
+
             #if verbose: self.print(f"Training stage took {(time.time() - train_start):.1f} seconds.", 'yellow')
+            if validate:
+                #val_start = time.time()
 
-            val_start = time.time()
+                validation_data.sampler.set_epoch(epoch + epochs * sampler_offset)
 
-            validation_data.sampler.set_epoch(epoch)
+                dist.barrier(device_ids = [self.RANK])
 
-            dist.barrier(device_ids = [self.RANK])
+                self.evaluate(validation_data)
 
-            self.evaluate(validation_data)
+                if self.IsRoot:
+
+                    logs[(epoch + 1) * train_cardinality].update({('val_' + k): v for k, v in self.metric_results().items()})
+
+                    if logs[(epoch + 1) * train_cardinality]['val_loss'] < best_val_loss:
+                        best_val_loss = logs[(epoch + 1) * train_cardinality]['val_loss']
+                        #if verbose: self.print(f"\n -- UPDATING BEST WEIGHTS TO {epoch + 1} -- \n", "magenta")
+                        best_epoch = epoch + 1
+                        self.save_ckpt(name = name, prefix = "best")
+
+                    #if verbose: self.print(f"Validation stage took {(time.time() - val_start):.1f} seconds.", 'yellow')
+                    
+                    #self.print(f"Total for Epoch: {(time.time() - train_start):.1f} seconds.", 'yellow')
 
             if self.IsRoot:
 
-                logs[(epoch + 1) * train_cardinality].update({('val_' + k): v for k, v in self.metric_results().items()})
-
-                if logs[(epoch + 1) * train_cardinality]['val_loss'] < best_val_loss:
-                    best_val_loss = logs[(epoch + 1) * train_cardinality]['val_loss']
-                    #if verbose: self.print(f"\n -- UPDATING BEST WEIGHTS TO {epoch + 1} -- \n", "magenta")
-                    best_epoch = epoch + 1
-                    self.save_ckpt(name = name, prefix = "best")
-
-                #if verbose: self.print(f"Validation stage took {(time.time() - val_start):.1f} seconds.", 'yellow')
-                
-                self.clear_lines(6)
+                self.clear_lines(6 if validate else 4)
 
                 print(self.color_str("\nEpoch ", "white") + self.color_str(epoch + 1, "orange")+ self.color_str(f"/{epochs}: ", "white"))
                 for k, v in logs[(epoch + 1) * train_cardinality].items():
@@ -271,8 +283,6 @@ class BaseCNNTrainer:
                 progress_bar.set_postfix_str(self.color_str(f"Time Taken: {(time.time() - train_start):.2f}s", "green") + ", " + self.color_str(f"Sparsity: {self.mm.sparsity.item()}", "green")) 
 
                 progress_bar.update(1)
-
-                #self.print(f"Total for Epoch: {(time.time() - train_start):.1f} seconds.", 'yellow')
 
             self.post_epoch_hook(epoch, epochs)
 
@@ -331,8 +341,8 @@ class BaseCNNTrainer:
     def pre_step_hook(self, step: int, steps_per_epoch: int) -> None:
         pass
 
-    def post_step_hook(self, x, y, _, step, iteration) -> None:
-        pass
+    def post_step_hook(self, *args, **kwargs) -> bool:
+        return True
 
     def post_train_hook(self) -> None:
         pass
@@ -395,13 +405,13 @@ class BaseCNNTrainer:
                     'scaler': self.lossScaler.state_dict()}
             torch.save(ckpt, fp)        
 
-    def load_ckpt(self, name: str, prefix: str = None):
+    def load_ckpt(self, name: str, prefix: str = None, zero_out = True):
         """
         Loads Model, Optimizer, and LossScaler state_dicts.
         Meant to be used with save_ckpt.
         """
         with torch.no_grad():
-                
+
             fp = f"./logs/WEIGHTS/{self.fromNamePrefix(name, prefix)}.pt"
 
             dist.barrier(device_ids = [self.RANK])
@@ -409,8 +419,12 @@ class BaseCNNTrainer:
             ckpt = torch.load(fp, map_location = {'cuda:%d' % 0: 'cuda:%d' % self.RANK},
                             weights_only = True) # Assumes rank = 0 is Root.
             self.m.load_state_dict(ckpt['model'])
+            ckpt['optim']['param_groups'] =self.optim.state_dict()['param_groups']
             self.optim.load_state_dict(ckpt['optim'])
             self.lossScaler.load_state_dict(ckpt['scaler'])
+            
+            if zero_out:
+                self.prune_model(self.mm.export_ticket_cpu())
 
     #------------------------------------------ HELPER FUNCTIONS -------------------------------------- #
 
@@ -458,7 +472,21 @@ class BaseCNNTrainer:
         for _ in range(n):
             print("\033[F\033[K", end="")
 
+    def prune_model(self, ticket: torch.Tensor):
+    
+        #old_sp = self.mm.sparsity_d.item()
+        self.mm.set_ticket(ticket, zero_out = True)
+        #new_sp = self.mm.sparsity_d.item()
+        #self.adjust_weight_decay(factor = (1 - (1 - new_sp/old_sp)/10))
 
+    def adjust_weight_decay(self, factor: float):
+        """
+        factor = 0.1 -> new_decay = 0.1 * old_decay
+        """
+        with torch.no_grad():
+            for pg in self.optim.param_groups:
+                wd = pg['weight_decay']
+                pg['weight_decay'] = wd * (1 - factor / (1 + wd))
 
 
 class BaseIMP(BaseCNNTrainer):
@@ -550,20 +578,23 @@ class CNN_DGTS(BaseCNNTrainer):
     class DGTS:
 
         def __init__(self, rank: int, world_size: int, lock, dynamic_list, 
-                     model: BaseModel, act_w: list, max_size: int = 50):
+                     model: BaseModel, act_w: list, max_size: int = 50,
+                     possible_children: int = 5,): #reverse_scores: bool = False):
             self.lock = lock
             self.population = dynamic_list
             del self.population[:]
             self.RANK = rank
             self.WORLD_SIZE = world_size
             self.MAX_SIZE = max_size
+            self.POSSIBLE_CHILDREN = possible_children
             self.mm = model
             self.act_w = act_w
+            #self.reverse = reverse_scores
+            #self.__div_strat = True
 
         def add_sample(self, mask: torch.Tensor, fitness: float):
 
             mask = mask.cpu()
-
             mask.share_memory_()
 
             with self.lock:
@@ -583,13 +614,16 @@ class CNN_DGTS(BaseCNNTrainer):
             """
             Samples Parents - Linear Rank based from SUS sample
             """
-            
-            fitnesses = [fitness for mask, fitness in self.population]
+
+            size = (len(self.population) // self.WORLD_SIZE) 
+
+            max_fitness = self.population[-1][1] + 1e-11
+            fitnesses = [max_fitness - fitness for mask, fitness in self.population]
 
             total_fitness = sum(fitnesses)
-            pointer_distance = total_fitness / (len(self.population) // self.WORLD_SIZE) 
+            pointer_distance = total_fitness / size
             start_point = (torch.rand(1, ) * pointer_distance).item()
-            pointers = [start_point + n * pointer_distance for n in range(len(self.population) // self.WORLD_SIZE)]
+            pointers = [start_point + n * pointer_distance for n in range(size)]
 
             for i in range(1, len(fitnesses)):
                 fitnesses[i] += fitnesses[i - 1]
@@ -597,12 +631,12 @@ class CNN_DGTS(BaseCNNTrainer):
             sample = list()
             ptr = 0
             for i, cum_fit in enumerate(fitnesses):
-                while ptr < (len(self.population) // self.WORLD_SIZE) and pointers[ptr] <= cum_fit:
+                while ptr < size and pointers[ptr] <= cum_fit:
                     sample.append(self.population[i])
-                    ptr += 1
-
+                    ptr += 1          
 
             probs = np.arange(len(sample), 0, step = -1, dtype = np.float32)
+            #if self.__div_strat: probs = np.sqrt(probs)
             probs /= probs.sum()
             selection = np.random.choice(len(sample), replace = False, p = probs, size = 2)
 
@@ -610,64 +644,70 @@ class CNN_DGTS(BaseCNNTrainer):
         
         def clean_population(self):
             if (self.RANK != 0): return
-            while len(self.population) > self.MAX_SIZE:
-                del self.population[-1]
-    
-        def search_step(self, full_acts: torch.Tensor, inp: torch.Tensor, mutation_rate = 0.1):
+            del self.population[self.MAX_SIZE:]
+
+        def _calculate_sample(self, sample: torch.Tensor, full_acts: torch.Tensor, inp: torch.Tensor):
             
-            dist.barrier(device_ids = [self.RANK])
+            torch.cuda.empty_cache()
+
+            self.mm.set_ticket(sample)
+            self.mm(inp)
+
+            curr_activations = torch.cat(self.act_w)#torch.cat([i * t for i, t in enumerate(self.act_w, start=1)]) # Weight later activations higher, linearly
+            self.act_w.clear()
+            curr_activations += 1e-10
+            curr_activations.div_(curr_activations.sum())
+            curr_activations.log_()
+
+            return F.kl_div(curr_activations, full_acts, reduction = "batchmean").item()
+    
+        def search_step(self, full_acts: torch.Tensor, inp: torch.Tensor, mutation_rate = 0.15, temperature_rate = 0.15):
 
             with torch.no_grad():
 
                 parents = self.distribute_parents()
+                num_children = torch.randint(1, self.POSSIBLE_CHILDREN + 1, (1,), device = "cpu").item()
                 fitness_sum = parents[0][1] + parents[1][1] 
-                child = self.mm.merge_tickets(parents[0][0].cuda(), parents[1][0].cuda(), 
-                                              (torch.as_tensor(parents[0][1])/fitness_sum), 
-                                              (torch.as_tensor(parents[1][1])/fitness_sum))
+                children = [self.mm.merge_tickets(parents[0][0].cuda(), parents[1][0].cuda(), 
+                                              (torch.as_tensor(parents[1][1])/fitness_sum), # the better sample should be weighted with the worse fitness, so that it is greater
+                                              (torch.as_tensor(parents[0][1])/fitness_sum)) 
+                                              for _ in range(num_children)]
 
-                if (torch.rand(1, ).item() < mutation_rate): child = self.mm.mutate_ticket(child)
+                for child in children:
+                    if (torch.rand(1, ).item() < mutation_rate): child = self.mm.mutate_ticket(child, temperature_rate)
+                    self.add_sample(child, self._calculate_sample(child, full_acts, inp))
 
-                self.mm.set_ticket(child)
-                self.mm(inp)
-                
-                curr_activations = torch.cat(self.act_w)
-                self.act_w.clear()
-                curr_activations.div_(curr_activations.sum())
-
-                fitness = F.kl_div((curr_activations + 1e-10).log(), full_acts + 1e-10, reduction = "batchmean").item()
-
-                self.add_sample(child.cpu(), fitness)
-                dist.barrier(device_ids = [self.RANK])
-                self.clean_population()
-                dist.barrier(device_ids = [self.RANK])
-
-        def search(self, sparsity_rate: float, max_iterations: int, full_acts: torch.Tensor, inp: torch.Tensor):
+        def search(self, sparsity_rate: float, max_iterations: int, 
+                   full_acts: torch.Tensor, inp: torch.Tensor,
+                   extra_starters: list[torch.Tensor]):
 
             with torch.no_grad():
 
                 self.mm.eval()
 
-                original_ticket = self.mm.export_ticket_cpu().clone()
+                original_ticket = self.mm.export_ticket_cpu()
 
-                for _ in range(4):
+                if (self.RANK == 2):
+                    for sample in extra_starters: 
+                        self.add_sample(sample, self._calculate_sample(sample, full_acts, inp))
+
+                cnt = len(extra_starters) if (self.RANK == 2) else 0
+                while cnt < (self.MAX_SIZE // 8):  # 4 * (1/2) * 4, 1/2 full
                     self.mm.set_ticket(original_ticket)
                     self.mm.prune_random(sparsity_rate, distributed = False)
-                    sample = self.mm.export_ticket_cpu().clone()
-
-                    self.mm(inp)
-
-                    curr_activations = torch.cat(self.act_w)
-                    self.act_w.clear()
-                    curr_activations.div_(curr_activations.sum())
-
-                    fitness = F.kl_div((curr_activations + 1e-10).log(), full_acts + 1e-10, reduction = "batchmean").item()
-
-                    self.add_sample(sample.cpu(), fitness)
+                    sample = self.mm.export_ticket_cpu()
+                    self.add_sample(sample, self._calculate_sample(sample, full_acts, inp))
+                    cnt += 1
 
                 dist.barrier(device_ids = [self.RANK])
 
                 for it in range(max_iterations):
-                    self.search_step(full_acts, inp)
+                    self.search_step(full_acts, inp,
+                                     0.2, 0.1)
+                    if (it % 2) == 0:
+                        dist.barrier(device_ids = [self.RANK])
+                        self.clean_population()
+                        dist.barrier(device_ids = [self.RANK])
 
                 output = self.population[0]
 
@@ -700,22 +740,50 @@ class CNN_DGTS(BaseCNNTrainer):
         self._capture_layers = list() if not hasattr(self, "_capture_layers") else self._capture_layers
         self._fcapture_layers = list() if not hasattr(self, "_fcapture_layers") else self._fcapture_layers
         self._handles = list()
+        
+        #self._prune_status = 0
+        #self._last_prune = None
+        self._pruned = False
 
 
 
-    def build(self, sparsity_rate, experiment_args: list, *args, **kwargs):
+    def build(self, sparsity_rate, experiment_args: list, type_of_exp = 1, reverse_scores = False, *args, **kwargs):#type_of_exp: int, experiment_args: list, *args, **kwargs):
         super().build(*args, **kwargs)
         self.sparsity_rate = sparsity_rate
         self.search_iterations = int(experiment_args[0])
         self.search_size = int(experiment_args[1])
-        self.prune_iteration = int(experiment_args[2])
-        #self.stopping_plateau = int(experiment_args[2])
-        self.desired_sparsity = float(experiment_args[3])
+        self.stopping_plateau = int(experiment_args[2])
+        #self.steps_waiting = int(experiment_args[3])
+        self.possible_children = int(experiment_args[3])
+        self.desired_sparsity = float(experiment_args[4])
+        #self.reverse_scores = reverse_scores
+
+        
+        
+        #if self.IsRoot: 
+            #print("ARGUMENTS")
+            #print("-------------")
+            #print(f"Sparsity_rate: {self.sparsity_rate}")
+            #print(f"Search Iterations: {self.search_iterations}")
+            #print(f"Search Size: {self.search_size}")
+        #if (type_of_exp == 1): 
+        #if self.IsRoot: print(f"Plateau Epochs: {self.stopping_plateau}")
+        self.post_step_hook = self.post_step_hook_single_plateau_iterative
+        
+        if type_of_exp == 2: 
+            self.post_step_hook = self.post_step_hook_break
+            self.prune_iteration = self.stopping_plateau
+        #elif (type_of_exp == 2):
+        #if self.IsRoot: print(f"Prune Iteration: {self.prune_iteration}")
+        #self.post_step_hook = self.post_step_hook_single_shot_no_plateau
+        #if self.IsRoot:
+        #    print(f"Final Sparsity (leq): {self.desired_sparsity}")
+        #    print("-------------")
 
         self._best_fitness = float("inf")
         self._best_ticket = None
         self._plat_eps = 0
-        self._pruned = False
+        #self._prune_next = False
 
 
     def init_capture_hooks(self): 
@@ -730,19 +798,92 @@ class CNN_DGTS(BaseCNNTrainer):
         self._handles.clear()
 
     def _capture_hook(self, module, input, output: torch.Tensor):
-        self._act_w.append(output.detach().to(torch.float64).mean(dim = 0).view(-1))
+        tmp = output.detach().to(torch.float64).mean(dim = 0).view(-1)
+        tmp += 1e-10
+        tmp.div_(tmp.sum())
+        self._act_w.append(tmp)
 
     def _fake_capture_hook(self, func, module, input, output: torch.Tensor):
-        self._act_w.append(func(output.detach().to(torch.float64)).mean(dim = 0).view(-1))
-    
-    def post_step_hook(self, x, y, _, step, iteration):
-        
-        if self._pruned or (iteration < (self.prune_iteration) - 1): return
+        tmp = func(output.detach().to(torch.float64)).mean(dim = 0).view(-1)
+        tmp += 1e-10
+        tmp.div_(tmp.sum())
+        self._act_w.append(tmp)
+    """
+    def post_step_hook_single_plateau_continue(self, x, y, _, step, iteration):
 
-        elif (iteration + 1 - self.prune_iteration) % 391 == 0: 
-            self.init_capture_hooks()
-            return
+        if (self._prune_status == 2): 
+            pass
+
+        elif (self._prune_status == 0):
+            
+            if (step + 2) == 390: self.init_capture_hooks()
+            
+            elif (step + 1) == 390:
+                status, ticket, fitness = self.plateau_monitor(x, y)
+                self.remove_handles()
+                self.fitnesses.append((iteration, fitness, self.mm.sparsity.item() * 0.8))
+                if status:
+                    self.prune_model(ticket)
+                    self._last_prune = iteration
+                    self.prunes.append(f"Epoch {(iteration + 1) / 391:.1f}: Pruned to {self.mm.sparsity.item():.3f} with fitness: {fitness}.")
+                    self._prune_status = 1
+            
+        elif (self._prune_status == 1): 
+ 
+            check_prune = lambda it, st: ((it - self._last_prune) >= self.steps_waiting and (st < 390))
+            if self._prune_next: 
+                ticket, fitness = self.search(x, y)
+                self.remove_handles()
+                self._prune_next = False
+                self.prune_model(ticket)
+                self._last_prune = iteration
+                self.fitnesses.append((iteration, fitness, self.mm.sparsity.item()))
+                self.prunes.append(f"Epoch {(iteration + 1) / 391:.1f}: Pruned to {self.mm.sparsity.item():.3f} with fitness: {fitness}.")
+                if (self.mm.sparsity_d.item() <= self.desired_sparsity): self._prune_status = 2
+            elif check_prune(iteration + 1, step + 1): 
+                self.init_capture_hooks()
+                self._prune_next = True
+            
+
+        return True
+    """
+
+    def post_step_hook_break(self, iteration, *args, **kwargs):
+        if self._pruned or iteration != self.prune_iteration: return True
+        return False
+
+    """
+    def post_step_hook_single_shot_no_plateau(self, x, y, _, step, iteration):
         
+        if self._pruned or (iteration != self.prune_iteration): return True
+        
+        elif iteration == self.prune_iteration: 
+
+            while self.mm.sparsity_d >= self.desired_sparsity:
+                    
+                with torch.no_grad():
+                    self._act_w.clear()
+                    self.m(x)
+                
+                ticket, fitness = self.search(x, y)
+                
+                self.mm.set_ticket(ticket)
+
+                self.fitnesses.append((self.mm.sparsity.item(), fitness))
+                self.prunes.append(f"Epoch {(iteration + 1) / 391}: Pruned to {self.mm.sparsity:.3f} with fitness: {fitness}.")
+                
+                #idx += 1
+                
+                dist.barrier(device_ids = [self.RANK])
+
+            self._pruned = True
+            self.remove_handles()
+            return False
+            
+        dist.barrier(device_ids = [self.RANK]) """
+    
+        
+    """
         elif (iteration - self.prune_iteration) % 391 == 0:
 
             ticket, fitness = self.search(x, y)
@@ -760,7 +901,9 @@ class CNN_DGTS(BaseCNNTrainer):
                 
             self.remove_handles()
             return
+            
         """
+    """
         else:
 
             ticket, fitness = self.search(x, y)
@@ -778,58 +921,37 @@ class CNN_DGTS(BaseCNNTrainer):
                 self._pruned = True
                 self.remove_handles()
         """
-    """   
-        elif iteration == self.prune_iteration: 
-
-            while self.mm.sparsity_d > self.desired_sparsity:
-                    
-                with torch.no_grad():
-                    self._act_w.clear()
-                    self.m(x)
-                
-                ticket, fitness = self.search(x, y)
-                
-                self.fitnesses.append((idx, fitness))
-                self.prunes.append(f"Epoch {(iteration + 1) // 391}; {idx}: Pruned to {self.mm.sparsity:.3f} with fitness: {fitness}.")
-                
-                self.mm.set_ticket(ticket)
-
-                idx += 1
-                
-                dist.barrier(device_ids = [self.RANK])
-
-            self._pruned = True
-            self.remove_handles()
-            
-        dist.barrier(device_ids = [self.RANK]) """
+     
+        
 
     """
     def post_step_hook(self, x, y, _, step, iteration):
         
-        if self._pruned or (step < (390 - 2)): return 
+        if self._pruned or (step < (388)): return 
 
-        if (step + 2 == 390): self.init_capture_hooks()
+        if (step == 388): self.init_capture_hooks()
 
-        elif (step + 1 == 390): 
+        elif (step == 389): # 2nd to last, 128 batch size 
 
             status, ticket, fitness = self.plateau_monitor(x, y)
             
             self.remove_handles()
 
-            self.fitnesses.append(((iteration+1)//391, fitness))
+            self.fitnesses.append(((iteration+1)/391, fitness, self.mm.sparsity.item() * 0.8))
 
             if status:
 
                 self.mm.set_ticket(ticket)
-                self.prunes.append(f"Epoch {(iteration + 1) // 391}: Pruned to {self.mm.sparsity:.3f} with fitness: {fitness}.")
+                self.prunes.append(f"Epoch {(iteration + 1) / 391:.1f}: Pruned to {self.mm.sparsity.item():.3f} with fitness: {fitness}.")
 
                 if self.mm.sparsity_d <= self.desired_sparsity:
-                    self.prunes.append(f"Pruning finished on epoch {(iteration + 1)//391}.")
+                    self.prunes.append(f"Pruning finished on epoch {(iteration + 1)/391:.1f}.")
                     self._pruned = True
 
         dist.barrier(device_ids = [self.RANK])
-
-    def post_step_hook(self, x, y, _, step, iteration):
+    """
+    """
+    def post_step_hook_single_plateau(self, x, y, _, step, iteration):
 
         if self._pruned or (step < (390 - 2)): return 
 
@@ -842,12 +964,13 @@ class CNN_DGTS(BaseCNNTrainer):
             if not status: 
                 
                 self.remove_handles()
-                self.fitnesses.append(((iteration+1)//391, fitness))
+                self.fitnesses.append(((iteration+1)/391, fitness, self.mm.sparsity * 0.8))
 
             else: 
                 idx = 1
                 self.mm.set_ticket(ticket)
-                self.prunes.append(f"Epoch {(iteration + 1) // 391}; {idx}: Pruned to {self.mm.sparsity:.3f} with fitness: {fitness}.")
+                self.fitnesses.append(((iteration+1)/391, fitness, self.mm.sparsity))
+                self.prunes.append(f"Epoch {(iteration + 1) / 391}; {idx}: Pruned to {self.mm.sparsity:.3f} with fitness: {fitness}.")
                 self.m.eval()
                 
                 while self.mm.sparsity_d > self.desired_sparsity:
@@ -858,12 +981,12 @@ class CNN_DGTS(BaseCNNTrainer):
                     
                     ticket, fitness = self.search(x, y)
                     
-                    self.fitnesses.append(((iteration + 1)//391, fitness, idx))
-                    self.prunes.append(f"Epoch {(iteration + 1) // 391}; {idx}: Pruned to {self.mm.sparsity:.3f} with fitness: {fitness}.")
+                    self.mm.set_ticket(ticket)
+
+                    self.fitnesses.append(((iteration + 1)/391, fitness, self.mm.sparsity))
+                    self.prunes.append(f"Epoch {(iteration + 1) / 391}; {idx}: Pruned to {self.mm.sparsity:.3f} with fitness: {fitness}.")
 
                     idx += 1
-                    
-                    self.mm.set_ticket(ticket)
                     
                     dist.barrier(device_ids = [self.RANK])
 
@@ -871,8 +994,43 @@ class CNN_DGTS(BaseCNNTrainer):
                 self.remove_handles()
             
         dist.barrier(device_ids = [self.RANK])
-        """
+    """
     
+    def post_step_hook_single_plateau_iterative(self, dt, step, iteration, name, *args, **kwargs):
+        with torch.no_grad():
+
+            if self._pruned: return True
+            
+            elif step == 0:
+                x, y = custom_fetch_data(dt)
+
+                x, y = x.to('cuda'), y.to('cuda')
+
+                for T in self.cT: x = T(x)
+                for T in self.eT: x = T(x)
+                for T in self.fcT: x = T(x)
+                self.init_capture_hooks()
+                self.mm(x)
+
+                status, ticket, fitness = self.plateau_monitor(x, y, name)
+                self.remove_handles()
+                self.fitnesses.append(((iteration + 1) / 391, fitness, self.mm.sparsity.item() * self.sparsity_rate))
+                
+                if not status: return True
+                
+                else:
+                    self.prune_model(ticket)
+                    self.prunes.append(f"Epoch {(iteration + 1) / 391}: Pruned to {self.mm.sparsity:.3f} with fitness: {self._best_fitness}.")
+                    self._best_fitness = float("inf")
+                    self._best_ticket = None
+                    self._plat_eps = 0
+                    if self.mm.sparsity_d.item() <= self.desired_sparsity:
+                        self._pruned = True
+                    
+                    return False
+
+            return True
+
     def search(self, x, y):
         with torch.no_grad():
 
@@ -881,32 +1039,34 @@ class CNN_DGTS(BaseCNNTrainer):
             self.GTS = self.DGTS(self.RANK, self.WORLD_SIZE, 
                                 self.LOCK, self.SHARED_LIST,
                                 self.mm, act_w = self._act_w,
-                                max_size = self.search_size)
+                                max_size = self.search_size,
+                                possible_children = self.possible_children,
+                                )#reverse_scores = self.reverse_scores)
             
             activation_mask = None
             if len(self._act_w) != 0: 
-                activation_mask = torch.cat(self._act_w)
+                activation_mask = torch.cat(self._act_w)#torch.cat([i * t for i, t in enumerate(self._act_w, start=1)]) # Weight later activations higher, linearly
                 self._act_w.clear()
+                activation_mask += 1e-10
                 activation_mask.div_(activation_mask.sum())
 
-            return self.GTS.search(self.sparsity_rate, max_iterations = self.search_iterations, full_acts = activation_mask, inp = x)
+            return self.GTS.search(self.sparsity_rate, max_iterations = self.search_iterations, full_acts = activation_mask, inp = x,
+                                   extra_starters = [self._best_ticket] if not (self._best_ticket == None) else [])
         
 
-    def plateau_monitor(self, x: torch.Tensor, y: torch.Tensor):
+    def plateau_monitor(self, x: torch.Tensor, y: torch.Tensor, name: str):
         
         ticket, fitness = self.search(x, y)
 
         if fitness > self._best_fitness:
             self._plat_eps += 1
-            if self._plat_eps == self.stopping_plateau:
-                self._best_fitness = float("inf")
-                self._best_ticket = None
-                self._plat_eps = 0
-                return True, ticket, fitness
+            if self._plat_eps >= self.stopping_plateau:
+                return True, self._best_ticket, fitness
         
         else: 
             self._best_fitness = fitness
             self._best_ticket = ticket
             self._plat_eps = 0
+            self.save_ckpt(name, "rewind")
 
         return False, ticket, fitness

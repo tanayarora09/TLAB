@@ -135,13 +135,37 @@ def get_loaders(rank, world_size, batch_size = 128):
                                         transform = ScriptedToTensor())
 
     dt = DataLoader(train_data, batch_size = batch_size//world_size, 
-                    sampler = DistributedSampler(train_data), 
+                    sampler = DistributedSampler(train_data, rank = rank,
+                                                 num_replicas = world_size,),
                     pin_memory = True, num_workers = 8, 
                     persistent_workers = True)
 
     dv = DataLoader(test_data, batch_size = batch_size//world_size, 
-                    sampler = DistributedSampler(test_data), 
+                    sampler = DistributedSampler(test_data, rank = rank,
+                                                 num_replicas = world_size), 
                     pin_memory = True, num_workers = 8, 
                     persistent_workers = True)
     
     return dt, dv
+
+def custom_fetch_data(dataloader, samples = 4, classes = 10, sampler_offset = None):
+        if sampler_offset is not None: dataloader.sampler.set_epoch(sampler_offset)
+        datas = [[] for _ in range(classes)]
+        labels = [[] for _ in range(classes)]
+        mark = dict()
+        dataloader_iter = iter(dataloader)
+        while True:
+            inputs, targets = next(dataloader_iter)
+            for idx in range(inputs.shape[0]):
+                x, y = inputs[idx:idx+1], targets[idx:idx+1]
+                category = y.item()
+                if len(datas[category]) == samples:
+                    mark[category] = True
+                    continue
+                datas[category].append(x)
+                labels[category].append(y)
+            if len(mark) == classes:
+                break
+
+        X, Y = torch.cat([torch.cat(_, 0) for _ in datas]), torch.cat([torch.cat(_) for _ in labels]).view(-1)
+        return X, Y

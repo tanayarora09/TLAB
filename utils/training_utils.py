@@ -1,13 +1,13 @@
 import matplotlib.pyplot as plt
 
-def plot_logs(logs, num_epochs, name, steps=391):
+def plot_logs(logs, num_epochs, name, steps=391, start = 0):
 
     """
     Plot Logs Returned by Training Run
     Saved at PLOTS/$metric_plot_$name.jpg
     """
 
-    epochs = range(1, num_epochs + 1)
+    epochs = range(start + 1, num_epochs + 1)
     val_loss = [logs[epoch * steps]['val_loss'] for epoch in epochs]
     acc = [logs[epoch * steps]['accuracy'] for epoch in epochs]
     val_acc = [logs[epoch * steps]['val_accuracy'] for epoch in epochs]

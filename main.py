@@ -81,11 +81,15 @@ if __name__ == "__main__":
 
     #with open(f"./logs/SEEDS/{name}_SEED.txt", "w") as f:
     #    f.write(str(SEED))
+    #from training import normal
 
-    from training import adrian
-
-    for exp in range(num_exp):
-        print("--------------------------------------------------------------")
-        print("EXPERIMENT NUMBER ", exp)
-        print("--------------------------------------------------------------")
-        main(adrian.main, name + str(exp), args)
+    #main(normal.main, name, args)
+    
+    from training import baseline
+    for arg in args:
+        for exp in range(num_exp):
+            print("--------------------------------------------------------------")
+            print("EXPERIMENT NUMBER ", exp)
+            print("--------------------------------------------------------------")
+            main(baseline.main, name + str(exp), [arg])
+    

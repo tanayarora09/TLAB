@@ -6,7 +6,7 @@ import torch.distributed as dist
 from collections import defaultdict
 import time
 
-from training.base import CNN_DGTS, BaseIMP
+from training.base import CNN_DGTS, BaseIMP, BaseCNNTrainer
 
 from utils.serialization_utils import read_tensor, save_tensor
 
@@ -14,6 +14,11 @@ import math
 import os
 import sys
 import gc
+
+class VGG_CNN(BaseCNNTrainer):
+    def pre_epoch_hook(self, epoch, EPOCHS):
+        if (epoch + 1 == 80) or (epoch + 1 == 120):
+            self.reduce_learning_rate(10)
 
 class VGG_POC(BaseIMP):
 
@@ -72,7 +77,7 @@ class VGG_POC(BaseIMP):
             self.eRkl += self.Rkl_tr.item()
             self.reset_running_metrics()
 
-    def Kullback_Leibler(self, input: torch.Tensor, target: torch.Tensor, eps: float = 1e-10): # + 1e-10 for numerical stability
+    def Kullback_Leibler(self, input: torch.Tensor, target: torch.Tensor, eps: float = 1e-9): # + 1e-9 for numerical stability
         """
         Input and Target Not In Log Space, Non-negative, Sum to 1
         """

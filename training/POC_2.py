@@ -25,10 +25,10 @@ def build_tickets_dict(last_name: str, model: VGG, rank: int):
         #print(sparsities_d)
     
     for i in range(1, len(sparsities_d)):
-        dist.barrier(device_ids = [rank])
+        dist.barrier(device_ids = rank])
         ticket = model.load_ticket(last_name, 2, f"{(sparsities_d[i]*100):.2f}")
         with torch.random.fork_rng(devices = ["cuda:0", "cuda:1", "cuda:2", "cuda:3"], enabled = True):
-            dist.barrier(device_ids = [rank])
+            dist.barrier(device_ids = rank])
             model.prune_random(sparsities_d[i], distributed = True, root = 2)
         #print(f"[rank {rank}] At {model.sparsity} sparsity, {(ticket.logical_xor(model.get_buffer("MASK"))).sum()} different pruned.")
         out[i-1] = (ticket, model.export_ticket_cpu())

@@ -53,12 +53,16 @@ class BaseModel(nn.Module):
             offset += layer.MASK_NUMEL
 
 
-    @torch.no_grad()
-    def set_ticket(self, mask: torch.Tensor) -> None:
-        
-        if mask.numel() != self.num_prunable: raise ValueError("Mask must have correct number of parameters.")
+    
+    def set_ticket(self, mask: torch.Tensor, zero_out = False) -> None:
+        with torch.no_grad():
+            if mask.numel() != self.num_prunable: raise ValueError("Mask must have correct number of parameters.")
 
-        self.get_buffer("MASK").copy_(mask)
+            self.get_buffer("MASK").copy_(mask)
+
+            if zero_out: 
+                for layer in self.lottery_layers: 
+                    getattr(layer, "weight").data *= getattr(layer, "weight_mask")
 
     
     def reset_ticket(self) -> None:
@@ -205,6 +209,17 @@ class BaseModel(nn.Module):
 
         return mutate_ticket_graphed(ticket, torch.as_tensor(temperature))
     
+
+    def check_layer_collapse(self):
+        """
+        Not Very Helpful.
+        """
+        with torch.no_grad():
+            not_collapse = True
+            for layer in self.lottery_layers:
+                not_collapse &= getattr(layer, "weight_mask").any().item()
+        return not not_collapse
+
         
 @torch.compile
 def merge_tickets_graphed(t1: torch.Tensor, t2: torch.Tensor, t1w: torch.Tensor, 
