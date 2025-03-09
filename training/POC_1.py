@@ -25,6 +25,8 @@ def main(rank, world_size, name: str, **kwargs):
 
     model = VGG(depth = 19, rank = rank)
 
+    print(torch.rand(1))
+
     model = DDP(model.to('cuda'), 
                 device_ids = [rank],
                 output_device = rank, 
@@ -34,7 +36,7 @@ def main(rank, world_size, name: str, **kwargs):
     
     T = VGG_POC(model, rank = rank)
 
-    T.build(optimizer = torch.optim.SGD(T.m.parameters(), 0.1, momentum = 0.9, weight_decay = 1e-3),
+    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay': 1e-3},
             loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
             collective_transforms = (resize, normalize), train_transforms = (dataAug,),
             eval_transforms = (center_crop,), final_collective_transforms = tuple(),
@@ -50,7 +52,7 @@ def main(rank, world_size, name: str, **kwargs):
     dt, dv = get_loaders(rank, world_size, batch_size = 128) 
     
 
-    logs, sparsities_d = T.TicketIMP(dt, dv, EPOCHS, CARDINALITY, name, 0.8, 20, rewind_iter = 250)
+    logs, sparsities_d = T.TicketIMP(dt, dv, EPOCHS, CARDINALITY, name, 0.8, 20, rewind_iter = 10000)
 
     T.evaluate(dt)
 

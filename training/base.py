@@ -31,7 +31,7 @@ class BaseCNNTrainer:
         self.RANK = rank
         self.IsRoot = rank == 0
 
-    def build(self, optimizer: torch.optim.Optimizer, 
+    def build(self, optimizer, optimizer_kwargs: dict, 
               collective_transforms: Tuple[nn.Module],
               train_transforms: Tuple[nn.Module],
               eval_transforms: Tuple[nn.Module],
@@ -53,7 +53,9 @@ class BaseCNNTrainer:
         """
 
         self.criterion = loss
-        self.optim = optimizer
+        self.optimizer = optimizer
+        self.optimizer_kwargs = optimizer_kwargs
+        self.reset_optimizer()
 
         self.cT = collective_transforms
         self.tT = train_transforms
@@ -157,7 +159,7 @@ class BaseCNNTrainer:
 
     def fit(self, train_data: torch.utils.data.DataLoader, validation_data: torch.utils.data.DataLoader,
             epochs: int, train_cardinality: int, name: str, accumulation_steps: int = 1, save: bool = True, 
-            verbose: bool = True, rewind_iter: int = 500) -> dict:
+            verbose: bool = True, rewind_iter: int = 500, sampler_offset: int = 0) -> dict:
         """
         Basic Training Run Implementation.
         Override by Copy and Pasting.
@@ -174,7 +176,7 @@ class BaseCNNTrainer:
 
         logs = defaultdict(dict)
         self.reset_metrics()
-        #if save: self.save_ckpt(name = name, prefix = "init")
+        if save: self.save_ckpt(name = name, prefix = "init")
         
         best_val_loss = float('inf')
         best_epoch = 1
@@ -194,7 +196,7 @@ class BaseCNNTrainer:
 
             self.reset_metrics()
 
-            train_data.sampler.set_epoch(epoch)
+            train_data.sampler.set_epoch(epoch + train_cardinality * sampler_offset)
 
             for step, (x, y, *_) in enumerate(train_data):
 
@@ -204,7 +206,7 @@ class BaseCNNTrainer:
                 if (iter - 1) == rewind_iter and save:
                     self.save_ckpt(name = name, prefix = "rewind")
 
-                self.pre_step_hook(step, train_cardinality)
+                self.pre_step_hook(step = step, steps_per_epoch = train_cardinality,)
 
                 x, y = x.to('cuda'), y.to('cuda')
 
@@ -214,11 +216,11 @@ class BaseCNNTrainer:
 
                 self.train_step(x, y, accum, accumulation_steps)
 
-                self.post_step_hook(x = x, y = y, _ = _)
+                self.post_step_hook(x = x, y = y, _ = _, iteration = iter, step = step, steps_per_epoch = train_cardinality)
 
                 if accum:
                     
-                    if (step + 1) % 24 == 0 or (step + 1 == train_cardinality): # Synchronize and Log.
+                    if (step + 1) % 48 == 0 or (step + 1 == train_cardinality): # Synchronize and Log.
                         
                         self.transfer_metrics()
                         
@@ -234,7 +236,9 @@ class BaseCNNTrainer:
 
             val_start = time.time()
 
-            validation_data.sampler.set_epoch(epoch)
+            validation_data.sampler.set_epoch(epoch + train_cardinality * sampler_offset)
+
+            dist.barrier(device_ids = [self.RANK])
 
             self.evaluate(validation_data)
 
@@ -262,13 +266,13 @@ class BaseCNNTrainer:
 
                 #self.print(f"Total for Epoch: {(time.time() - train_start):.1f} seconds.", 'yellow')
 
-            self.post_epoch_hook(epoch)
+            self.post_epoch_hook(epoch, epochs)
 
         if self.IsRoot:
 
             progress_bar.close()
 
-
+        self.save_ckpt(name = name, prefix = "final")
 
         return logs
  
@@ -316,7 +320,7 @@ class BaseCNNTrainer:
     def post_epoch_hook(self) -> None:
         pass
     
-    def pre_step_hook(self, step: int, steps_per_epoch: int) -> None:
+    def pre_step_hook(self, *args, **kwargs) -> None:
         pass
 
     def post_step_hook(self, x, y, _) -> None:
@@ -397,8 +401,8 @@ class BaseCNNTrainer:
             ckpt = torch.load(fp, map_location = {'cuda:%d' % 0: 'cuda:%d' % self.RANK},
                             weights_only = True) # Assumes rank = 0 is Root.
             self.m.load_state_dict(ckpt['model'])
-            self.optim.load_state_dict(ckpt['optim'])
-            self.lossScaler.load_state_dict(ckpt['scaler'])
+            self.reset_optimizer()
+            self.reset_loss_scaler()
 
     #------------------------------------------ HELPER FUNCTIONS -------------------------------------- #
 
@@ -433,6 +437,9 @@ class BaseCNNTrainer:
         Should be reset every 
         """
         self.lossScaler = torch.amp.GradScaler(device = 'cuda', enabled = self.AMP)
+
+    def reset_optimizer(self):
+        self.optim = self.optimizer(self.m.parameters(), **self.optimizer_kwargs)
 
     def reduce_learning_rate(self, factor: int):
         with torch.no_grad():    
@@ -478,6 +485,8 @@ class BaseIMP(BaseCNNTrainer):
         current_sparsity = 100.0
         sparsities_d[0] = current_sparsity / 100
 
+        sampler_offset = 0
+
         if self.IsRoot: h5py.File(f"./logs/TICKETS/{name}.h5", "w").close() # For logging tickets.
 
         self.pre_IMP_hook(name)
@@ -486,7 +495,8 @@ class BaseIMP(BaseCNNTrainer):
 
         self.print(f"\nSPARSITY: {current_sparsity:.2f}\n", "red")
 
-        total_logs[0] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_{(100.0):.2f}", save = True, verbose = False, rewind_iter = rewind_iter)
+        total_logs[0] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_{(100.0):.2f}", save = True, verbose = False, rewind_iter = rewind_iter,
+                                 sampler_offset = sampler_offset)
         
         for iteration in range(1, prune_iters + 1):
             
@@ -502,7 +512,9 @@ class BaseIMP(BaseCNNTrainer):
 
             self.mm.export_ticket(name, entry_name = f"{(current_sparsity):.2f}")
 
-            self.load_ckpt(name + f"_{(100.0):.2f}", prefix = "rewind") 
+            self.load_ckpt(name + f"_{(100.0):.2f}", prefix = "rewind")
+
+            sampler_offset += 1
 
             total_logs[iteration] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, 
                                              name + f"_{(current_sparsity):.2f}", save = False, verbose = False)

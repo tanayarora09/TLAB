@@ -53,13 +53,25 @@ class BaseModel(nn.Module):
             offset += layer.MASK_NUMEL
 
 
-    @torch.no_grad()
-    def set_ticket(self, mask: torch.Tensor) -> None:
-        
-        if mask.numel() != self.num_prunable: raise ValueError("Mask must have correct number of parameters.")
+    
+    def set_ticket(self, mask: torch.Tensor, zero_out = False) -> None:
+        with torch.no_grad():
+            if mask.numel() != self.num_prunable: raise ValueError("Mask must have correct number of parameters.")
 
-        self.get_buffer("MASK").copy_(mask)
+            self.get_buffer("MASK").copy_(mask)
 
+            if zero_out:
+                for name, module in self.named_modules():
+                    if isinstance(module, nn.BatchNorm2d): 
+                        module.reset_parameters()
+                        module.reset_running_stats()
+
+            if False: # zero_out: 
+                for layer in self.lottery_layers: 
+                    getattr(layer, "weight").mil_(getattr(layer, "weight_mask"))
+
+#    def reset_batchnorm(self):
+#        self.apply(lambda module: if isinstance(module, nn.BatchNorm2d): module.reset_parameters())
     
     def reset_ticket(self) -> None:
 
@@ -78,6 +90,29 @@ class BaseModel(nn.Module):
     def num_prunable(self): return self._prunable_count
 
     ### ------------------------------------- SERIALIZATION -------------------------
+    
+    @torch.no_grad()
+    def print_layerwise_sparsities(self):
+        if self.RANK != 0: return
+        for bname, block in self.named_children():
+            for name, layer in block.named_children():
+                if isinstance(layer, Lottery):
+                    mask = getattr(layer, "weight_mask")
+                    print(f"{bname} | {mask.sum()/mask.numel() * 100} | {mask.numel()}")
+
+    @torch.no_grad()
+    def count_channels(self):
+        if self.RANK != 0: return
+        for bname, block in self.named_children():
+            for name, layer in block.named_children():
+                if isinstance(layer, Lottery):
+                    weight = getattr(layer, "weight_mask") * getattr(layer, "weight")
+                    nonzero = (weight.abs().sum(dim=(1, 2, 3)) > 0).sum()
+                    print(f"{bname} | {nonzero} | {weight.shape[0]}")
+
+
+    pls = print_layerwise_sparsities
+    cc = count_channels
 
     @torch._dynamo.disable
     @torch.no_grad()
@@ -186,7 +221,7 @@ class BaseModel(nn.Module):
             
             return
 
-    @torch.compile
+    #@torch.compile
     def merge_tickets(self, t1: torch.Tensor, t2: torch.Tensor, t1_weight: float, t2_weight: float) -> torch.Tensor:
         """
         Merges two tickets stochastically (genetic breeding)
@@ -195,52 +230,63 @@ class BaseModel(nn.Module):
 
         O(N) Runtime and Space Complexity
         """
-        with torch.no_grad():
-                
-            child = t1 & t2
-            
-            remaining = int(t1.sum() - child.sum())
+        return merge_tickets_graphed(t1, t2, torch.as_tensor(t1_weight), torch.as_tensor(t2_weight))
 
-            if remaining == 0: return child
-            
-            available = torch.bitwise_xor(t1, t2)
-
-            sample_probs = (t1_weight * t1.float() + t2_weight * t2.float())[available]
-
-            sample_probs = sample_probs / sample_probs.sum()
-
-            available_indices = available.nonzero(as_tuple=True)[0]
-
-            sampled_indices = available_indices[torch.randperm(len(available_indices))[:remaining]]
-
-            child[sampled_indices] = True
-
-            return child
-
-
-    @torch.compile
+    #@torch.compile
     def mutate_ticket(self, ticket: torch.Tensor, temperature: float = 0.2) -> torch.Tensor:
         """
         Mutates a given ticket by randomly swapping temperature * min(true_values, false_values) values
         """
+
+        return mutate_ticket_graphed(ticket, torch.as_tensor(temperature))
+    
+
+    def check_layer_collapse(self):
+        """
+        Not Very Helpful.
+        """
         with torch.no_grad():
-                
-            ticket = ticket.clone()
+            not_collapse = True
+            for layer in self.lottery_layers:
+                not_collapse &= getattr(layer, "weight_mask").any().item()
+        return not not_collapse
 
-            ntrue = ticket.count_nonzero()
-            nfalse = ticket.numel() - ntrue
-
-            swaps = int(temperature * min(ntrue, nfalse))
-
-            if swaps == 0: return ticket
-
-            true_indices = ticket.nonzero(as_tuple=True)[0]
-            false_indices = (~ticket).nonzero(as_tuple=True)[0]
-
-            swap_true_indices = true_indices[torch.randperm(len(true_indices))[:swaps]]
-            swap_false_indices = false_indices[torch.randperm(len(false_indices))[:swaps]]
-
-            ticket[swap_true_indices] = False
-            ticket[swap_false_indices] = True
         
 
+def merge_tickets_graphed(t1: torch.Tensor, t2: torch.Tensor, t1w: torch.Tensor, 
+                          t2w: torch.Tensor) -> torch.Tensor:
+    with torch.no_grad():
+        child = t1 & t2
+        remaining = (t1.sum() - child.sum()).int()
+        if remaining == 0: return child
+        available_indices = torch.bitwise_xor(t1, t2).nonzero().view(-1)
+        sample = (t1w * t1.float() + t2w * t2.float())[available_indices]
+        sample.div_(sample.sum())
+        child[available_indices[torch.multinomial(sample, remaining, replacement = False)]] = True
+        return child
+        
+
+
+
+def mutate_ticket_graphed(ticket: torch.Tensor, temperature: torch.Tensor):
+
+    with torch.no_grad():
+
+        ticket = ticket.clone()
+        ntrue = ticket.count_nonzero()
+        nfalse = ticket.numel() - ntrue
+
+        swaps = (temperature * min(ntrue, nfalse)).int()
+
+        if swaps == 0: return ticket
+
+        true_indices = ticket.nonzero().view(-1)
+        false_indices = (~ticket).nonzero().view(-1)
+        
+        swap_true_indices = true_indices[torch.randperm(true_indices.numel())[:swaps]]
+        swap_false_indices = false_indices[torch.randperm(false_indices.numel())[:swaps]]
+
+        ticket[swap_true_indices] = False
+        ticket[swap_false_indices] = True
+
+        return ticket

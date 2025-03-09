@@ -6,7 +6,7 @@ import torch.distributed as dist
 from collections import defaultdict
 import time
 
-from training.base import BaseIMP
+from training.base import BaseIMP, BaseCNNTrainer
 
 from utils.serialization_utils import read_tensor, save_tensor
 
@@ -14,6 +14,17 @@ import math
 import os
 import sys
 import gc
+
+class VGG_CNN(BaseCNNTrainer):
+    def post_epoch_hook(self, epoch, EPOCHS):
+        if (epoch + 1) == 79 or (epoch + 1) == 119: # Epochs 80, 120
+            self.reduce_learning_rate(10)
+        return 
+    
+    def post_step_hook(self, x, y, _, step, **kwargs):
+        """if step % 370 == 0 and step != 0:
+                print(x.view(-1)[x.numel()//4:3 * x.numel()//4].norm(2))"""
+        return
 
 class VGG_POC(BaseIMP):
 
@@ -25,58 +36,23 @@ class VGG_POC(BaseIMP):
         super().build(*args, **kwargs)
         self.ACTS = tickets_dict != None
         self.TICKETS = tickets_dict # {IMP_ITERATION - 1: (TICKET, SPARSITY_D)}
-        self.activation_log = defaultdict(defaultdict) # {IMP_ITERATION: {Epoch:(IMP KL, RAND KL)}}
-        
-        self.Ikl_tr = torch.as_tensor(0.0, dtype = torch.float64, device = "cuda")
-        self.Rkl_tr = torch.as_tensor(0.0, dtype = torch.float64, device = "cuda")
-
-        self.eIkl = 0.0 #torch.as_tensor(0.0, dtype = torch.float64, device = "cuda")
-        self.eRkl = 0.0 #torch.as_tensor(0.0, dtype = torch.float64, device = "cuda")
+        self.activation_log = defaultdict(defaultdict) # {IMP_ITERATION: {Iteration:{Norm: (IMP KL, RAND KL), Base: (IMP KL, RAND KL)}}}
 
         #self.constant = 0
 
         self._hooks = list()
 
         self.__CURR_IMP_ITER = 0
-        self.__CURREPOCH = None 
         self.act_w = list()
 
     ### ----------------------------------------------------------- METRICS ---------------------------------------------------------------------------------------
 
-    def reset_metrics(self):
-        with torch.no_grad():
-            super().reset_metrics()
-            self.eIkl = 0.0
-            self.eRkl = 0.0
-
-    def reset_running_metrics(self):
-        with torch.no_grad():
-            super().reset_running_metrics()
-            self.Ikl_tr.fill_(0.0)
-            self.Rkl_tr.fill_(0.0)
-
-    def _collect_metrics(self):
-        with torch.no_grad():
-            super()._collect_metrics()
-            dist.all_reduce(self.Ikl_tr, op = dist.ReduceOp.SUM)
-            dist.all_reduce(self.Rkl_tr, op = dist.ReduceOp.SUM)
-
-    
-    def transfer_metrics(self):
-        with torch.no_grad():
-            self._collect_metrics()
-            self.eloss += self.loss_tr
-            self.eacc += self.acc_tr
-            self.ecount += self.count_tr
-            self.eIkl += self.Ikl_tr.item()
-            self.eRkl += self.Rkl_tr.item()
-            self.reset_running_metrics()
 
     def Kullback_Leibler(self, input: torch.Tensor, target: torch.Tensor, eps: float = 1e-10): # + 1e-10 for numerical stability
         """
         Input and Target Not In Log Space, Non-negative, Sum to 1
         """
-        return F.kl_div((input + eps).log(), target + eps, reduction = "batchmean")
+        return F.kl_div(input, target, reduction = "batchmean")
     
     def Hellinger(self, input: torch.Tensor, target: torch.Tensor):
         """
@@ -89,7 +65,7 @@ class VGG_POC(BaseIMP):
     ### ----------------------------------------------------------- ACTIVATION CAPTURING ---------------------------------------------------------------------------------------
 
     
-    def collect_activations_and_test(self, x: torch.Tensor) -> None:
+    def collect_activations_and_test(self, x: torch.Tensor, iteration) -> None:
         with torch.no_grad():
             
             if self.ACTS: 
@@ -98,51 +74,78 @@ class VGG_POC(BaseIMP):
                     
                     self.m.eval()
                     
-                    full_activations = torch.cat(self.act_w)
-                    full_activations.div_(full_activations.sum())
+                    full_activations_base = torch.cat(self.act_w)
+                    full_activations_base += 1e-10
+                    full_activations_base.div_(full_activations_base.sum())
+
+                    for act in self.act_w:
+                        act += 1e-10
+                        act.div_(act.sum())
+
+                    full_activations_norm = torch.cat(self.act_w)
+                    full_activations_norm += 1e-10
+                    full_activations_norm.div_(full_activations_norm.sum())
+                    self.clear_act_captures()
+                    
                     original_ticket = self.mm.export_ticket_cpu()
 
                     # IMP_TICKET
-                    self.clear_act_captures()
                     self.mm.set_ticket(self.TICKETS[self.__CURR_IMP_ITER][0])
                     with torch.no_grad(): 
-                        with self.m.no_sync():
-                            self.m(x)
+                        self.mm(x)
 
-                    curr_activations = torch.cat(self.act_w)
-                    curr_activations.div_(curr_activations.sum()) # Regularize to prob distribution
+                    curr_activations_base = torch.cat(self.act_w)
+                    curr_activations_base += 1e-10
+                    curr_activations_base.div_(curr_activations_base.sum())
+                    curr_activations_base.log_()
 
-                    self.Ikl_tr += self.Kullback_Leibler(curr_activations, full_activations)
+                    for act in self.act_w:
+                        act += 1e-10
+                        act.div_(act.sum())
+
+                    curr_activations_norm = torch.cat(self.act_w)
+                    curr_activations_norm += 1e-10
+                    curr_activations_norm.div_(curr_activations_norm.sum()) # Regularize to prob distribution
+                    curr_activations_norm.log_()
+                    self.clear_act_captures()
+
+                    base_ikl = self.Kullback_Leibler(curr_activations_base, full_activations_base)
+                    norm_ikl = self.Kullback_Leibler(curr_activations_norm, full_activations_norm)
+                    
+                    del curr_activations_norm
+                    del curr_activations_base
 
                     #RAND_TICKET 
-                    self.clear_act_captures()
                     self.mm.set_ticket(self.TICKETS[self.__CURR_IMP_ITER][1])
+
                     with torch.no_grad(): 
-                        with self.m.no_sync():
-                            self.m(x)
+                        self.mm(x)
 
-                    curr_activations = torch.cat(self.act_w)
-                    curr_activations.div_(curr_activations.sum())
+                    curr_activations_base = torch.cat(self.act_w)
+                    curr_activations_base += 1e-10
+                    curr_activations_base.div_(curr_activations_base.sum())
+                    curr_activations_base.log_()
 
-                    self.Rkl_tr += self.Kullback_Leibler(curr_activations, full_activations)
+                    for act in self.act_w:
+                        act += 1e-10
+                        act.div_(act.sum())
+
+                    curr_activations_norm = torch.cat(self.act_w)
+                    curr_activations_norm += 1e-10
+                    curr_activations_norm.div_(curr_activations_norm.sum()) # Regularize to prob distribution
+                    curr_activations_norm.log_()
+                    self.clear_act_captures()
+
+                    base_rkl = self.Kullback_Leibler(curr_activations_base, full_activations_base)
+                    norm_rkl = self.Kullback_Leibler(curr_activations_norm, full_activations_norm)
+
+                    self.activation_log[self.__CURR_IMP_ITER][iteration] = {"Base": (base_ikl.item(), base_rkl.item()),
+                                                                       "Norm": (norm_ikl.item(), norm_rkl.item())}
 
                     #Reset
-                    self.clear_act_captures()
                     self.mm.set_ticket(original_ticket)
 
                     self.m.train()
-            
-        
-            #if (self.__CURR_IMP_ITER == 0 and self.__CURREPOCH == 0 and self.constant < 26 and self.RANK == 0): 
-                #self.print(f"|| STEP {self.constant} || ACCURACY: {self.acc_tr.item()}; LOSS: {self.loss_tr.item()}; EACC: {self.eacc.item()}; ELOSS: {self.eloss.item()}", "gray")
-
-                #tmp = list()
-                #for name, param in self.mm.named_parameters():
-                    #tmp.append(param.grad.detach().view(-1))
-                
-                #self.print(f"Gradient Norm: {torch.cat(tmp).norm(2).item()}", "gray")
-
-            #self.constant += 1
 
         return
 
@@ -163,11 +166,12 @@ class VGG_POC(BaseIMP):
         return
 
     def _activation_hook(self, module, input, output: torch.Tensor) -> None:
-        self.act_w.append(output.detach().clone().to(torch.float64).mean(dim = 0).view(-1))#.cpu().to(torch.float64).mean(dim = 0).view(-1))
+        self.act_w.append(output.detach().to(torch.float64).mean(dim = 0).view(-1))#.cpu().to(torch.float64).mean(dim = 0).view(-1))
         return
     
     def _fake_activation_hook(self, module, input, output: torch.Tensor) -> None:
-        self.act_w.append(F.relu(output.detach().clone()).to(torch.float64).mean(dim = 0).view(-1))#.cpu()).to(torch.float64).mean(dim = 0).view(-1))
+        self.act_w.append(F.relu(output.detach()).to(torch.float64).mean(dim = 0).view(-1))#.cpu()).to(torch.float64).mean(dim = 0).view(-1))
+        return
 
     def clear_act_captures(self) -> None:
         self.act_w.clear()
@@ -176,7 +180,6 @@ class VGG_POC(BaseIMP):
 
     def pre_IMP_hook(self, name: str):
         self.__CURR_IMP_ITER = 0
-        self.__CURREPOCH = None 
         self.act_w = list()
         #open(f'./tmp/swap/activations/{name}.h5', 'w').close()
         #os.remove(f"./tmp/swap/activations/{self.NAME}.h5")
@@ -184,21 +187,21 @@ class VGG_POC(BaseIMP):
     def post_prune_hook(self, iteration: int, epochs_per_run: int):
         self.__CURR_IMP_ITER = iteration
 
-    def pre_epoch_hook(self, epoch: int):
-        self.__CURREPOCH = epoch
-        if self.ACTS: self.init_act_hooks()
-
     def post_train_hook(self):
         self.disable_act_hooks()
-        self.activation_log[self.__CURR_IMP_ITER][self.__CURREPOCH] = (self.eIkl / self.ecount.detach().item(), self.eRkl / self.ecount.detach().item())
         return
     
-    def post_epoch_hook(self, epoch):
+    def post_epoch_hook(self, epoch, EPOCHS):
         if epoch == 78 or epoch == 118: # Epochs 80, 120
             self.reduce_learning_rate(10)
         return 
 
-    def post_step_hook(self, x, y, _):
-        with torch.autocast('cuda', dtype = torch.float16, enabled = self.AMP):
-            self.collect_activations_and_test(x)
-            #self.clear_act_captures()
+    def pre_step_hook(self, step, steps_per_epoch):
+        if step % 8 == 0 and self.ACTS:
+            self.init_act_hooks()
+
+    def post_step_hook(self, x, y, _, iteration, step, steps_per_epoch, **kwargs):
+        if step % 8 == 0 and self.ACTS:
+            with torch.autocast('cuda', dtype = torch.float16, enabled = self.AMP):
+                self.collect_activations_and_test(x, iteration)
+            self.disable_act_hooks()
