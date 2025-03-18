@@ -1,8 +1,13 @@
 import torch
 from torch import nn
+import torch.nn.functional as F
+
 import torch.distributed as dist
 
+import torch.multiprocessing as mp 
+
 import numpy as np
+import copy
 
 import torchinfo
 from tqdm import tqdm
@@ -16,29 +21,38 @@ import h5py
 from models.LotteryLayers import Lottery
 from models.base import BaseModel
 
+from data.cifar10 import custom_fetch_data
+
 class BaseCNNTrainer:
 
     #------------------------------------------ MAIN INIT FUNCTIONS -------------------------------------- #
 
-    def __init__(self, model: torch.nn.parallel.DistributedDataParallel, rank: int):
+    def __init__(self, model, 
+                 rank: int, world_size: int):
         """
         Model has to be DDP.
         Non-Distributed Environments Not Supported.
         Default cuda device should be set.
         """
-        self.m = model
-        self.mm: BaseModel  = model.module
+
         self.RANK = rank
         self.IsRoot = rank == 0
+        self.WORLD_SIZE = world_size
+        self.DISTRIBUTED = world_size > 1
 
-    def build(self, optimizer, optimizer_kwargs: dict, 
+        self.m = model
+        if self.DISTRIBUTED: self.mm  = getattr(model, 'module')
+        else: self.mm = model
+
+    def build(self, optimizer,
+              optimizer_kwargs: dict, 
               collective_transforms: Tuple[nn.Module],
               train_transforms: Tuple[nn.Module],
               eval_transforms: Tuple[nn.Module],
               final_collective_transforms: Tuple[nn.Module],
               loss: Callable = nn.CrossEntropyLoss(reduction = "sum"), 
               scale_loss: bool = False, decay: float = 0.0,
-              gradient_clipnorm: float = float('inf')):
+              gradient_clipnorm: float = float('inf'), ):
         
         """
         Build Trainer.
@@ -55,6 +69,7 @@ class BaseCNNTrainer:
         self.criterion = loss
         self.optimizer = optimizer
         self.optimizer_kwargs = optimizer_kwargs
+
         self.reset_optimizer()
 
         self.cT = collective_transforms
@@ -150,6 +165,7 @@ class BaseCNNTrainer:
         Collects Loss, Accuracy, and Sample Count.
         Do not directly call. Use transfer_metrics instead.
         """
+        if not self.DISTRIBUTED: return
         with torch.no_grad():
             dist.all_reduce(self.loss_tr, op = dist.ReduceOp.SUM)
             dist.all_reduce(self.acc_tr, op = dist.ReduceOp.SUM)
@@ -159,7 +175,7 @@ class BaseCNNTrainer:
 
     def fit(self, train_data: torch.utils.data.DataLoader, validation_data: torch.utils.data.DataLoader,
             epochs: int, train_cardinality: int, name: str, accumulation_steps: int = 1, save: bool = True, 
-            verbose: bool = True, rewind_iter: int = 500, sampler_offset: int = 0) -> dict:
+            verbose: bool = False, rewind_iter: int = 500, sampler_offset: int = 0, validate: bool = True, start = 0) -> dict:
         """
         Basic Training Run Implementation.
         Override by Copy and Pasting.
@@ -172,11 +188,13 @@ class BaseCNNTrainer:
 
         if self.IsRoot: 
             progress_bar = tqdm(total = epochs, unit = "epoch", colour = "green", bar_format="{l_bar}{bar:25}{r_bar}{bar:-25b}", leave = False)
-            print("\n\n\n\n")
+            progress_bar.update(start)
+            print(f"\n\n\n\n")
+
 
         logs = defaultdict(dict)
         self.reset_metrics()
-        if save: self.save_ckpt(name = name, prefix = "init")
+        self.save_ckpt(name = name, prefix = "init")
         
         best_val_loss = float('inf')
         best_epoch = 1
@@ -184,13 +202,15 @@ class BaseCNNTrainer:
         train_start = None
         val_start = None
 
-        for epoch in range(epochs):
+        _break = False
+
+        for epoch in range(start, epochs):
 
             #if verbose: self.print(f"\nStarting Epoch {epoch + 1}\n", 'red')
             train_start = time.time()
             self.m.train()
 
-            self.pre_epoch_hook(epoch)
+            data_list = self.pre_epoch_hook(train_data)
 
             accum = False
 
@@ -199,14 +219,16 @@ class BaseCNNTrainer:
             train_data.sampler.set_epoch(epoch + train_cardinality * sampler_offset)
 
             for step, (x, y, *_) in enumerate(train_data):
-
+                if _break: continue
                 iter = int(epoch * train_cardinality + step + 1)
                 accum = ((step + 1) % accumulation_steps == 0) or (step + 1 == train_cardinality)
 
                 if (iter - 1) == rewind_iter and save:
                     self.save_ckpt(name = name, prefix = "rewind")
 
-                self.pre_step_hook(step = step, steps_per_epoch = train_cardinality,)
+                self.pre_step_hook(step, train_cardinality)
+
+                #dist.barrier(device_ids = [self.RANK])
 
                 x, y = x.to('cuda'), y.to('cuda')
 
@@ -216,55 +238,62 @@ class BaseCNNTrainer:
 
                 self.train_step(x, y, accum, accumulation_steps)
 
-                self.post_step_hook(x = x, y = y, _ = _, iteration = iter, step = step, steps_per_epoch = train_cardinality)
+                if not self.post_step_hook(data_list = data_list, step = step, iteration = iter, name = name): 
+                    #if self.IsRoot: progress_bar.close()
+                    _break = True
 
                 if accum:
                     
-                    if (step + 1) % 48 == 0 or (step + 1 == train_cardinality): # Synchronize and Log.
+                    if (step + 1) % 13 == 0 or (step + 1 == train_cardinality): # Synchronize and Log.
                         
                         self.transfer_metrics()
                         
                         if self.IsRoot: logs[iter] = self.metric_results()
                         
-                        if (step + 1) % 48 == 0 and self.IsRoot and verbose:
+                        if (step + 1) % 52 == 0 and self.IsRoot and verbose:
                             
-                            self.print(f"----  Status at {math.ceil((step + 1) / 48):.0f}/8: ----     Accuracy: {logs[iter]['accuracy']:.4f}   --  Loss: {logs[iter]['loss']:.5f} --", 'white')
+                            self.print(f"----  Status at {math.ceil((step + 1) / 52):.0f}/8: ----     Accuracy: {logs[iter]['accuracy']:.4f}   --  Loss: {logs[iter]['loss']:.5f} --", 'white')
+            
+            if _break: break
 
             self.post_train_hook()
 
+
             #if verbose: self.print(f"Training stage took {(time.time() - train_start):.1f} seconds.", 'yellow')
+            if validate:
+                #val_start = time.time()
 
-            val_start = time.time()
+                validation_data.sampler.set_epoch(epoch + epochs * sampler_offset)
 
-            validation_data.sampler.set_epoch(epoch + train_cardinality * sampler_offset)
+                if self.DISTRIBUTED: dist.barrier(device_ids = [self.RANK])
 
-            dist.barrier(device_ids = [self.RANK])
+                self.evaluate(validation_data)
 
-            self.evaluate(validation_data)
+                if self.IsRoot:
+
+                    logs[(epoch + 1) * train_cardinality].update({('val_' + k): v for k, v in self.metric_results().items()})
+
+                    if logs[(epoch + 1) * train_cardinality]['val_loss'] < best_val_loss:
+                        best_val_loss = logs[(epoch + 1) * train_cardinality]['val_loss']
+                        #if verbose: self.print(f"\n -- UPDATING BEST WEIGHTS TO {epoch + 1} -- \n", "magenta")
+                        best_epoch = epoch + 1
+                        self.save_ckpt(name = name, prefix = "best")
+
+                    #if verbose: self.print(f"Validation stage took {(time.time() - val_start):.1f} seconds.", 'yellow')
+                    
+                    #self.print(f"Total for Epoch: {(time.time() - train_start):.1f} seconds.", 'yellow')
 
             if self.IsRoot:
 
-                logs[(epoch + 1) * train_cardinality].update({('val_' + k): v for k, v in self.metric_results().items()})
-
-                if logs[(epoch + 1) * train_cardinality]['val_loss'] < best_val_loss:
-                    best_val_loss = logs[(epoch + 1) * train_cardinality]['val_loss']
-                    #if verbose: self.print(f"\n -- UPDATING BEST WEIGHTS TO {epoch + 1} -- \n", "magenta")
-                    best_epoch = epoch + 1
-                    self.save_ckpt(name = name, prefix = "best")
-
-                #if verbose: self.print(f"Validation stage took {(time.time() - val_start):.1f} seconds.", 'yellow')
-                
-                self.clear_lines(6)
+                self.clear_lines(6 if validate else 4)
 
                 print(self.color_str("\nEpoch ", "white") + self.color_str(epoch + 1, "orange")+ self.color_str(f"/{epochs}: ", "white"))
                 for k, v in logs[(epoch + 1) * train_cardinality].items():
                     self.print(f" {k}: {v:.9f}", 'cyan')
 
-                progress_bar.set_postfix_str(self.color_str(f"Time Taken: {(time.time() - train_start):.2f}s", "green") + ", " + self.color_str(f"Best Epoch: {best_epoch}", "green")) 
+                progress_bar.set_postfix_str(self.color_str(f"Time Taken: {(time.time() - train_start):.2f}s", "green") + ", " + self.color_str(f"Sparsity: {self.mm.sparsity.item()}", "green")) 
 
                 progress_bar.update(1)
-
-                #self.print(f"Total for Epoch: {(time.time() - train_start):.1f} seconds.", 'yellow')
 
             self.post_epoch_hook(epoch, epochs)
 
@@ -288,7 +317,10 @@ class BaseCNNTrainer:
 
         if not accum:
             
-            with self.m.no_sync():
+            if self.DISTRIBUTED:
+                with self.m.no_sync():
+                    self.lossScaler.scale(loss).backward()
+            else:
                 self.lossScaler.scale(loss).backward()
 
             return
@@ -314,17 +346,17 @@ class BaseCNNTrainer:
 
     #------------------------------------------ TRAINING HOOKS ----------------------------------------------- #
 
-    def pre_epoch_hook(self, epoch: int) -> None:
+    def pre_epoch_hook(self, *args) -> None:
         pass
     
-    def post_epoch_hook(self) -> None:
+    def post_epoch_hook(self, *args, **kwargs) -> None:
         pass
     
     def pre_step_hook(self, *args, **kwargs) -> None:
         pass
 
-    def post_step_hook(self, x, y, _) -> None:
-        pass
+    def post_step_hook(self, *args, **kwargs) -> bool:
+        return True
 
     def post_train_hook(self) -> None:
         pass
@@ -387,22 +419,33 @@ class BaseCNNTrainer:
                     'scaler': self.lossScaler.state_dict()}
             torch.save(ckpt, fp)        
 
-    def load_ckpt(self, name: str, prefix: str = None):
+    def load_ckpt(self, name: str, prefix: str = None, zero_out = True, weights_only = True):
         """
         Loads Model, Optimizer, and LossScaler state_dicts.
         Meant to be used with save_ckpt.
         """
         with torch.no_grad():
-                
-            fp = f"./logs/WEIGHTS/{self.fromNamePrefix(name, prefix)}.pt"
 
-            dist.barrier(device_ids = [self.RANK])
+            fp = f"./logs/WEIGHTS/{self.fromNamePrefix(name, prefix)}.pt"
             
-            ckpt = torch.load(fp, map_location = {'cuda:%d' % 0: 'cuda:%d' % self.RANK},
+            if self.DISTRIBUTED: 
+                dist.barrier(device_ids = [self.RANK])
+                ckpt = torch.load(fp, map_location = {'cuda:%d' % 0: 'cuda:%d' % self.RANK},
                             weights_only = True) # Assumes rank = 0 is Root.
+            else:
+                ckpt = torch.load(fp, weights_only = True)
+
             self.m.load_state_dict(ckpt['model'])
-            self.reset_optimizer()
-            self.reset_loss_scaler()
+            #ckpt['optim']['param_groups'] =self.optim.state_dict()['param_groups']
+            if weights_only:
+                self.reset_optimizer()
+                self.reset_loss_scaler()
+            else:
+                self.optim.load_state_dict(ckpt['optim'])
+                self.lossScaler.load_state_dict(ckpt['scaler'])
+            
+            #if zero_out:
+            #    self.prune_model(self.mm.export_ticket_cpu())
 
     #------------------------------------------ HELPER FUNCTIONS -------------------------------------- #
 
@@ -453,14 +496,24 @@ class BaseCNNTrainer:
         for _ in range(n):
             print("\033[F\033[K", end="")
 
+    def prune_model(self, ticket: torch.Tensor):
+    
+        #old_sp = self.mm.sparsity_d.item()
+        self.mm.set_ticket(ticket, zero_out = True)
+        #new_sp = self.mm.sparsity_d.item()
+        #self.adjust_weight_decay(factor = (1 - (1 - new_sp/old_sp)/10))
 
+    def adjust_weight_decay(self, factor: float):
+        """
+        factor = 0.1 -> new_decay = 0.1 * old_decay
+        """
+        with torch.no_grad():
+            for pg in self.optim.param_groups:
+                wd = pg['weight_decay']
+                pg['weight_decay'] = wd * (1 - factor / (1 + wd))
 
 
 class BaseIMP(BaseCNNTrainer):
-
-    def __init__(self, model: torch.nn.parallel.DistributedDataParallel, rank: int):
-        super(BaseIMP, self).__init__(model, rank)
-        self.IsTicketRoot = rank == 2
 
     #------------------------------------------ LTH IMP FUNCTIONS -------------------------------------- #
 
@@ -495,8 +548,8 @@ class BaseIMP(BaseCNNTrainer):
 
         self.print(f"\nSPARSITY: {current_sparsity:.2f}\n", "red")
 
-        total_logs[0] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_{(100.0):.2f}", save = True, verbose = False, rewind_iter = rewind_iter,
-                                 sampler_offset = sampler_offset)
+        total_logs[0] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_{(100.0):.2f}", save = True, verbose = False,
+                                 rewind_iter = rewind_iter, sampler_offset = sampler_offset)
         
         for iteration in range(1, prune_iters + 1):
             
@@ -512,12 +565,13 @@ class BaseIMP(BaseCNNTrainer):
 
             self.mm.export_ticket(name, entry_name = f"{(current_sparsity):.2f}")
 
-            self.load_ckpt(name + f"_{(100.0):.2f}", prefix = "rewind")
+            self.load_ckpt(name + f"_{(100.0):.2f}", prefix = "rewind", weights_only = True)
 
-            sampler_offset += 1
+            #sampler_offset += 1
 
             total_logs[iteration] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, 
-                                             name + f"_{(current_sparsity):.2f}", save = False, verbose = False)
+                                             name + f"_{(current_sparsity):.2f}", save = False, verbose = False,
+                                             sampler_offset = sampler_offset, start = rewind_iter//train_cardinality)
 
         self.post_IMP_hook()
 

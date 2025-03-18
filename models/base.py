@@ -29,13 +29,16 @@ class BaseModel(nn.Module):
 
     """
 
-    def init_base(self, rank: int):
+    def init_base(self, rank: int, world_size: int):
 
         """
         Call in __init__ after initializing layers.
         """
 
         self.RANK = rank
+
+        self.WORLD_SIZE = world_size
+        self.DISTRIBUTED = world_size > 1
 
         self._prunable_count = 0
 
@@ -54,13 +57,17 @@ class BaseModel(nn.Module):
 
 
     
-    def set_ticket(self, mask: torch.Tensor, zero_out = False) -> None:
+    def set_ticket(self, mask: torch.Tensor, zero_out = False, realzo = False) -> None:
         with torch.no_grad():
             if mask.numel() != self.num_prunable: raise ValueError("Mask must have correct number of parameters.")
 
             self.get_buffer("MASK").copy_(mask)
 
-            if zero_out:
+            #if realzo:
+            #    for layer in self.lottery_layers:
+            #        getattr(layer, 'weight').data *= getattr(layer, "weight_mask")
+
+            if False: #zero_out:
                 for name, module in self.named_modules():
                     if isinstance(module, nn.BatchNorm2d): 
                         module.reset_parameters()
@@ -135,15 +142,16 @@ class BaseModel(nn.Module):
         ROOT = 0
         """
         
-        if self.RANK == root:
+        if self.RANK == root or not self.DISTRIBUTED:
             with h5py.File(f"./logs/TICKETS/{name}.h5", 'r') as f:
                 data = torch.as_tensor(f[entry_name][:], device = "cuda", dtype = torch.bool)
-        else:
+        elif self.DISTRIBUTED:
             data = torch.zeros(self.num_prunable, device = "cuda", dtype = torch.bool) 
 
-        dist.barrier(device_ids = [self.RANK])
+        if self.DISTRIBUTED:
+            dist.barrier(device_ids = [self.RANK])
 
-        dist.broadcast(data, src=root)
+            dist.broadcast(data, src=root)
 
         return data
 
@@ -170,7 +178,7 @@ class BaseModel(nn.Module):
     def prune_by_mg(self, rate: float, iteration: float, root: int = 0) -> None:
         with torch.no_grad():
 
-            if self.RANK == root:
+            if self.RANK == root or not self.DISTRIBUTED:
 
                 all_magnitudes = (torch.cat([(layer.get_parameter(layer.MASKED_NAME)).detach().view(-1) for layer in self.lottery_layers], 
                                         dim = 0) * self.get_buffer("MASK")).abs_().cpu()
@@ -179,12 +187,14 @@ class BaseModel(nn.Module):
 
                 ticket = all_magnitudes.ge(threshold).cuda()
 
-            else: 
+            elif self.DISTRIBUTED: 
                 ticket = torch.zeros(self.num_prunable, dtype = torch.bool, device = "cuda")
 
-            dist.barrier(device_ids = [self.RANK])
+            if self.DISTRIBUTED:
 
-            dist.broadcast(ticket, src = root)
+                dist.barrier(device_ids = [self.RANK])
+
+                dist.broadcast(ticket, src = root)
 
             self.set_ticket(ticket)
 
@@ -252,7 +262,7 @@ class BaseModel(nn.Module):
         return not not_collapse
 
         
-
+@torch.compile
 def merge_tickets_graphed(t1: torch.Tensor, t2: torch.Tensor, t1w: torch.Tensor, 
                           t2w: torch.Tensor) -> torch.Tensor:
     with torch.no_grad():
@@ -267,7 +277,7 @@ def merge_tickets_graphed(t1: torch.Tensor, t2: torch.Tensor, t1w: torch.Tensor,
         
 
 
-
+@torch.compile
 def mutate_ticket_graphed(ticket: torch.Tensor, temperature: torch.Tensor):
 
     with torch.no_grad():

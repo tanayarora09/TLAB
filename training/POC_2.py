@@ -46,17 +46,17 @@ def build_tickets_dict(last_name: str, model: VGG, rank: int):
 
 def main(rank, world_size, name: str, **kwargs):
 
-    EPOCHS = 160
-    CARDINALITY = 391
-
     last_name = name[:-1] + "1"
+
+    EPOCHS = 160
+    CARDINALITY = 98
 
     dataAug = torch.jit.script(DataAugmentation().to('cuda'))
     resize = torch.jit.script(Resize().to('cuda'))
     normalize = torch.jit.script(Normalize().to('cuda'))
     center_crop = torch.jit.script(CenterCrop().to('cuda'))
 
-    model = VGG(depth = 19, rank = rank)
+    model = VGG(depth = 19, rank = rank, world_size = world_size, custom_init = True)
 
     ticket_dict = build_tickets_dict(last_name, model, rank)
 
@@ -66,11 +66,14 @@ def main(rank, world_size, name: str, **kwargs):
                 device_ids = [rank],
                 output_device = rank, 
                 gradient_as_bucket_view = True)
+    
+    T = VGG_POC(model, rank, world_size)
 
-    #model = torch.compile(model)
-    
-    
-    T = VGG_POC(model, rank)
+    #T.summary(32)
+    del model 
+
+    torch.cuda.empty_cache()
+    gc.collect()
 
     T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay': 1e-3},
             loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
@@ -78,29 +81,15 @@ def main(rank, world_size, name: str, **kwargs):
             eval_transforms = (center_crop,), final_collective_transforms = tuple(),
             scale_loss = True, gradient_clipnorm = 2.0, tickets_dict = ticket_dict)
 
-    #T.summary(32)
 
-    torch.cuda.empty_cache()
-    gc.collect()
-
-    dt, dv = get_loaders(rank, world_size, batch_size = 128) 
+    dt, dv = get_loaders(rank, world_size, batch_size = 512) 
     
     logs, sparsities_d = T.TicketIMP(dt, dv, EPOCHS, CARDINALITY, name, 0.8, 19, rewind_iter = 10000)
 
-    with open(f"./logs/ACTIVATIONS/activation_log_{name[:-1]}_{rank}.json", "w", encoding = "utf-8") as f:
+    with open(f"./logs/ACTIVATIONS/activation_log_{name[:-1]}_{rank}.json", "wb") as f:
         pickle.dump(T.activation_log, f, protocol=pickle.HIGHEST_PROTOCOL)
-
-    T.evaluate(dt)
-
-    if (rank == 0): 
-        print("Train Results: ", T.metric_results())
-
-    T.evaluate(dv)
-
-    if (rank == 0):
-
-        print("Validation Results: ", T.metric_results())
-        print("Sparsity: ", T.mm.sparsity)        
+   
+    if (rank == 0):    
         
         logs_to_pickle(logs, name)
 

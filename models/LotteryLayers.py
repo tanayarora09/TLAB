@@ -20,18 +20,25 @@ class LotteryDense(nn.Linear, Lottery):
         in_features,
         out_features
         ):
-        super(LotteryDense, self).__init__(in_features = in_features, out_features = out_features)        
         self.MASK_SHAPE = (out_features, in_features)
         self.MASK_NUMEL = in_features * out_features
         self.MASKED_NAME = "weight"
+        self.weight_mask = torch.empty(*self.MASK_SHAPE, dtype = torch.bool, device = "cuda")
+        super(LotteryDense, self).__init__(in_features = in_features, out_features = out_features)        
+
 
     @torch.no_grad()
     def update_mask(self, mask: torch.Tensor, offset: int):
         self.weight_mask =  mask[offset: offset + self.MASK_NUMEL].view(self.MASK_SHAPE)
 
     def forward(self, inputs):
-        kernel = self.weight * self.weight_mask
-        return F.linear(inputs, kernel, self.bias)
+        if self.training:
+            with torch.no_grad():
+                self.weight.data *= self.weight_mask
+            return F.linear(inputs, self.weight, self.bias)
+        else:
+            kernel = self.weight * self.weight_mask
+            return F.linear(inputs, kernel, self.bias)
 
 class LotteryConv2D(nn.Conv2d, Lottery):
 
@@ -54,5 +61,9 @@ class LotteryConv2D(nn.Conv2d, Lottery):
         self.weight_mask =  mask[offset: offset + self.MASK_NUMEL].view(self.MASK_SHAPE)
 
     def forward(self, inputs):
-        kernel = self.weight * self.weight_mask
-        return self._conv_forward(inputs, kernel, self.bias)
+        if self.training:
+            with torch.no_grad(): self.weight.data *= self.weight_mask
+            return self._conv_forward(inputs, self.weight, self.bias)   
+        else:
+            kernel = self.weight * self.weight_mask
+            return self._conv_forward(inputs, kernel, self.bias)

@@ -20,17 +20,8 @@ class VGG_CNN(BaseCNNTrainer):
         if (epoch + 1) == 79 or (epoch + 1) == 119: # Epochs 80, 120
             self.reduce_learning_rate(10)
         return 
-    
-    def post_step_hook(self, x, y, _, step, **kwargs):
-        """if step % 370 == 0 and step != 0:
-                print(x.view(-1)[x.numel()//4:3 * x.numel()//4].norm(2))"""
-        return
 
 class VGG_POC(BaseIMP):
-
-    def __init__(self, model: torch.nn.parallel.DistributedDataParallel, rank: int):
-        super(VGG_POC, self).__init__(model, rank)
-        self.IsMetricRoot = rank == 1
 
     def build(self, *args, tickets_dict: dict = None, **kwargs):
         super().build(*args, **kwargs)
@@ -197,11 +188,11 @@ class VGG_POC(BaseIMP):
         return 
 
     def pre_step_hook(self, step, steps_per_epoch):
-        if step % 8 == 0 and self.ACTS:
+        if step % 2 == 0 and self.ACTS:
             self.init_act_hooks()
 
     def post_step_hook(self, x, y, _, iteration, step, steps_per_epoch, **kwargs):
-        if step % 8 == 0 and self.ACTS:
+        if step % 2 == 0 and self.ACTS:
             with torch.autocast('cuda', dtype = torch.float16, enabled = self.AMP):
                 self.collect_activations_and_test(x, iteration)
             self.disable_act_hooks()

@@ -1,6 +1,6 @@
 import torch
 from torch import nn
-from torch.utils.data import DataLoader, DistributedSampler
+from torch.utils.data import DataLoader, DistributedSampler, Subset
 import torchvision
 from torchvision.transforms.v2 import functional as TF
 from PIL import Image
@@ -11,6 +11,30 @@ from typing import List
 
 from utils.data_utils import jitToList2D
 
+class DataAugmentation(nn.Module):
+    
+    def __init__(self):
+        super(DataAugmentation, self).__init__()
+
+    def forward(self, x: torch.Tensor):
+        
+        device = x.device
+        batch_size = x.size(0)
+
+        flip_mask = torch.rand(batch_size, device=device) > 0.5
+        x[flip_mask] = TF.hflip(x[flip_mask])
+
+        x = nn.functional.pad(x, (4, 4, 4, 4), mode="reflect")
+        
+        i = torch.randint(0, 40 - 32 + 1, (batch_size,), device=device)
+        j = torch.randint(0, 40 - 32 + 1, (batch_size,), device=device)
+
+        # Perform batched cropping
+        x = torch.stack([img[:, i_: i_ + 32, j_: j_ + 32] for img, i_, j_ in zip(x, i, j)])
+
+        return x
+
+'''
 class DataAugmentation(nn.Module):
 
     """
@@ -72,7 +96,7 @@ class DataAugmentation(nn.Module):
         x = TF.resize(x, [224, 224], interpolation=TF.InterpolationMode.BICUBIC)
         
         return x
-
+'''
 """    @torch.jit.ignore
     def apply_perspective(self, x: torch.Tensor, startpoints: torch.Tensor, endpoints: torch.Tensor) -> torch.Tensor:
         batch_size = x.size(0)
@@ -91,7 +115,7 @@ class Resize(nn.Module):
         super(Resize, self).__init__()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = TF.resize(x, [224, 224], interpolation=TF.InterpolationMode.BICUBIC)
+        #x = TF.resize(x, [224, 224], interpolation=TF.InterpolationMode.BICUBIC)
         return x
 
 class CenterCrop(nn.Module):
@@ -99,8 +123,8 @@ class CenterCrop(nn.Module):
         super(CenterCrop, self).__init__()
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = TF.center_crop(x, [200, 200])
-        x = TF.resize(x, [224, 224], interpolation = TF.InterpolationMode.BICUBIC)
+        #x = TF.center_crop(x, [200, 200])
+        #x = TF.resize(x, [224, 224], interpolation = TF.InterpolationMode.BICUBIC)
         return x
 
 class Normalize(nn.Module):
