@@ -18,10 +18,6 @@ import time
 import math
 
 import h5py
-from models.LotteryLayers import Lottery
-from models.base import BaseModel
-
-from data.cifar10 import custom_fetch_data
 
 class BaseCNNTrainer:
 
@@ -41,8 +37,8 @@ class BaseCNNTrainer:
         self.DISTRIBUTED = world_size > 1
 
         self.m = model
-        if self.DISTRIBUTED: self.mm  = getattr(model, 'module')
-        else: self.mm = model
+        self.mm  = getattr(model, 'module')
+        #else: self.mm = model
 
     def build(self, optimizer,
               optimizer_kwargs: dict, 
@@ -165,7 +161,7 @@ class BaseCNNTrainer:
         Collects Loss, Accuracy, and Sample Count.
         Do not directly call. Use transfer_metrics instead.
         """
-        if not self.DISTRIBUTED: return
+        #if not self.DISTRIBUTED: return
         with torch.no_grad():
             dist.all_reduce(self.loss_tr, op = dist.ReduceOp.SUM)
             dist.all_reduce(self.acc_tr, op = dist.ReduceOp.SUM)
@@ -210,7 +206,7 @@ class BaseCNNTrainer:
             train_start = time.time()
             self.m.train()
 
-            data_list = self.pre_epoch_hook(train_data)
+            self.pre_epoch_hook(train_data)
 
             accum = False
 
@@ -238,9 +234,7 @@ class BaseCNNTrainer:
 
                 self.train_step(x, y, accum, accumulation_steps)
 
-                if not self.post_step_hook(data_list = data_list, step = step, iteration = iter, name = name): 
-                    #if self.IsRoot: progress_bar.close()
-                    _break = True
+                self.post_step_hook(x = x, y = y, step = step, iteration = iter, steps_per_epoch = train_cardinality)
 
                 if accum:
                     
@@ -317,12 +311,9 @@ class BaseCNNTrainer:
 
         if not accum:
             
-            if self.DISTRIBUTED:
-                with self.m.no_sync():
-                    self.lossScaler.scale(loss).backward()
-            else:
+            with self.m.no_sync():
                 self.lossScaler.scale(loss).backward()
-
+            
             return
         
         self.lossScaler.scale(loss).backward()
@@ -559,7 +550,7 @@ class BaseIMP(BaseCNNTrainer):
 
             sparsities_d[iteration] = current_sparsity.item() / 100
 
-            self.print(f"\nSPARSITY: {current_sparsity:.2f}\n", "red")
+            self.print(f"\nSPARSITY: {current_sparsity:.2f} | SEEDED: {torch.rand(1).item()}\n", "red")
 
             self.post_prune_hook(iteration, epochs_per_run)
 

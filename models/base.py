@@ -262,7 +262,7 @@ class BaseModel(nn.Module):
         return not not_collapse
 
         
-@torch.compile
+#@torch.compile
 def merge_tickets_graphed(t1: torch.Tensor, t2: torch.Tensor, t1w: torch.Tensor, 
                           t2w: torch.Tensor) -> torch.Tensor:
     with torch.no_grad():
@@ -277,7 +277,7 @@ def merge_tickets_graphed(t1: torch.Tensor, t2: torch.Tensor, t1w: torch.Tensor,
         
 
 
-@torch.compile
+#@torch.compile
 def mutate_ticket_graphed(ticket: torch.Tensor, temperature: torch.Tensor):
 
     with torch.no_grad():

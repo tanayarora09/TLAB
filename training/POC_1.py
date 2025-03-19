@@ -13,10 +13,12 @@ import json
 import pickle
 import gc
 
-def main(rank, world_size, name: str, **kwargs):
+def main(rank, world_size, name: str, amts: list, **kwargs):
 
-    EPOCHS = 160
+    EPOCHS = amts[0]
     CARDINALITY = 98
+    PRUNE_ITERS = amts[1]
+    REWIND_ITER = amts[2] * CARDINALITY
 
     dataAug = torch.jit.script(DataAugmentation().to('cuda'))
     resize = torch.jit.script(Resize().to('cuda'))
@@ -30,12 +32,8 @@ def main(rank, world_size, name: str, **kwargs):
                 device_ids = [rank],
                 output_device = rank, 
                 gradient_as_bucket_view = True)
- 
-    #model = torch.compile(model)
     
     T = VGG_POC(model, rank, world_size)
-
-    #T.summary(32)
 
     del model
 
@@ -51,15 +49,15 @@ def main(rank, world_size, name: str, **kwargs):
     dt, dv = get_loaders(rank, world_size, batch_size = 512) 
     
 
-    logs, sparsities_d = T.TicketIMP(dt, dv, EPOCHS, CARDINALITY, name, 0.8, 20, rewind_iter = 1274)
+    logs, sparsities_d = T.TicketIMP(dt, dv, EPOCHS, CARDINALITY, name, 0.8, PRUNE_ITERS, rewind_iter = REWIND_ITER)
 
     if (rank == 0):
 
         with open(f"./tmp/sparsities_{name}.json", "w", encoding = "utf-8") as f:
             json.dump(sparsities_d, f, ensure_ascii = False, indent = 4)
             
-        logs_to_pickle(logs, name)        
+        logs_to_pickle(logs, name)
     
         for i in range(len(logs)):
             plot_logs(logs[i], EPOCHS, name + f"_{(sparsities_d[i] * 100):.2f}", 
-                      CARDINALITY, start = (0 if i == 0 else 13)) 
+                      CARDINALITY, start = (0 if i == 0 else amts[2])) 

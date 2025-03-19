@@ -20,14 +20,14 @@ def setup_distribute(rank, world_size):
 def cleanup_distribute():
     dist.destroy_process_group()
 
-def dist_wrapper(rank, world_size, func, name: str, SEED: int):
+def dist_wrapper(rank, world_size, func, name: str, SEED: int, amts: list):
     setup_distribute(rank, world_size)
     torch.cuda.set_device(rank)
     set_dynamo_cfg()
     reset_deterministic(SEED)
     #set_non_deterministic()
     try:
-        func(rank, world_size, name)
+        func(rank, world_size, name, amts)
     finally:
         cleanup_distribute()
 
@@ -49,27 +49,33 @@ def reset_deterministic(SEED):
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
-def main(func, name: str, SEED: int):
+def main(func, name: str, SEED: int, amts: list):
     world_size = torch.cuda.device_count()
-    mp.spawn(dist_wrapper, args=(world_size, func, name, SEED), nprocs=world_size, join=True)
+    mp.spawn(dist_wrapper, args=(world_size, func, name, SEED, amts), nprocs=world_size, join=True)
 
 if __name__ == "__main__":
     
-    if len(sys.argv) != 2:
-        raise ValueError("Must pass exactly one name. Usage should be python main.py $NAME")
+    if len(sys.argv) != 3:
+        raise ValueError("Must pass exactly one name. Usage should be python main.py $NAME $REPLICATES")
 
     name = sys.argv[1]
+    replicates = int(sys.argv[2])
 
-    SEED = random.randint(0, 2**31)
-    print("--------------------------------------------------------------")
-    print("SEED: ", SEED)
-    print("--------------------------------------------------------------")
+    print(f"Running {replicates} times.")
 
-    with open(f"./logs/SEEDS/{name}_SEED.txt", "w") as f:
-        f.write(str(SEED))
+    for replicate in range(replicates):
 
+        SEED = random.randint(0, 2**31)
+        print("--------------------------------------------------------------")
+        print("SEED: ", SEED)
+        print("--------------------------------------------------------------")
 
-    from training import POC_1, POC_2
-    main(POC_1.main, name + "1", SEED)
-    main(POC_2.main, name + "2", SEED)
-    
+        with open(f"./logs/SEEDS/{name + f"{replicate}"}_SEED.txt", "w") as f:
+            f.write(str(SEED))
+
+        amts = [5,3,2]#[160,30,13]
+
+        from training import POC_1, POC_2
+        main(POC_1.main, (name + f"_{replicate}_") + "f", SEED, amts)
+        main(POC_2.main, (name + f"_{replicate}_") + "s", SEED, amts)
+        

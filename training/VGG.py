@@ -191,7 +191,7 @@ class VGG_POC(BaseIMP):
         if step % 2 == 0 and self.ACTS:
             self.init_act_hooks()
 
-    def post_step_hook(self, x, y, _, iteration, step, steps_per_epoch, **kwargs):
+    def post_step_hook(self, x, y, iteration, step, steps_per_epoch, **kwargs):
         if step % 2 == 0 and self.ACTS:
             with torch.autocast('cuda', dtype = torch.float16, enabled = self.AMP):
                 self.collect_activations_and_test(x, iteration)
