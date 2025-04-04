@@ -29,13 +29,16 @@ class BaseModel(nn.Module):
 
     """
 
-    def init_base(self, rank: int):
+    def init_base(self, rank: int, world_size: int):
 
         """
         Call in __init__ after initializing layers.
         """
 
         self.RANK = rank
+
+        self.WORLD_SIZE = world_size
+        self.DISTRIBUTED = world_size > 1
 
         self._prunable_count = 0
 
@@ -54,16 +57,28 @@ class BaseModel(nn.Module):
 
 
     
-    def set_ticket(self, mask: torch.Tensor, zero_out = False) -> None:
+    def set_ticket(self, mask: torch.Tensor, zero_out = False, realzo = False) -> None:
         with torch.no_grad():
             if mask.numel() != self.num_prunable: raise ValueError("Mask must have correct number of parameters.")
 
             self.get_buffer("MASK").copy_(mask)
 
-            if zero_out: 
-                for layer in self.lottery_layers: 
-                    getattr(layer, "weight").data *= getattr(layer, "weight_mask")
+            #if realzo:
+            #    for layer in self.lottery_layers:
+            #        getattr(layer, 'weight').data *= getattr(layer, "weight_mask")
 
+            if False: #zero_out:
+                for name, module in self.named_modules():
+                    if isinstance(module, nn.BatchNorm2d): 
+                        module.reset_parameters()
+                        module.reset_running_stats()
+
+            if False: # zero_out: 
+                for layer in self.lottery_layers: 
+                    getattr(layer, "weight").mil_(getattr(layer, "weight_mask"))
+
+#    def reset_batchnorm(self):
+#        self.apply(lambda module: if isinstance(module, nn.BatchNorm2d): module.reset_parameters())
     
     def reset_ticket(self) -> None:
 
@@ -82,6 +97,37 @@ class BaseModel(nn.Module):
     def num_prunable(self): return self._prunable_count
 
     ### ------------------------------------- SERIALIZATION -------------------------
+    
+    @torch.no_grad()
+    def print_layerwise_sparsities(self):
+        if self.RANK != 0: return
+        for bname, block in self.named_children():
+            for name, layer in block.named_children():
+                if isinstance(layer, Lottery):
+                    mask = getattr(layer, "weight_mask")
+                    print(f"{bname} | {mask.sum()/mask.numel() * 100} | {mask.numel()}")
+
+    @torch.no_grad()
+    def export_layerwise_sparsities(self):
+        out = dict()
+        for i, layer in enumerate(self.lottery_layers):
+            mask = getattr(layer, "weight_mask")
+            out[i] = (mask.sum()/mask.numel()).item()
+        return out
+
+    @torch.no_grad()
+    def count_channels(self):
+        if self.RANK != 0: return
+        for bname, block in self.named_children():
+            for name, layer in block.named_children():
+                if isinstance(layer, Lottery):
+                    weight = getattr(layer, "weight_mask") * getattr(layer, "weight")
+                    nonzero = (weight.abs().sum(dim=(1, 2, 3)) > 0).sum()
+                    print(f"{bname} | {nonzero} | {weight.shape[0]}")
+
+
+    pls = print_layerwise_sparsities
+    cc = count_channels
 
     @torch._dynamo.disable
     @torch.no_grad()
@@ -92,9 +138,11 @@ class BaseModel(nn.Module):
     
     @torch._dynamo.disable
     @torch.no_grad()
-    def export_ticket(self, name: str, root: int = 0, entry_name: str = "mask") -> None:
+    def export_ticket(self, name: str, root: int = 0, entry_name: str = "mask", ticket: torch.Tensor = None) -> None:
         if not (self.RANK == root): return
         with h5py.File(f"./logs/TICKETS/{name}.h5", 'a') as f:
+            if ticket is not None: 
+                f.create_dataset(entry_name, data = ticket.cpu().numpy())
             f.create_dataset(entry_name, data = self.export_ticket_cpu().numpy())
 
     @torch._dynamo.disable         
@@ -104,15 +152,16 @@ class BaseModel(nn.Module):
         ROOT = 0
         """
         
-        if self.RANK == root:
+        if self.RANK == root or not self.DISTRIBUTED:
             with h5py.File(f"./logs/TICKETS/{name}.h5", 'r') as f:
                 data = torch.as_tensor(f[entry_name][:], device = "cuda", dtype = torch.bool)
-        else:
+        elif self.DISTRIBUTED:
             data = torch.zeros(self.num_prunable, device = "cuda", dtype = torch.bool) 
 
-        dist.barrier(device_ids = [self.RANK])
+        if self.DISTRIBUTED:
+            dist.barrier(device_ids = [self.RANK])
 
-        dist.broadcast(data, src=root)
+            dist.broadcast(data, src=root)
 
         return data
 
@@ -139,7 +188,7 @@ class BaseModel(nn.Module):
     def prune_by_mg(self, rate: float, iteration: float, root: int = 0) -> None:
         with torch.no_grad():
 
-            if self.RANK == root:
+            if self.RANK == root or not self.DISTRIBUTED:
 
                 all_magnitudes = (torch.cat([(layer.get_parameter(layer.MASKED_NAME)).detach().view(-1) for layer in self.lottery_layers], 
                                         dim = 0) * self.get_buffer("MASK")).abs_().cpu()
@@ -148,12 +197,14 @@ class BaseModel(nn.Module):
 
                 ticket = all_magnitudes.ge(threshold).cuda()
 
-            else: 
+            elif self.DISTRIBUTED: 
                 ticket = torch.zeros(self.num_prunable, dtype = torch.bool, device = "cuda")
 
-            dist.barrier(device_ids = [self.RANK])
+            if self.DISTRIBUTED:
 
-            dist.broadcast(ticket, src = root)
+                dist.barrier(device_ids = [self.RANK])
+
+                dist.broadcast(ticket, src = root)
 
             self.set_ticket(ticket)
 
@@ -189,6 +240,35 @@ class BaseModel(nn.Module):
             self.set_ticket(ticket)
             
             return
+
+    def prune_random_given_layerwise(self, layerwise_sparsities: dict, distributed: bool, root: int = 0):
+        """
+        Requires A Ticket Reset
+        """
+        with torch.no_grad():
+            
+            if not distributed or (self.RANK == root):
+                ticket = list()
+                self.reset_ticket()
+                for i, layer in enumerate(self.lottery_layers):
+                    mask = getattr(layer, "weight_mask").view(-1).clone()#.contiguous()
+                    N = mask.numel()
+                    prune_indices = torch.randperm(N)[: int((1.0 - layerwise_sparsities[i]) * N)]
+                    mask[prune_indices] = False
+                    ticket.append(mask)
+                ticket = torch.cat(ticket).cuda()
+            
+            elif distributed: 
+                ticket = torch.zeros_like(self.get_buffer("MASK"), device = 'cuda', dtype = torch.bool)
+
+            if distributed:
+                dist.barrier(device_ids = [self.RANK])
+                dist.broadcast(ticket, src = root)
+
+            self.set_ticket(ticket)
+
+        return
+
 
     #@torch.compile
     def merge_tickets(self, t1: torch.Tensor, t2: torch.Tensor, t1_weight: float, t2_weight: float) -> torch.Tensor:

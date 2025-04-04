@@ -18,14 +18,17 @@ def main(rank, world_size, name: str, args: list, lock, shared_list, **kwargs):
     EPOCHS = int(args[0])
     CARDINALITY = 391
     
-    name += "_" + ",".join([str(item) for item in args])
 
     dataAug = torch.jit.script(DataAugmentation().to('cuda'))
     resize = torch.jit.script(Resize().to('cuda'))
     normalize = torch.jit.script(Normalize().to('cuda'))
     center_crop = torch.jit.script(CenterCrop().to('cuda'))
 
-    model = VGG(depth = 16, rank = rank).to("cuda")
+    model = VGG(depth = 19, rank = rank).to("cuda")
+
+    #if name.endswith("0"): model.set_ticket(model.load_ticket("REWINDA_EQUAL0_160.0,90.0,160.0,10.0,5.0,0.055"))
+
+    name += "_" + ",".join([str(item) for item in args])
 
     model = DDP(model, 
                 device_ids = [rank],
@@ -43,7 +46,7 @@ def main(rank, world_size, name: str, args: list, lock, shared_list, **kwargs):
     dt, dv = get_loaders(rank, world_size, batch_size = 128) 
 
     T.build(sparsity_rate = 0.8, experiment_args = args[1:],
-            optimizer = torch.optim.SGD(T.m.parameters(), 0.1, momentum = 0.9, weight_decay = 1e-4),
+            optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay' : 1e-3},
             loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
             collective_transforms = (resize, normalize), train_transforms = (dataAug,),
             eval_transforms = (center_crop,), final_collective_transforms = tuple(),
@@ -95,10 +98,18 @@ def main(rank, world_size, name: str, args: list, lock, shared_list, **kwargs):
             T.prunes.clear()
 
             logs_to_pickle(logs, tmp_name)
+            T.mm.export_ticket(name, entry_name = f"{T.mm.sparsity.item():.1f}")
 
         torch.distributed.barrier(device_ids = [rank])
 
         T.load_ckpt(tmp_name, "rewind")
+
+        T.build(sparsity_rate = 0.8, experiment_args = args[1:],
+            optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay' : 1e-3},
+            loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
+            collective_transforms = (resize, normalize), train_transforms = (dataAug,),
+            eval_transforms = (center_crop,), final_collective_transforms = tuple(),
+            scale_loss = True, gradient_clipnorm = 2.0)
 
         torch.distributed.barrier(device_ids = [rank])
 

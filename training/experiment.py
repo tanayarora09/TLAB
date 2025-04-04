@@ -25,7 +25,7 @@ def main(rank, world_size, name: str, args: list, lock, shared_list, **kwargs):
     normalize = torch.jit.script(Normalize().to('cuda'))
     center_crop = torch.jit.script(CenterCrop().to('cuda'))
 
-    model = VGG(depth = 16, rank = rank).to("cuda")
+    model = VGG(depth = 19, rank = rank).to("cuda")
 
     model = DDP(model, 
                 device_ids = [rank],
@@ -43,7 +43,7 @@ def main(rank, world_size, name: str, args: list, lock, shared_list, **kwargs):
     dt, dv = get_loaders(rank, world_size, batch_size = 128) 
 
     T.build(sparsity_rate = 0.8, experiment_args = args[1:], type_of_exp = 2,
-            optimizer = torch.optim.SGD(T.m.parameters(), 0.1, momentum = 0.9, weight_decay = 1e-4),
+            optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay' : 1e-3},
             loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
             collective_transforms = (resize, normalize), train_transforms = (dataAug,),
             eval_transforms = (center_crop,), final_collective_transforms = tuple(),
@@ -57,11 +57,11 @@ def main(rank, world_size, name: str, args: list, lock, shared_list, **kwargs):
         sampler_offset = 0
         while not T._pruned:
             
-            x, y = custom_fetch_data(dt, sampler_offset = sampler_offset)
+            x, y = custom_fetch_data(dt, amount = 1, sampler_offset = sampler_offset)[0]
             x, y = x.to('cuda'), y.to('cuda')
 
             for tr in T.cT: x = tr(x)
-            for tr in T.eT: x = tr(x)
+            for tr in T.tT: x = tr(x)
             for tr in T.fcT: x = tr(x)
 
             T.mm(x)
@@ -70,6 +70,8 @@ def main(rank, world_size, name: str, args: list, lock, shared_list, **kwargs):
             T.prune_model(ticket)
             T.fitnesses.append((T.mm.sparsity.item(), fitness))
             
+            T.mm.export_ticket(name, entry_name = f"{T.mm.sparsity.item():.1f}")
+
             sampler_offset += 1
 
             if T.mm.sparsity_d <= T.desired_sparsity:
@@ -97,6 +99,13 @@ def main(rank, world_size, name: str, args: list, lock, shared_list, **kwargs):
     """
 
     T.mm.export_ticket(name)
+
+    T.build(sparsity_rate = 0.8, experiment_args = args[1:], type_of_exp = 2,
+            optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay' : 1e-3},
+            loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
+            collective_transforms = (resize, normalize), train_transforms = (dataAug,),
+            eval_transforms = (center_crop,), final_collective_transforms = tuple(),
+            scale_loss = True, gradient_clipnorm = 2.0)
 
     logs_final = T.fit(dt, dv, EPOCHS, CARDINALITY, name, 
                      save = False, verbose = False)

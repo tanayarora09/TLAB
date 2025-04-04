@@ -34,7 +34,7 @@ def main(rank, world_size, name: str, **kwargs):
     
     T = VGG_POC(model, rank = rank)
 
-    T.build(optimizer = torch.optim.SGD(T.m.parameters(), 0.1, momentum = 0.9, weight_decay = 1e-3),
+    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay' : 1e-3},
             loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
             collective_transforms = (resize, normalize), train_transforms = (dataAug,),
             eval_transforms = (center_crop,), final_collective_transforms = tuple(),

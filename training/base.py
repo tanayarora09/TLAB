@@ -7,6 +7,7 @@ import torch.distributed as dist
 import torch.multiprocessing as mp 
 
 import numpy as np
+import copy
 
 import torchinfo
 from tqdm import tqdm
@@ -26,20 +27,25 @@ class BaseCNNTrainer:
 
     #------------------------------------------ MAIN INIT FUNCTIONS -------------------------------------- #
 
-    def __init__(self, model: torch.nn.parallel.DistributedDataParallel, 
+    def __init__(self, model, 
                  rank: int, world_size: int):
         """
         Model has to be DDP.
         Non-Distributed Environments Not Supported.
         Default cuda device should be set.
         """
-        self.m = model
-        self.mm: BaseModel  = model.module
+
         self.RANK = rank
         self.IsRoot = rank == 0
         self.WORLD_SIZE = world_size
+        self.DISTRIBUTED = world_size > 1
 
-    def build(self, optimizer: torch.optim.Optimizer, 
+        self.m = model
+        if self.DISTRIBUTED: self.mm  = getattr(model, 'module')
+        else: self.mm = model
+
+    def build(self, optimizer,
+              optimizer_kwargs: dict, 
               collective_transforms: Tuple[nn.Module],
               train_transforms: Tuple[nn.Module],
               eval_transforms: Tuple[nn.Module],
@@ -61,7 +67,10 @@ class BaseCNNTrainer:
         """
 
         self.criterion = loss
-        self.optim = optimizer
+        self.optimizer = optimizer
+        self.optimizer_kwargs = optimizer_kwargs
+
+        self.reset_optimizer()
 
         self.cT = collective_transforms
         self.tT = train_transforms
@@ -156,6 +165,7 @@ class BaseCNNTrainer:
         Collects Loss, Accuracy, and Sample Count.
         Do not directly call. Use transfer_metrics instead.
         """
+        if not self.DISTRIBUTED: return
         with torch.no_grad():
             dist.all_reduce(self.loss_tr, op = dist.ReduceOp.SUM)
             dist.all_reduce(self.acc_tr, op = dist.ReduceOp.SUM)
@@ -165,7 +175,8 @@ class BaseCNNTrainer:
 
     def fit(self, train_data: torch.utils.data.DataLoader, validation_data: torch.utils.data.DataLoader,
             epochs: int, train_cardinality: int, name: str, accumulation_steps: int = 1, save: bool = True, 
-            verbose: bool = True, rewind_iter: int = 500, sampler_offset: int = 0, validate: bool = True) -> dict:
+            verbose: bool = False, rewind_iter: int = 500, sampler_offset: int = 0, validate: bool = True, 
+            start = 0, save_init = True) -> dict:
         """
         Basic Training Run Implementation.
         Override by Copy and Pasting.
@@ -178,12 +189,13 @@ class BaseCNNTrainer:
 
         if self.IsRoot: 
             progress_bar = tqdm(total = epochs, unit = "epoch", colour = "green", bar_format="{l_bar}{bar:25}{r_bar}{bar:-25b}", leave = False)
+            progress_bar.update(start)
             print(f"\n\n\n\n")
 
 
         logs = defaultdict(dict)
         self.reset_metrics()
-        #if save: self.save_ckpt(name = name, prefix = "init")
+        if save_init: self.save_ckpt(name = name, prefix = "init")
         
         best_val_loss = float('inf')
         best_epoch = 1
@@ -193,13 +205,13 @@ class BaseCNNTrainer:
 
         _break = False
 
-        for epoch in range(epochs):
+        for epoch in range(start, epochs):
 
             #if verbose: self.print(f"\nStarting Epoch {epoch + 1}\n", 'red')
             train_start = time.time()
             self.m.train()
 
-            self.pre_epoch_hook(epoch, epochs)
+            data_list = self.pre_epoch_hook(train_data)
 
             accum = False
 
@@ -212,12 +224,12 @@ class BaseCNNTrainer:
                 iter = int(epoch * train_cardinality + step + 1)
                 accum = ((step + 1) % accumulation_steps == 0) or (step + 1 == train_cardinality)
 
-                #if (iter - 1) == rewind_iter and save:
-                #    self.save_ckpt(name = name, prefix = "rewind")
+                if (iter - 1) == rewind_iter and save:
+                    self.save_ckpt(name = name, prefix = "rewind")
 
                 self.pre_step_hook(step, train_cardinality)
 
-                dist.barrier(device_ids = [self.RANK])
+                #dist.barrier(device_ids = [self.RANK])
 
                 x, y = x.to('cuda'), y.to('cuda')
 
@@ -227,23 +239,23 @@ class BaseCNNTrainer:
 
                 self.train_step(x, y, accum, accumulation_steps)
 
-                if not self.post_step_hook(dt = train_data, step = step, iteration = iter, name = name): 
-                    if self.IsRoot: progress_bar.close()
+                if not self.post_step_hook(data_list = data_list, step = step, iteration = iter, name = name): 
+                    #if self.IsRoot: progress_bar.close()
                     _break = True
 
                 if accum:
                     
-                    if (step + 1) % 48 == 0 or (step + 1 == train_cardinality): # Synchronize and Log.
+                    if (step + 1) % 13 == 0 or (step + 1 == train_cardinality): # Synchronize and Log.
                         
                         self.transfer_metrics()
                         
                         if self.IsRoot: logs[iter] = self.metric_results()
                         
-                        if (step + 1) % 48 == 0 and self.IsRoot and verbose:
+                        if (step + 1) % 52 == 0 and self.IsRoot and verbose:
                             
-                            self.print(f"----  Status at {math.ceil((step + 1) / 48):.0f}/8: ----     Accuracy: {logs[iter]['accuracy']:.4f}   --  Loss: {logs[iter]['loss']:.5f} --", 'white')
+                            self.print(f"----  Status at {math.ceil((step + 1) / 52):.0f}/8: ----     Accuracy: {logs[iter]['accuracy']:.4f}   --  Loss: {logs[iter]['loss']:.5f} --", 'white')
             
-            if _break: return logs
+            if _break: break
 
             self.post_train_hook()
 
@@ -254,7 +266,7 @@ class BaseCNNTrainer:
 
                 validation_data.sampler.set_epoch(epoch + epochs * sampler_offset)
 
-                dist.barrier(device_ids = [self.RANK])
+                if self.DISTRIBUTED: dist.barrier(device_ids = [self.RANK])
 
                 self.evaluate(validation_data)
 
@@ -266,7 +278,7 @@ class BaseCNNTrainer:
                         best_val_loss = logs[(epoch + 1) * train_cardinality]['val_loss']
                         #if verbose: self.print(f"\n -- UPDATING BEST WEIGHTS TO {epoch + 1} -- \n", "magenta")
                         best_epoch = epoch + 1
-                        self.save_ckpt(name = name, prefix = "best")
+                        #self.save_ckpt(name = name, prefix = "best")
 
                     #if verbose: self.print(f"Validation stage took {(time.time() - val_start):.1f} seconds.", 'yellow')
                     
@@ -290,7 +302,7 @@ class BaseCNNTrainer:
 
             progress_bar.close()
 
-
+        self.save_ckpt(name = name, prefix = "final")
 
         return logs
  
@@ -306,7 +318,10 @@ class BaseCNNTrainer:
 
         if not accum:
             
-            with self.m.no_sync():
+            if self.DISTRIBUTED:
+                with self.m.no_sync():
+                    self.lossScaler.scale(loss).backward()
+            else:
                 self.lossScaler.scale(loss).backward()
 
             return
@@ -332,13 +347,13 @@ class BaseCNNTrainer:
 
     #------------------------------------------ TRAINING HOOKS ----------------------------------------------- #
 
-    def pre_epoch_hook(self, epoch: int, EPOCHS: int) -> None:
+    def pre_epoch_hook(self, *args) -> None:
         pass
     
-    def post_epoch_hook(self, epoch: int, EPOCHS: int) -> None:
+    def post_epoch_hook(self, *args, **kwargs) -> None:
         pass
     
-    def pre_step_hook(self, step: int, steps_per_epoch: int) -> None:
+    def pre_step_hook(self, *args, **kwargs) -> None:
         pass
 
     def post_step_hook(self, *args, **kwargs) -> bool:
@@ -405,7 +420,7 @@ class BaseCNNTrainer:
                     'scaler': self.lossScaler.state_dict()}
             torch.save(ckpt, fp)        
 
-    def load_ckpt(self, name: str, prefix: str = None, zero_out = True):
+    def load_ckpt(self, name: str, prefix: str = None, zero_out = True, weights_only = True):
         """
         Loads Model, Optimizer, and LossScaler state_dicts.
         Meant to be used with save_ckpt.
@@ -413,18 +428,25 @@ class BaseCNNTrainer:
         with torch.no_grad():
 
             fp = f"./logs/WEIGHTS/{self.fromNamePrefix(name, prefix)}.pt"
-
-            dist.barrier(device_ids = [self.RANK])
             
-            ckpt = torch.load(fp, map_location = {'cuda:%d' % 0: 'cuda:%d' % self.RANK},
+            if self.DISTRIBUTED: 
+                dist.barrier(device_ids = [self.RANK])
+                ckpt = torch.load(fp, map_location = {'cuda:%d' % 0: 'cuda:%d' % self.RANK},
                             weights_only = True) # Assumes rank = 0 is Root.
+            else:
+                ckpt = torch.load(fp, weights_only = True)
+
             self.m.load_state_dict(ckpt['model'])
-            ckpt['optim']['param_groups'] =self.optim.state_dict()['param_groups']
-            self.optim.load_state_dict(ckpt['optim'])
-            self.lossScaler.load_state_dict(ckpt['scaler'])
+            #ckpt['optim']['param_groups'] =self.optim.state_dict()['param_groups']
+            if weights_only:
+                self.reset_optimizer()
+                self.reset_loss_scaler()
+            else:
+                self.optim.load_state_dict(ckpt['optim'])
+                self.lossScaler.load_state_dict(ckpt['scaler'])
             
-            if zero_out:
-                self.prune_model(self.mm.export_ticket_cpu())
+            #if zero_out:
+            #    self.prune_model(self.mm.export_ticket_cpu())
 
     #------------------------------------------ HELPER FUNCTIONS -------------------------------------- #
 
@@ -460,6 +482,9 @@ class BaseCNNTrainer:
         """
         self.lossScaler = torch.amp.GradScaler(device = 'cuda', enabled = self.AMP)
 
+    def reset_optimizer(self):
+        self.optim = self.optimizer(self.m.parameters(), **self.optimizer_kwargs)
+
     def reduce_learning_rate(self, factor: int):
         with torch.no_grad():    
             for pg in self.optim.param_groups:
@@ -491,10 +516,6 @@ class BaseCNNTrainer:
 
 class BaseIMP(BaseCNNTrainer):
 
-    def __init__(self, model: torch.nn.parallel.DistributedDataParallel, rank: int):
-        super(BaseIMP, self).__init__(model, rank)
-        self.IsTicketRoot = rank == 2
-
     #------------------------------------------ LTH IMP FUNCTIONS -------------------------------------- #
 
     def TicketIMP(self, train_data: torch.utils.data.DataLoader, validation_data: torch.utils.data.DataLoader, 
@@ -518,6 +539,8 @@ class BaseIMP(BaseCNNTrainer):
         current_sparsity = 100.0
         sparsities_d[0] = current_sparsity / 100
 
+        sampler_offset = 0
+
         if self.IsRoot: h5py.File(f"./logs/TICKETS/{name}.h5", "w").close() # For logging tickets.
 
         self.pre_IMP_hook(name)
@@ -526,7 +549,8 @@ class BaseIMP(BaseCNNTrainer):
 
         self.print(f"\nSPARSITY: {current_sparsity:.2f}\n", "red")
 
-        total_logs[0] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_{(100.0):.2f}", save = True, verbose = False, rewind_iter = rewind_iter)
+        total_logs[0] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_{(100.0):.2f}", save = True, verbose = False,
+                                 rewind_iter = rewind_iter, sampler_offset = sampler_offset)
         
         for iteration in range(1, prune_iters + 1):
             
@@ -536,16 +560,20 @@ class BaseIMP(BaseCNNTrainer):
 
             sparsities_d[iteration] = current_sparsity.item() / 100
 
-            self.print(f"\nSPARSITY: {current_sparsity:.2f}\n", "red")
+            self.print(f"\nSPARSITY: {current_sparsity:.2f} | SEEDED: {torch.rand(1).item()}\n", "red")
 
             self.post_prune_hook(iteration, epochs_per_run)
 
             self.mm.export_ticket(name, entry_name = f"{(current_sparsity):.2f}")
 
-            self.load_ckpt(name + f"_{(100.0):.2f}", prefix = "rewind") 
+            self.load_ckpt(name + f"_{(100.0):.2f}", prefix = "rewind", weights_only = True)
+
+            #sampler_offset += 1
 
             total_logs[iteration] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, 
-                                             name + f"_{(current_sparsity):.2f}", save = False, verbose = False)
+                                             name + f"_{(current_sparsity):.2f}", save = False, verbose = False,
+                                             sampler_offset = sampler_offset, start = rewind_iter//train_cardinality,
+                                             save_init = False)
 
         self.post_IMP_hook()
 
@@ -579,7 +607,7 @@ class CNN_DGTS(BaseCNNTrainer):
 
         def __init__(self, rank: int, world_size: int, lock, dynamic_list, 
                      model: BaseModel, act_w: list, max_size: int = 50,
-                     possible_children: int = 5,): #reverse_scores: bool = False):
+                     possible_children: int = 5, reverse_scores: bool = False):
             self.lock = lock
             self.population = dynamic_list
             del self.population[:]
@@ -589,7 +617,7 @@ class CNN_DGTS(BaseCNNTrainer):
             self.POSSIBLE_CHILDREN = possible_children
             self.mm = model
             self.act_w = act_w
-            #self.reverse = reverse_scores
+            self.reverse = reverse_scores
             #self.__div_strat = True
 
         def add_sample(self, mask: torch.Tensor, fitness: float):
@@ -602,7 +630,7 @@ class CNN_DGTS(BaseCNNTrainer):
                 left, right = 0, len(self.population) - 1
                 while left <= right:
                     mid = (left + right) // 2
-                    if self.population[mid][1] < fitness:
+                    if (self.population[mid][1] < fitness) != self.reverse:
                         left = mid + 1
                     else: 
                         right = mid - 1
@@ -618,7 +646,7 @@ class CNN_DGTS(BaseCNNTrainer):
             size = (len(self.population) // self.WORLD_SIZE) 
 
             max_fitness = self.population[-1][1] + 1e-11
-            fitnesses = [max_fitness - fitness for mask, fitness in self.population]
+            fitnesses = [fitness for mask, fitness in self.population] if self.reverse else [max_fitness - fitness for mask, fitness in self.population]
 
             total_fitness = sum(fitnesses)
             pointer_distance = total_fitness / size
@@ -648,7 +676,7 @@ class CNN_DGTS(BaseCNNTrainer):
 
         def _calculate_sample(self, sample: torch.Tensor, full_acts: torch.Tensor, inp: torch.Tensor):
             
-            torch.cuda.empty_cache()
+            #torch.cuda.empty_cache()
 
             self.mm.set_ticket(sample)
             self.mm(inp)
@@ -668,9 +696,10 @@ class CNN_DGTS(BaseCNNTrainer):
                 parents = self.distribute_parents()
                 num_children = torch.randint(1, self.POSSIBLE_CHILDREN + 1, (1,), device = "cpu").item()
                 fitness_sum = parents[0][1] + parents[1][1] 
+                zero_weight, one_weight = (torch.as_tensor(parents[0][1])/fitness_sum), (torch.as_tensor(parents[1][1])/fitness_sum)
                 children = [self.mm.merge_tickets(parents[0][0].cuda(), parents[1][0].cuda(), 
-                                              (torch.as_tensor(parents[1][1])/fitness_sum), # the better sample should be weighted with the worse fitness, so that it is greater
-                                              (torch.as_tensor(parents[0][1])/fitness_sum)) 
+                                              zero_weight if self.reverse else one_weight, # the better sample should be weighted with the worse fitness, so that it is greater
+                                              one_weight if self.reverse else zero_weight) 
                                               for _ in range(num_children)]
 
                 for child in children:
@@ -699,19 +728,19 @@ class CNN_DGTS(BaseCNNTrainer):
                     self.add_sample(sample, self._calculate_sample(sample, full_acts, inp))
                     cnt += 1
 
-                dist.barrier(device_ids = [self.RANK])
+                if self.DISTRIBUTED: dist.barrier(device_ids = [self.RANK])
 
                 for it in range(max_iterations):
                     self.search_step(full_acts, inp,
                                      0.2, 0.1)
                     if (it % 2) == 0:
-                        dist.barrier(device_ids = [self.RANK])
+                        if self.DISTRIBUTED: dist.barrier(device_ids = [self.RANK])
                         self.clean_population()
-                        dist.barrier(device_ids = [self.RANK])
+                        if self.DISTRIBUTED: dist.barrier(device_ids = [self.RANK])
 
                 output = self.population[0]
 
-                dist.barrier(device_ids = [self.RANK])
+                if self.DISTRIBUTED: dist.barrier(device_ids = [self.RANK])
 
                 self.mm.set_ticket(original_ticket)
 
@@ -756,10 +785,8 @@ class CNN_DGTS(BaseCNNTrainer):
         #self.steps_waiting = int(experiment_args[3])
         self.possible_children = int(experiment_args[3])
         self.desired_sparsity = float(experiment_args[4])
-        #self.reverse_scores = reverse_scores
+        self.reverse_scores = reverse_scores
 
-        
-        
         #if self.IsRoot: 
             #print("ARGUMENTS")
             #print("-------------")
@@ -769,10 +796,16 @@ class CNN_DGTS(BaseCNNTrainer):
         #if (type_of_exp == 1): 
         #if self.IsRoot: print(f"Plateau Epochs: {self.stopping_plateau}")
         self.post_step_hook = self.post_step_hook_single_plateau_iterative
-        
+        self.pre_epoch_hook = self.pre_epoch_hook_iterative
+
         if type_of_exp == 2: 
             self.post_step_hook = self.post_step_hook_break
+            self.pre_epoch_hook = self.pre_epoch_hook_blank
             self.prune_iteration = self.stopping_plateau
+
+        if type_of_exp == 3:
+            self.post_step_hook = self.post_step_hook_monitor
+            self.pre_epoch_hook = self.pre_epoch_hook_monitor
         #elif (type_of_exp == 2):
         #if self.IsRoot: print(f"Prune Iteration: {self.prune_iteration}")
         #self.post_step_hook = self.post_step_hook_single_shot_no_plateau
@@ -797,16 +830,26 @@ class CNN_DGTS(BaseCNNTrainer):
         for handle in self._handles: handle.remove()
         self._handles.clear()
 
+    def pre_epoch_hook_iterative(self, dt, *args):
+        if self._pruned: return None
+        return custom_fetch_data(dt, 4)
+
+    def pre_epoch_hook_blank(self, *args):
+        return None
+    
+    def pre_epoch_hook_monitor(self, dt, *args):
+        return custom_fetch_data(dt, 2)
+
     def _capture_hook(self, module, input, output: torch.Tensor):
         tmp = output.detach().to(torch.float64).mean(dim = 0).view(-1)
-        tmp += 1e-10
-        tmp.div_(tmp.sum())
+        #tmp += 1e-10
+        #tmp.div_(tmp.sum())
         self._act_w.append(tmp)
 
     def _fake_capture_hook(self, func, module, input, output: torch.Tensor):
         tmp = func(output.detach().to(torch.float64)).mean(dim = 0).view(-1)
-        tmp += 1e-10
-        tmp.div_(tmp.sum())
+        #tmp += 1e-10
+        #tmp.div_(tmp.sum())
         self._act_w.append(tmp)
     """
     def post_step_hook_single_plateau_continue(self, x, y, _, step, iteration):
@@ -851,6 +894,25 @@ class CNN_DGTS(BaseCNNTrainer):
     def post_step_hook_break(self, iteration, *args, **kwargs):
         if self._pruned or iteration != self.prune_iteration: return True
         return False
+
+    def post_step_hook_monitor(self, data_list, iteration, step, *args, **kwargs):
+        if (step % 196 == 0):
+            x, y = data_list[step//196]
+            x, y = x.to('cuda'), y.to('cuda')
+
+            for T in self.cT: x = T(x)
+            for T in self.tT: x = T(x)
+            for T in self.fcT: x = T(x)
+            
+            self.init_capture_hooks()
+            self.mm(x)
+
+            _, fitness = self.search(x, y)
+            self.remove_handles()
+            self.fitnesses.append((iteration, fitness))
+        
+        return True
+        
 
     """
     def post_step_hook_single_shot_no_plateau(self, x, y, _, step, iteration):
@@ -996,25 +1058,25 @@ class CNN_DGTS(BaseCNNTrainer):
         dist.barrier(device_ids = [self.RANK])
     """
     
-    def post_step_hook_single_plateau_iterative(self, dt, step, iteration, name, *args, **kwargs):
+    def post_step_hook_single_plateau_iterative(self, data_list, step, iteration, name, *args, **kwargs):
         with torch.no_grad():
 
             if self._pruned: return True
             
-            elif step == 0:
-                x, y = custom_fetch_data(dt)
-
+            elif step % 129 == 3:
+                x, y = data_list[step//129]
                 x, y = x.to('cuda'), y.to('cuda')
 
                 for T in self.cT: x = T(x)
-                for T in self.eT: x = T(x)
+                for T in self.tT: x = T(x)
                 for T in self.fcT: x = T(x)
+                
                 self.init_capture_hooks()
                 self.mm(x)
 
                 status, ticket, fitness = self.plateau_monitor(x, y, name)
                 self.remove_handles()
-                self.fitnesses.append(((iteration + 1) / 391, fitness, self.mm.sparsity.item() * self.sparsity_rate))
+                self.fitnesses.append((iteration, fitness, self.mm.sparsity.item() * self.sparsity_rate))
                 
                 if not status: return True
                 
@@ -1041,7 +1103,7 @@ class CNN_DGTS(BaseCNNTrainer):
                                 self.mm, act_w = self._act_w,
                                 max_size = self.search_size,
                                 possible_children = self.possible_children,
-                                )#reverse_scores = self.reverse_scores)
+                                reverse_scores = self.reverse_scores)
             
             activation_mask = None
             if len(self._act_w) != 0: 
@@ -1055,10 +1117,10 @@ class CNN_DGTS(BaseCNNTrainer):
         
 
     def plateau_monitor(self, x: torch.Tensor, y: torch.Tensor, name: str):
-        
+
         ticket, fitness = self.search(x, y)
 
-        if fitness > self._best_fitness:
+        if (fitness <= self._best_fitness) == self.reverse_scores:
             self._plat_eps += 1
             if self._plat_eps >= self.stopping_plateau:
                 return True, self._best_ticket, fitness

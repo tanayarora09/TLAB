@@ -1,6 +1,6 @@
 import matplotlib.pyplot as plt
 
-def plot_logs(logs, num_epochs, name, steps=391, start = 0):
+def plot_logs(logs, num_epochs, name, steps=391, start = 0, validate = True):
 
     """
     Plot Logs Returned by Training Run
@@ -8,11 +8,12 @@ def plot_logs(logs, num_epochs, name, steps=391, start = 0):
     """
 
     epochs = range(start + 1, num_epochs + 1)
-    val_loss = [logs[epoch * steps]['val_loss'] for epoch in epochs]
     acc = [logs[epoch * steps]['accuracy'] for epoch in epochs]
-    val_acc = [logs[epoch * steps]['val_accuracy'] for epoch in epochs]
     loss = [logs[epoch * steps]['loss'] for epoch in epochs]
-
+    if validate:
+        val_acc = [logs[epoch * steps]['val_accuracy'] for epoch in epochs]
+        val_loss = [logs[epoch * steps]['val_loss'] for epoch in epochs]
+    
     """
     iterations = range(1, num_epochs * steps + 1)
     learning_rate = [logs[iter]["learning_rate"] for iter in iterations]
@@ -29,7 +30,7 @@ def plot_logs(logs, num_epochs, name, steps=391, start = 0):
     
     # Plot loss
     plt.plot(epochs, loss, label='training_loss', linewidth=0.5)
-    plt.plot(epochs, val_loss, label='validation_loss')
+    if validate: plt.plot(epochs, val_loss, label='validation_loss')
     plt.title('Loss')
     plt.xlabel('Epochs')
     plt.legend()
@@ -40,7 +41,7 @@ def plot_logs(logs, num_epochs, name, steps=391, start = 0):
     # Plot accuracy
     plt.figure()
     plt.plot(epochs, acc, label='training_accuracy')
-    plt.plot(epochs, val_acc, label='val_accuracy')
+    if validate: plt.plot(epochs, val_acc, label='val_accuracy')
     plt.title('Accuracy')
     plt.xlabel('Epochs')
     plt.ylim(0, 1.0)

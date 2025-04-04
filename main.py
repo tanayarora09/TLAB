@@ -85,11 +85,10 @@ if __name__ == "__main__":
 
     #main(normal.main, name, args)
     
-    from training import baseline
-    for arg in args:
-        for exp in range(num_exp):
-            print("--------------------------------------------------------------")
-            print("EXPERIMENT NUMBER ", exp)
-            print("--------------------------------------------------------------")
-            main(baseline.main, name + str(exp), [arg])
+    from training import experiment3
+    for exp in range(2, num_exp + 2):
+        print("--------------------------------------------------------------")
+        print("EXPERIMENT NUMBER ", exp)
+        print("--------------------------------------------------------------")
+        main(experiment3.main, name + str(exp), args)
     

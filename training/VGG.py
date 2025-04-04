@@ -16,9 +16,17 @@ import sys
 import gc
 
 class VGG_CNN(BaseCNNTrainer):
-    def pre_epoch_hook(self, epoch, EPOCHS):
-        if (epoch + 1 == 80) or (epoch + 1 == 120):
+    def post_epoch_hook(self, epoch, EPOCHS):
+        if (epoch + 1) == 79 or (epoch + 1) == 119: # Epochs 80, 120
             self.reduce_learning_rate(10)
+        return 
+    
+class VGG_IMP(BaseIMP):
+    def post_epoch_hook(self, epoch, EPOCHS):
+        if epoch == 78 or epoch == 118: # Epochs 80, 120
+            self.reduce_learning_rate(10)
+        return 
+
 
 class VGG_POC(BaseIMP):
 
@@ -218,8 +226,13 @@ class VGG_DGTS(CNN_DGTS):
                 if n.endswith("relu"): self._capture_layers.append(layer)
                 elif n.endswith("fc"): self._fcapture_layers.append((layer, nn.ReLU()))
         
-    def pre_epoch_hook(self, epoch, EPOCHS):
+    def post_epoch_hook(self, epoch, EPOCHS):
+        if (epoch + 1) == 79 or (epoch + 1) == 119: # Epochs 80, 120
+            self.reduce_learning_rate(10)
+        return 
+
+    """def pre_epoch_hook(self, epoch, EPOCHS):
         if (epoch + 1 == 80) or (epoch + 1 == 120):
             self.reduce_learning_rate(10)
         #if (epoch + 1 == (EPOCHS // 2)) or (epoch + 1 == (EPOCHS * 3 // 4)): 
-        #    self.reduce_learning_rate(10)
+        #    self.reduce_learning_rate(10)"""
