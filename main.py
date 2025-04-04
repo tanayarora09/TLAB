@@ -55,27 +55,26 @@ def main(func, name: str, SEED: int, amts: list):
 
 if __name__ == "__main__":
     
-    if len(sys.argv) != 3:
-        raise ValueError("Must pass exactly one name. Usage should be python main.py $NAME $REPLICATES")
+    #if len(sys.argv) != 3:
+    #    raise ValueError("Must pass exactly one name. Usage should be python main.py $NAME $REPLICATES")
 
     name = sys.argv[1]
-    replicates = int(sys.argv[2])
+    replicates = 3#int(sys.argv[2])
 
     print(f"Running {replicates} times.")
 
     for replicate in range(replicates):
 
-        SEED = random.randint(0, 2**31)
+        SEED = [1402854931,1876122282,794614549][replicate]#random.randint(0, 2**31)
         print("--------------------------------------------------------------")
         print("SEED: ", SEED)
         print("--------------------------------------------------------------")
 
-        with open(f"./logs/SEEDS/{name + f"{replicate}"}_SEED.txt", "w") as f:
-            f.write(str(SEED))
+        #with open(f"./logs/SEEDS/{name + f"{replicate}"}_SEED.txt", "w") as f:
+        #    f.write(str(SEED))
 
-        amts = [5,3,2]#[160,30,13]
+        amts = [160,30,13]
 
-        from training import POC_1, POC_2
-        main(POC_1.main, (name + f"_{replicate}_") + "f", SEED, amts)
-        main(POC_2.main, (name + f"_{replicate}_") + "s", SEED, amts)
+        from training import POC_FULL
+        main(POC_FULL.main, (name + f"_{replicate}") , SEED, amts)
         

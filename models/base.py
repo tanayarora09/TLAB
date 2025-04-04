@@ -108,6 +108,14 @@ class BaseModel(nn.Module):
                     print(f"{bname} | {mask.sum()/mask.numel() * 100} | {mask.numel()}")
 
     @torch.no_grad()
+    def export_layerwise_sparsities(self):
+        out = dict()
+        for i, layer in enumerate(self.lottery_layers):
+            mask = getattr(layer, "weight_mask")
+            out[i] = (mask.sum()/mask.numel()).item()
+        return out
+
+    @torch.no_grad()
     def count_channels(self):
         if self.RANK != 0: return
         for bname, block in self.named_children():
@@ -130,10 +138,11 @@ class BaseModel(nn.Module):
     
     @torch._dynamo.disable
     @torch.no_grad()
-    def export_ticket(self, name: str, root: int = 0, entry_name: str = "mask") -> None:
+    def export_ticket(self, name: str, root: int = 0, entry_name: str = "mask", given: torch.Tensor = None) -> None:
         if not (self.RANK == root): return
         with h5py.File(f"./logs/TICKETS/{name}.h5", 'a') as f:
-            f.create_dataset(entry_name, data = self.export_ticket_cpu().numpy())
+            if given is None: f.create_dataset(entry_name, data = self.export_ticket_cpu().numpy())
+            else: f.create_dataset(entry_name, data = given.cpu().numpy())
 
     @torch._dynamo.disable         
     @torch.no_grad()
@@ -175,10 +184,10 @@ class BaseModel(nn.Module):
 
     ### --------------------------------------- PRUNING ----------------------------
 
-    def prune_by_mg(self, rate: float, iteration: float, root: int = 0) -> None:
+    def prune_by_mg(self, rate: float, iteration: float, distributed = True, root: int = 0) -> None:
         with torch.no_grad():
 
-            if self.RANK == root or not self.DISTRIBUTED:
+            if self.RANK == root or not distributed:#not self.DISTRIBUTED or not distributed:
 
                 all_magnitudes = (torch.cat([(layer.get_parameter(layer.MASKED_NAME)).detach().view(-1) for layer in self.lottery_layers], 
                                         dim = 0) * self.get_buffer("MASK")).abs_().cpu()
@@ -187,10 +196,10 @@ class BaseModel(nn.Module):
 
                 ticket = all_magnitudes.ge(threshold).cuda()
 
-            elif self.DISTRIBUTED: 
+            elif distributed:#self.DISTRIBUTED or distributed: 
                 ticket = torch.zeros(self.num_prunable, dtype = torch.bool, device = "cuda")
 
-            if self.DISTRIBUTED:
+            if distributed:#self.DISTRIBUTED or distributed:
 
                 dist.barrier(device_ids = [self.RANK])
 
@@ -230,6 +239,35 @@ class BaseModel(nn.Module):
             self.set_ticket(ticket)
             
             return
+        
+    
+    def prune_random_given_layerwise(self, layerwise_sparsities: dict, distributed: bool, root: int = 0):
+        """
+        Requires A Ticket Reset
+        """
+        with torch.no_grad():
+            
+            if not distributed or (self.RANK == root):
+                ticket = list()
+                self.reset_ticket()
+                for i, layer in enumerate(self.lottery_layers):
+                    mask = getattr(layer, "weight_mask").view(-1).clone()#.contiguous()
+                    N = mask.numel()
+                    prune_indices = torch.randperm(N)[: int((1.0 - layerwise_sparsities[i]) * N)]
+                    mask[prune_indices] = False
+                    ticket.append(mask)
+                ticket = torch.cat(ticket).cuda()
+            
+            elif distributed: 
+                ticket = torch.zeros_like(self.get_buffer("MASK"), device = 'cuda', dtype = torch.bool)
+
+            if distributed:
+                dist.barrier(device_ids = [self.RANK])
+                dist.broadcast(ticket, src = root)
+
+            self.set_ticket(ticket)
+
+        return
 
     #@torch.compile
     def merge_tickets(self, t1: torch.Tensor, t2: torch.Tensor, t1_weight: float, t2_weight: float) -> torch.Tensor:

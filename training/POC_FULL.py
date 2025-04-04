@@ -7,52 +7,74 @@ from data.cifar10 import *
 from utils.serialization_utils import logs_to_pickle, save_tensor
 from utils.training_utils import plot_logs
 
-from training.VGG import VGG_POC
+from training.VGG import VGG_POC_FULL
 from models.VGG import VGG
 
 import json
 import pickle
 import gc
 
+import h5py
 import os
 
-def build_tickets_dict(last_name: str, model: VGG, rank: int):
+def build_tickets_dict(name:str, last_name: str, model: VGG, rank: int):
 
     out = dict()
-
+    """
     with open(f"./tmp/sparsities_{last_name}.json", "r", encoding = "utf-8") as f:
         sparsities_d = json.load(f)
-        print(sparsities_d)
+        print(sparsities_d)"""
     
-    """sparsities_d = [1.0, 0.8, 0.64, 0.5120000076293946, 0.40959999084472654, 0.32768001556396487, 0.2621440315246582, 0.20971523284912108, 0.16777217864990235, 
-                    0.13421775817871093, 0.10737419128417969, 0.08589936256408691, 0.06871947765350342, 0.05497560501098633, 0.04398048400878906, 
-                    0.035184388160705564, 0.0281475305557251, 0.022518043518066407, 0.01801444411277771, 0.014411544799804688, 0.011529216766357422]"""
+    sparsities_d = [0.8**sp for sp in range(31)]
 
-    print(sparsities_d)
+    if rank == 0: open(f"logs/TICKETS/{name}TD.h5",'x').close()
 
     for i in range(1, len(sparsities_d)):
         dist.barrier(device_ids = [rank])
         with torch.random.fork_rng(devices = ["cuda:0", "cuda:1", "cuda:2", "cuda:3"], enabled = True):
+            model.prune_random(sparsities_d[i], distributed = True, root = 2)
+            random_ticket = model.export_ticket_cpu()
+            model.reset_ticket()
             dist.barrier(device_ids = [rank])
+            imp_ticket = model.load_ticket(last_name, 2, f"{(sparsities_d[i]*100):.2f}").cpu()
             if i > 1: model.set_ticket(model.load_ticket(last_name, 2, f"{(sparsities_d[i-1]*100):.2f}"))
             model.prune_random(sparsities_d[i]/sparsities_d[i-1], distributed = True, root = 2)
-            random_ticket = model.export_ticket_cpu()
-            imp_ticket = model.load_ticket(last_name, 2, f"{(sparsities_d[i]*100):.2f}").cpu()
-        print(f"[rank {rank}] At {model.sparsity} sparsity, {(imp_ticket.logical_xor(random_ticket)).sum()} different pruned.")
-        out[i-1] = (imp_ticket, random_ticket)
+            random_d_ticket = model.export_ticket_cpu()
+            dist.barrier(device_ids = [rank])
+            model.set_ticket(imp_ticket)
+            ls = model.export_layerwise_sparsities()
+            model.prune_random_given_layerwise(ls, distributed = True, root = 2)
+            layerwise_ticket = model.export_ticket_cpu()
+        
+        hmp = lambda t: (1.0 - ((torch.logical_and(imp_ticket, t)).sum()/imp_ticket.sum()).item())
+
+        #hmps = {'Random': hmp(random_ticket), 'RandomGen': hmp(random_d_ticket), 'Layerwise': hmp(layerwise_ticket)}
+
+        #print(f"[rank {rank}] At {model.sparsity} sparsity, Hamming Percentages: ", hmps)
+        out[sparsities_d[i]] =  (imp_ticket, layerwise_ticket, random_d_ticket, random_ticket)
+
+        model.export_ticket(name+"TD", entry_name = f"imp_{i:02d}", given = imp_ticket)
+        model.export_ticket(name+"TD", entry_name = f"layer_random_{i:02d}", given = layerwise_ticket)
+        model.export_ticket(name+"TD", entry_name = f"close_random_{i:02d}", given = random_d_ticket)
+        model.export_ticket(name+"TD", entry_name = f"true_random_{i:02d}", given = random_ticket)
+
         model.reset_ticket()
 
-    if rank == 0: os.remove(f"./tmp/sparsities_{last_name}.json")
+    #if rank == 0: os.remove(f"./tmp/sparsities_{last_name}.json")
+
+    #with h5py.File(f"logs/TICKETS/{name}TD.h5", 'r') as f: print(f.keys())
 
     return out
 
 def main(rank, world_size, name: str, amts: list, **kwargs):
 
-    last_name = name[:-1] + "f"
+    last_name = ["ProofOfConcept_0_f", "ProofOfConcept_1_f", "ProofOfConceptMG_0_f"][int(name[-1])]
+
+    print(last_name)
 
     EPOCHS = amts[0]
     CARDINALITY = 98
-    PRUNE_ITERS = amts[1] - 1
+    PRUNE_ITERS = 0#amts[1] - 1
     REWIND_ITER = amts[2] * CARDINALITY
 
     dataAug = torch.jit.script(DataAugmentation().to('cuda'))
@@ -62,7 +84,7 @@ def main(rank, world_size, name: str, amts: list, **kwargs):
 
     model = VGG(depth = 19, rank = rank, world_size = world_size, custom_init = True)
 
-    ticket_dict = build_tickets_dict(last_name, model, rank)
+    ticket_dict = build_tickets_dict(name, last_name, model, rank)
 
     #print(torch.rand(1))
 
@@ -71,7 +93,7 @@ def main(rank, world_size, name: str, amts: list, **kwargs):
                 output_device = rank, 
                 gradient_as_bucket_view = True)
     
-    T = VGG_POC(model, rank, world_size)
+    T = VGG_POC_FULL(model, rank, world_size)
 
     del model 
 
@@ -89,7 +111,7 @@ def main(rank, world_size, name: str, amts: list, **kwargs):
     
     logs, sparsities_d = T.TicketIMP(dt, dv, EPOCHS, CARDINALITY, name, 0.8, PRUNE_ITERS, rewind_iter = REWIND_ITER)
 
-    with open(f"./logs/ACTIVATIONS/activation_log_{name[:-1]}_{rank}.pickle", "wb") as f:
+    with open(f"./logs/ACTIVATIONS/activation_log_{name}_{rank}.pickle", "wb") as f:
         pickle.dump(T.activation_log, f, protocol=pickle.HIGHEST_PROTOCOL)
    
     if (rank == 0):    
