@@ -8,7 +8,7 @@ from utils.serialization_utils import logs_to_pickle, save_tensor
 from utils.training_utils import plot_logs
 
 from training.VGG import VGG_CNN
-from search.distributed import DGTS
+from search.salient import DGTS
 from models.VGG import VGG, BaseModel
 
 import json

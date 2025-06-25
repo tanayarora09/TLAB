@@ -94,7 +94,7 @@ class VGG(BaseModel):
             x = self.get_submodule("fc")(x)
             return x
 
-    def __init__(self, rank: int, world_size: int, depth: int = 19, input_channels: int = 3, custom_init = False):
+    def __init__(self, rank: int, world_size: int, depth: int = 19, input_channels: int = 3, custom_init = True):
         super(VGG, self).__init__()
 
         if depth not in valid:

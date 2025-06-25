@@ -302,7 +302,7 @@ class BaseCNNTrainer:
 
             progress_bar.close()
 
-        self.save_ckpt(name = name, prefix = "final")
+        if save: self.save_ckpt(name = name, prefix = "final")
 
         return logs
  
@@ -518,15 +518,29 @@ class BaseIMP(BaseCNNTrainer):
 
     #------------------------------------------ LTH IMP FUNCTIONS -------------------------------------- #
 
+    def _get_results(self, train_data, validation_data):
+        self.m.eval()
+        self.evaluate(train_data)
+        if self.RANK == 0:
+            train_res = self.metric_results()
+            print("Train Results: ", train_res)
+        self.evaluate(validation_data)
+        if self.RANK == 0:
+            val_res =  self.metric_results()
+            print("Validation Results: ", val_res)
+            train_res.update({('val_' + k): v for k, v in val_res.items()})
+        self.m.train()
+        return train_res
+
     def TicketIMP(self, train_data: torch.utils.data.DataLoader, validation_data: torch.utils.data.DataLoader, 
                   epochs_per_run: int, train_cardinality: int, name: str, prune_rate: float, prune_iters: int,
-                  rewind_iter: int = 500):
+                  rewind_iter: int = 500, validate = True):
 
         """
         Find Winning Ticket Through IMP with Rewinding. Calls Trainer.fit(); See description for argument requirements.
 
         prune_rate should be a float that indicates what percent of weights to prune per training run. 
-        I.E. to prune 20% per iteration, prune_rate = 0.2
+        I.E. to prune 20% per iteration, prune_rate = 0.8
 
         prune_iters should be the number of iterations to run IMP for.
         
@@ -534,6 +548,7 @@ class BaseIMP(BaseCNNTrainer):
         """
         
         total_logs = defaultdict()
+        results = defaultdict()
         
         sparsities_d = [None] * (prune_iters + 1)
         current_sparsity = 100.0
@@ -550,10 +565,12 @@ class BaseIMP(BaseCNNTrainer):
         self.print(f"\nSPARSITY: {current_sparsity:.2f}\n", "red")
 
         total_logs[0] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_{(100.0):.2f}", save = True, verbose = False,
-                                 rewind_iter = rewind_iter, sampler_offset = sampler_offset)
+                                 rewind_iter = rewind_iter, sampler_offset = sampler_offset, validate = validate)
         
+        if not validate: results[0] = self._get_results(train_data, validation_data)
+
         for iteration in range(1, prune_iters + 1):
-            
+
             self.mm.prune_by_mg(prune_rate, iteration, root = 0)
             
             current_sparsity = self.mm.sparsity
@@ -573,9 +590,13 @@ class BaseIMP(BaseCNNTrainer):
             total_logs[iteration] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, 
                                              name + f"_{(current_sparsity):.2f}", save = False, verbose = False,
                                              sampler_offset = sampler_offset, start = rewind_iter//train_cardinality,
-                                             save_init = False)
+                                             save_init = False, validate = validate)
+            
+            if not validate: results[iteration] = self._get_results(train_data, validation_data)
 
         self.post_IMP_hook()
+
+        if not validate: total_logs = (total_logs, results)
 
         return total_logs, sparsities_d
     

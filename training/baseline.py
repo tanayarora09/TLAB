@@ -39,18 +39,19 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
         normalize = torch.jit.script(Normalize().to('cuda'))
         center_crop = torch.jit.script(CenterCrop().to('cuda'))
 
-        model = VGG(depth = 19, rank = rank, world_size = world_size, custom_init = True)
+        model = VGG(depth = 16, rank = rank, world_size = world_size, custom_init = True).cuda()
 
         #model.prune_random(sp, distributed = True)
 
-        model = DDP(model.to('cuda'), 
-                    device_ids = [rank],
-                    output_device = rank, 
-                    gradient_as_bucket_view = True)
+        #model = DDP(model.to('cuda'), 
+        #            device_ids = [rank],
+        #            output_device = rank, 
+        #            gradient_as_bucket_view = True)
 
         T = VGG_CNN(model = model, rank = rank, world_size = world_size)
 
-        T.mm.prune_by_mg(sp, iteration = 1, root = 0)
+        #T.mm.prune_by_mg(sp, iteration = 1, root = 0)
+        T.mm.prune_random(sp, distributed = False)
 
         T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay' : 1e-3},
                 loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
@@ -65,11 +66,11 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
 
         dt, dv = get_loaders(rank, world_size, batch_size = 512) 
 
-        logs = T.fit(dt, dv, EPOCHS, CARDINALITY, name, save = False, verbose = False, validate = True)
+        logs = T.fit(dt, dv, EPOCHS, CARDINALITY, name, save = False, save_init = False, verbose = False, validate = False)
 
         if rank == 0: 
             logs_to_pickle(logs, name)
-            plot_logs(logs, EPOCHS, name, steps = CARDINALITY)
+            #plot_logs(logs, EPOCHS, name, steps = CARDINALITY)
             
 
 
@@ -99,4 +100,4 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
         
         torch.distributed.barrier(device_ids = [rank])
 
-        torch.distributed.barrier(device_ids = [rank])
+        #torch.distributed.barrier(device_ids = [rank])
