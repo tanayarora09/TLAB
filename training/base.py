@@ -406,6 +406,12 @@ class BaseCNNTrainer:
 
     #------------------------------------------ SERIALIZATION FUNCTIONS -------------------------------------- #
 
+    def _from_ddp_ckpt(self, state_dict):
+        return dict((k[7:] if k.startswith("module.") else k, v) for k, v in state_dict.items())
+
+    def _to_ddp_ckpt(self, state_dict):
+        return dict((k if k.startswith("module.") else f"module.{k}", v) for k, v in state_dict.items())
+
     
     def save_ckpt(self, name: str, prefix: str = None):
         """
@@ -415,7 +421,7 @@ class BaseCNNTrainer:
         with torch.no_grad():
             if not self.IsRoot: return
             fp = f"./logs/WEIGHTS/{self.fromNamePrefix(name, prefix)}.pt"
-            ckpt = {'model': self.m.state_dict(),
+            ckpt = {'model': self.m.state_dict() if self.DISTRIBUTED else self._to_ddp_ckpt(self.m.state_dict()),
                     'optim': self.optim.state_dict(),
                     'scaler': self.lossScaler.state_dict()}
             torch.save(ckpt, fp)        
@@ -435,6 +441,7 @@ class BaseCNNTrainer:
                             weights_only = True) # Assumes rank = 0 is Root.
             else:
                 ckpt = torch.load(fp, weights_only = True)
+                ckpt['model'] = self._from_ddp_ckpt(ckpt['model'])
 
             self.m.load_state_dict(ckpt['model'])
             #ckpt['optim']['param_groups'] =self.optim.state_dict()['param_groups']

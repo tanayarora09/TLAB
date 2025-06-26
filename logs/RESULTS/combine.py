@@ -6,9 +6,11 @@ output_valL = dict()
 output_A = dict()
 output_L = dict()
 
-sparsity_indexes = [2,4,6,8,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25]
+sparsity_indexes = [2,4,6,8,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25] #0,
 
-reps = 4
+sparsity_indexes = list(range(26))
+
+reps = 2
 
 for spidx in sparsity_indexes:
 
@@ -21,8 +23,8 @@ for spidx in sparsity_indexes:
 
     for rep in range(reps):
 
-        with open(f"BASELINE_RBT_{rep}_{spidx}.json", 'r') as f:
-        #with open(f"BASELINE_GraSP{["1_0","2_0","2_1"][rep]}_{spidx}.json", 'r') as f:
+        #with open(f"mse_saliency_{rep}_{spidx}.json", 'r') as f:
+        with open(f"imp_vgg16_{rep}_{spidx}.json", 'r') as f:
             result = json.load(f)
 
         tmpvalA.append(result['val_accuracy'] * 100)
@@ -41,14 +43,14 @@ for spidx in sparsity_indexes:
     output_A[f"{sp:.4f}"] = { 'mean': tmpA.mean() , 'std': tmpA.std() }
     output_L[f"{sp:.4f}"] = { 'mean': tmpL.mean() , 'std': tmpL.std() }
 
-with open("rbt_acc_train.json", 'w') as f:
+with open("imp_vgg16_acc_train.json", 'w') as f:
     json.dump(output_A, f, indent = 6 )
 
-with open("rbt_acc_val.json", 'w') as f:
+with open("imp_vgg16_acc_val.json", 'w') as f:
     json.dump(output_valA, f, indent = 6 )
 
-with open("rbt_loss_train.json", 'w') as f:
+with open("imp_vgg16_loss_train.json", 'w') as f:
     json.dump(output_L, f, indent = 6 )
 
-with open("rbt_loss_val.json", 'w') as f:
+with open("imp_vgg16_loss_val.json", 'w') as f:
     json.dump(output_valL, f, indent = 6 )

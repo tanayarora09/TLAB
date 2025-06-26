@@ -9,7 +9,7 @@ from utils.training_utils import plot_logs
 from training.VGG import VGG_CNN
 from models.VGG import VGG
 
-from search.salient import GraSP_Pruner
+from search.salient import MSE_Pruner
 
 import json
 import pickle
@@ -18,7 +18,7 @@ import gc
 EPOCHS = 160
 CARDINALITY = 98
 
-def ddp_network(rank, world_size, depth = 19):
+def ddp_network(rank, world_size, depth = 16):
 
     model = VGG(depth = depth, rank = rank, world_size = world_size, custom_init = True)
     model = DDP(model.to('cuda'), 
@@ -28,13 +28,24 @@ def ddp_network(rank, world_size, depth = 19):
     
     return model
 
-def run_grasp(rank, world_size, name, old_name, spe, spr, transforms): #ONLY ON ROOT
+def run_saliency(rank, world_size, name, old_name, spe, spr, transforms, ckpt = None): #ONLY ON ROOT
 
     model = ddp_network(rank, world_size, 16)
+
+    if ckpt is not None: model.load_state_dict(ckpt)
+    #ckpt = torch.load("", )
+    #model.load_state_dict(ckpt)
+    
     state = model.state_dict()
     
+    captures = list()
+    for _, block in model.module.named_children():
+        for n, layer in block.named_children():
+            if n.endswith("relu"): captures.append(layer)
+
+    
     if rank == 0:
-        pruner = GraSP_Pruner(0, 1, model.module)
+        pruner = MSE_Pruner(0, 1, model.module, captures, [])
         #partial = get_partial_train_loader(rank, world_size, 10)
         pruner.build(spr, transforms, input = None)#partial)
         ticket = pruner.grad_mask()
@@ -48,16 +59,32 @@ def run_grasp(rank, world_size, name, old_name, spe, spr, transforms): #ONLY ON 
 
     return state, ticket
 
-def _make_trainer(rank, world_size, state, ticket):
+def _make_trainer(rank, world_size, state = None, ticket = None):
 
     model = ddp_network(rank, world_size, 16)
-    model.load_state_dict(state)
-    model.module.set_ticket(ticket)
+    if state is not None: model.load_state_dict(state)
+    if ticket is not None: model.module.set_ticket(ticket)
     
     if (rank == 0):
         print(model.module.sparsity, "\n")
 
     return VGG_CNN(model, rank, world_size)
+
+def pretrain_dict(rank, world_size, name, transforms):
+
+    T = _make_trainer(rank, world_size)
+
+    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay': 1e-3},
+            loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
+            collective_transforms = (transforms[1], transforms[2]), train_transforms = (transforms[0],),
+            eval_transforms = (transforms[3],), final_collective_transforms = tuple(),
+            scale_loss = True, gradient_clipnorm = 2.0)
+
+    dt, dv = get_loaders(rank, world_size, batch_size = 512)
+
+    T.fit(dt, dv, 5, CARDINALITY, name + "_pretrain", save = False, validate = False)
+
+    return T.m.state_dict()
 
 def run_fit_and_export(rank, world_size, name, old_name, state, ticket, spe, spr, transforms,): #Transforms: DataAug, Resize, Normalize, Crop
 
@@ -71,7 +98,7 @@ def run_fit_and_export(rank, world_size, name, old_name, state, ticket, spe, spr
     
     dt, dv = get_loaders(rank, world_size, batch_size = 512) 
 
-    logs = T.fit(dt, dv, EPOCHS, CARDINALITY, name, validate = False, save = False)
+    logs = T.fit(dt, dv, EPOCHS, CARDINALITY, name, validate = False, save = False, start = 0)
 
     T.evaluate(dt)
 
@@ -110,8 +137,14 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
         spr = 0.8**spe
         name = old_name + f"_{spe:02d}"
 
-        state, ticket = run_grasp(rank, world_size, name, old_name, 
-                                  spe, spr, (resize, normalize, center_crop,))
+        #ckpt = pretrain_dict(rank, world_size, name,
+        #                    (dataAug, resize, normalize, center_crop,))
+
+        torch.cuda.empty_cache()
+        gc.collect()
+
+        state, ticket = run_saliency(rank, world_size, name, old_name, spe, spr, 
+                                   (resize, normalize, center_crop,), ckpt = None)
 
         torch.cuda.empty_cache()
         gc.collect()

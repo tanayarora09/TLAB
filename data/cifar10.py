@@ -147,7 +147,7 @@ class ScriptedToTensor(nn.Module):
         return x
 
 
-def get_loaders(rank, world_size, batch_size = 128):
+def get_loaders(rank, world_size, batch_size = 512):
     """
     Iterate if there are weird behaviors with sample counts
     """
@@ -202,7 +202,10 @@ def custom_fetch_data(dataloader, amount, samples=10, classes=10, sampler_offset
     data_pool = [[] for _ in range(classes)]
     label_pool = [[] for _ in range(classes)]
     
+    finish_loop = False
+    
     for inputs, targets, *_ in dataloader:  # Single iteration through dataloader
+        if finish_loop: continue
         for idx in range(inputs.shape[0]):
             x, y = inputs[idx:idx+1], targets[idx:idx+1]
             category = y.item()
@@ -211,7 +214,7 @@ def custom_fetch_data(dataloader, amount, samples=10, classes=10, sampler_offset
                 label_pool[category].append(y)
         
         if all(len(data_pool[c]) >= amount * samples for c in range(classes)):
-            break
+            finish_loop = True
     
     for i in range(amount):
         datas = [data_pool[c][i * samples:(i + 1) * samples] for c in range(classes)]

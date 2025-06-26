@@ -21,8 +21,9 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
 
     EPOCHS = 160
     CARDINALITY = 98
-    PRUNE_ITERS = 27
-    
+    PRUNE_ITERS = sp_exp[0] #should only be one argument
+    if len(sp_exp) != 1: raise ValueError()
+
     old_name = name
 
     if rank == 0: h5py.File(f"./logs/TICKETS/{old_name}.h5", "w").close()
@@ -49,12 +50,14 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
 
     dt, dv = get_loaders(rank, world_size, batch_size = 512) 
 
-    (logs, results), sparsities_d = T.TicketIMP(dt, dv, EPOCHS, CARDINALITY, old_name, 0.8, PRUNE_ITERS, rewind_iter = 13*CARDINALITY, validate = False)
+    (logs, results), sparsities_d = T.TicketIMP(dt, dv, EPOCHS, CARDINALITY, old_name, 0.8, PRUNE_ITERS, rewind_iter = 5*CARDINALITY, validate = False)
 
     if rank == 0:
-        logs_to_pickle(logs)
-        for spe in list(range(PRUNE_ITERS)):
+
+        for spe in list(range(len(results))):
             with open(f"./logs/RESULTS/{old_name}_{spe}.json", "w") as f:
                 json.dump(results[spe], f, indent = 6)
-                    
+
+        #logs_to_pickle(logs, name)
+
     torch.distributed.barrier(device_ids = [rank])

@@ -1,111 +1,221 @@
-import keras as K 
-import keras.layers as lyr 
-import tensorflow as tf
+import torch
+from torch import nn
+from typing import Tuple, Callable
 
-class ResBlock(K.models.Model):
+from models.LotteryLayers import LotteryConv2D, LotteryDense
+from models.base import BaseModel
 
-    def __init__(self, channels, down = False):
-        super().__init__()
-        self.__channels = channels
-        self.__down = down
-        self.__strides = [2,1] if down else [1,1]
-        self.__kernel = (3,3)
-        self.conv1 = lyr.Conv2D(self.__channels, strides = self.__strides[0],
-                                kernel_size = self.__kernel, padding = "same")
-        self.bn1 = lyr.BatchNormalization()
-        self.conv2 = lyr.Conv2D(self.__channels, strides = self.__strides[1],
-                                kernel_size = self.__kernel, padding = "same")
-        self.bn2 = lyr.BatchNormalization()
-        self.merge = lyr.Add()
-        if self.__down:
-            self.res_conv = lyr.Conv2D(self.__channels, strides = 2, 
-                                       kernel_size = (1,1), padding = "same")
-            self.res_bn = lyr.BatchNormalization()
+import types
 
-    def call(self, ins):
-        res = ins
+def modelcfgs(depth: int):
+    d = (depth - 2)//6
+    w = 16
+    return [(w, d), (2*w, d), (4*w, d)]
+
+valid = tuple(2 + 6 * n for n in range(1, 10))
+
+
+def bn_init(self) -> None:
+    self.reset_running_stats()
+    if self.affine:
+        nn.init.uniform_(self.weight)
+        nn.init.zeros_(self.bias)
+
+def conv_fc_init(self) -> None:
+    nn.init.kaiming_normal_(self.weight)
+
+class ResNet(BaseModel):
+
+    class ResBlock(nn.Module):
         
-        x = self.conv1(ins)
-        x = self.bn1(x)
-        x = K.ops.relu(x)
-        x = self.conv2(x)
-        x = self.bn2(x)
+        def _make_conv_obj(self, input_channels, num_filters, kernel_size, stride, padding, custom_init):
 
-        if self.__down:
-            res = self.res_conv(res)
-            res = self.res_bn(res)
+            conv_obj = LotteryConv2D(input_channels, num_filters, kernel_size, stride, padding)
 
-        x = self.merge([x, res])
-        return K.ops.relu(x)
-
-class ResNet18Large(K.models.Model):
-
-    def __init__(self, classes = 10):
-        super().__init__()
-
-        self.conv1 = lyr.Conv2D(64, (7,7), strides = 2, padding = "same")
-        self.initbn = lyr.BatchNormalization()
-        self.pool1 = lyr.MaxPool2D((2, 2), strides = 2, padding = "same")
-        self.res_1_1 = ResBlock(64)
-        self.res_1_2 = ResBlock(64)
-        self.res_2_1 = ResBlock(128, True)
-        self.res_2_2 = ResBlock(128)
-        self.res_3_1 = ResBlock(256, True)
-        self.res_3_2 = ResBlock(256)
-        self.res_4_1 = ResBlock(512, True)
-        self.res_4_2 = ResBlock(512)
-        self.res_blocks = [self.res_1_1, self.res_1_2, self.res_2_1, self.res_2_2, 
-                           self.res_3_1, self.res_3_2, self.res_4_1, self.res_4_2]
-        self.avg_pool = lyr.GlobalAveragePooling2D()
-        self.flat = lyr.Flatten()
-        self.out = lyr.Dense(classes, activation = "softmax")
-
-        self._mask = [K.ops.ones_like(w) for w in self.trainable_variables]
-        self._rewind_weights = None
-
-    def call(self, ins):
-        x = self.conv1(ins)
-        x = self.initbn(x)
-        x = K.ops.relu(x)
-        x = self.pool1(x)
-        for resBlock in self.res_blocks:
-            x = resBlock(x)
-        x = self.avg_pool(x)
-        x = self.flat(x)
-        return self.out(x)
-    
-    def functional_rep(self):
-        ins = K.Input((32,32,3))
-        return K.Model(ins, self.call(ins))
-    
-    def train_step(self, data):
-        x, y = data
+            if custom_init: 
+                conv_obj.reset_parameters = types.MethodType(conv_fc_init, conv_obj)
+                conv_obj.reset_parameters()
+                
+            return conv_obj
         
-        with tf.GradientTape() as tape:
-            y_pred = self(x, training = True)
-            loss = self.compute_loss(y = y, y_pred = y_pred)
-            loss = self.optimizer.scale_loss(loss)
+        def _make_bn_obj(self, num_filters, custom_init):
+
+            norm_obj = nn.BatchNorm2d(num_filters, track_running_stats = False)
+
+            if custom_init: 
+                norm_obj.reset_parameters = types.MethodType(bn_init, norm_obj)
+                norm_obj.reset_parameters()
             
-        weights = self.trainable_variables
-        grads = [g*m for g,m in zip(tape.gradient(loss, weights), self._mask)]
+            return norm_obj
 
-        self.optimizer.apply_gradients(zip(grads, weights))
+
+        def __init__(self, input_channels: int,
+                        num_filters:int,
+                        kernel_size: int = 3,
+                        stride: int = 1,
+                        padding: int = 1,
+                        custom_init = True,
+                        downsample: bool = False):
+
+            super(ResNet.ResBlock, self).__init__()        
+
+            self.downsample = downsample
+
+            if downsample and stride == 1: raise ValueError
+
+            self.register_module("1conv", self._make_conv_obj(input_channels, num_filters,
+                                                              kernel_size, stride, padding, 
+                                                              custom_init))
+
+
+            self.register_module("1norm", self._make_bn_obj(num_filters, custom_init))
+
+            self.register_module("1relu", nn.ReLU())
+
+            self.register_module("2conv", self._make_conv_obj(num_filters, num_filters,
+                                                              kernel_size, 1, padding, 
+                                                              custom_init))
+
+            self.register_module("2norm", self._make_bn_obj(num_filters, custom_init))
+
+            if downsample or input_channels != num_filters:
+                
+                self.register_module("3conv", self._make_conv_obj(input_channels, num_filters,
+                                                                kernel_size, stride, padding, 
+                                                                custom_init))              
+
+                self.register_module("3norm", self._make_bn_obj(num_filters, custom_init))
+
+            self.register_module("2relu", nn.ReLU())
+
+        def forward(self, x):
+
+            res = x
+
+            x = self.get_submodule("1conv")(x)
+            x = self.get_submodule("1norm")(x)
+            x = self.get_submodule("1relu")(x)
+
+            x = self.get_submodule("2conv")(x)
+            x = self.get_submodule("2norm")(x)
+
+            if self.downsample:
+                res = self.get_submodule("3conv")(res)
+                res = self.get_submodule("3norm")(res)
+
+            x += res
+            x = self.get_submodule("2relu")(x)
+
+            return x
+
+    class InBlock(nn.Module):
+
+        def _make_conv_obj(self, input_channels, num_filters, kernel_size, stride, padding, custom_init):
+
+            conv_obj = LotteryConv2D(input_channels, num_filters, kernel_size, stride, padding)
+
+            if custom_init: 
+                conv_obj.reset_parameters = types.MethodType(conv_fc_init, conv_obj)
+                conv_obj.reset_parameters()
+                
+            return conv_obj
         
-        return self.compute_metrics(x, y, y_pred)
+        def _make_bn_obj(self, num_filters, custom_init):
+
+            norm_obj = nn.BatchNorm2d(num_filters, track_running_stats = False)
+
+            if custom_init: 
+                norm_obj.reset_parameters = types.MethodType(bn_init, norm_obj)
+                norm_obj.reset_parameters()
+            
+            return norm_obj
+
+        def __init__(self, input_channels: int,
+                        num_filters:int,
+                        kernel_size: int = 3,
+                        stride: int = 1,
+                        padding: int = 1,
+                        custom_init = True):
+
+            super(ResNet.InBlock, self).__init__()        
+
+            self.register_module("conv", self._make_conv_obj(input_channels, num_filters,
+                                                            kernel_size, stride, padding, 
+                                                            custom_init))
+
+
+            self.register_module("norm", self._make_bn_obj(num_filters, custom_init))
+
+            self.register_module("relu", nn.ReLU())
+
+        def forward(self, x):
+            x = self.get_submodule("conv")(x)
+            x = self.get_submodule("norm")(x)
+            x = self.get_submodule("relu")(x)
+            return x
+
+    class OutBlock(nn.Module):
+
+        def __init__(self, in_features: int, custom_init = False):
+
+            super(ResNet.OutBlock, self).__init__()
+
+            self.register_module("gap", nn.AdaptiveAvgPool2d((1, 1)))
+
+            fc_obj = LotteryDense(in_features, 10)
+
+            if custom_init: 
+                fc_obj.reset_parameters = types.MethodType(conv_fc_init, fc_obj)
+                fc_obj.reset_parameters()
+
+            self.register_module("fc", fc_obj)
+
+        def forward(self, x):
+            x = self.get_submodule("gap")(x)
+            x = x.squeeze((-1, -2))
+            x = self.get_submodule("fc")(x)
+            return x
+
+    def __init__(self, rank: int, world_size: int, depth: int = 20, input_channels: int = 3, custom_init = True):
+        super(ResNet, self).__init__()
+
+        if depth not in valid:
+            raise ValueError("ResNet architecture must have depth 2 + 6n")
+        
+        #curr_block = 1
+        #curr_num = 1
+        self.layers = []
+        plan = modelcfgs(depth)
+        
+        current = plan[0][0]
+        self.inblock = self.InBlock(3, current, custom_init = custom_init)
+
+
+        for idx, (filters, num_blocks) in enumerate(plan):
+            for block_idx in range(num_blocks):
+                downsample = idx > 0 and block_idx == 0
+                self.register_module(f"block{idx}{block_idx}", 
+                                     self.ResBlock(current, filters, 
+                                                stride = 2 if downsample else 1,
+                                                downsample = downsample,
+                                                custom_init = custom_init))
+                self.layers.append(f"block{idx}{block_idx}")
+                current = filters
+
+        self.outblock = self.OutBlock(plan[-1][0], custom_init = custom_init)
+
+        self.init_base(rank, world_size)
+
+
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        
+        x = self.inblock(x)
+
+        for layer in self.layers:
+            x = self.get_submodule(layer)(x)
+
+        x = self.outblock(x)
+
+        return x
     
-    def prune(self, k):
-        all_weights = K.ops.concatenate([ K.ops.reshape(w, [-1]) for w in self.trainable_variables], axis = 0)
-        threshold = K.ops.quantile(K.ops.abs(all_weights), k)
-        self._mask = [tf.cast(K.ops.abs(w) > threshold, tf.float32) for w in self.trainable_variables]
-
-    def save_rewind_weights(self):
-        self._rewind_weights = [w.numpy() for w in self.trainable_variables]
-
-    def rewind_weights(self):
-        for var, initial in zip(self.trainable_variables, self._rewind_weights):
-            var.assign(initial)
-
-    def save_weights_iter(self, fp, epoch, iter):
-        self.save_weights(f"{fp}_epoch{epoch}_iter{iter}.ckpt")
-
-

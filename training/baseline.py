@@ -72,8 +72,6 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
             logs_to_pickle(logs, name)
             #plot_logs(logs, EPOCHS, name, steps = CARDINALITY)
             
-
-
         T.m.eval()
 
         #T.mm.reset_ticket()
