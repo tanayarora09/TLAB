@@ -147,28 +147,34 @@ class ScriptedToTensor(nn.Module):
         return x
 
 
-def get_loaders(rank, world_size, batch_size = 512):
+def get_loaders(rank, world_size, batch_size = 512, train = True, validation = True):
     """
     Iterate if there are weird behaviors with sample counts
     """
 
-    train_data = torchvision.datasets.CIFAR10("/u/tanaya_guest/tlab/datasets/CIFAR10/", train = True, download = False,
-                                              transform = ScriptedToTensor())
+    dt, dv = None, None
+    
+    if train:
 
-    test_data = torchvision.datasets.CIFAR10("/u/tanaya_guest/tlab/datasets/CIFAR10/", train = False, download = False,
-                                        transform = ScriptedToTensor())
+        train_data = torchvision.datasets.CIFAR10("/u/tanaya_guest/tlab/datasets/CIFAR10/", train = True, download = False,
+                                                transform = ScriptedToTensor())
 
-    dt = DataLoader(train_data, batch_size = batch_size//world_size, 
-                    sampler = DistributedSampler(train_data, rank = rank,
-                                                 num_replicas = world_size,),
-                    pin_memory = True, num_workers = 8, 
-                    persistent_workers = True)
+        dt = DataLoader(train_data, batch_size = batch_size//world_size, 
+                        sampler = DistributedSampler(train_data, rank = rank,
+                                                    num_replicas = world_size,),
+                        pin_memory = True, num_workers = 8, 
+                        persistent_workers = True)
 
-    dv = DataLoader(test_data, batch_size = batch_size//world_size, 
-                    sampler = DistributedSampler(test_data, rank = rank,
-                                                 num_replicas = world_size), 
-                    pin_memory = True, num_workers = 8, 
-                    persistent_workers = True)
+    if validation:
+
+        test_data = torchvision.datasets.CIFAR10("/u/tanaya_guest/tlab/datasets/CIFAR10/", train = False, download = False,
+                                            transform = ScriptedToTensor())
+
+        dv = DataLoader(test_data, batch_size = batch_size//world_size, 
+                        sampler = DistributedSampler(test_data, rank = rank,
+                                                    num_replicas = world_size), 
+                        pin_memory = True, num_workers = 8, 
+                        persistent_workers = True)
     
     return dt, dv
 

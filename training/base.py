@@ -188,7 +188,7 @@ class BaseCNNTrainer:
         """
 
         if self.IsRoot: 
-            progress_bar = tqdm(total = epochs, unit = "epoch", colour = "green", bar_format="{l_bar}{bar:25}{r_bar}{bar:-25b}", leave = False)
+            progress_bar = tqdm(total = epochs, unit = "epoch", colour = "green", bar_format="{l_bar}{bar:25}{r_bar}{bar:-25b}", leave = False, smoothing = 0.8)
             progress_bar.update(start)
             print(f"\n\n\n\n")
 

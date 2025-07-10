@@ -12,8 +12,6 @@ from utils.serialization_utils import read_tensor, save_tensor
 
 import math
 import os
-import sys
-import gc
 
 class VGG_CNN(BaseCNNTrainer):
     def post_epoch_hook(self, epoch, EPOCHS):

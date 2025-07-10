@@ -163,7 +163,7 @@ class ResNet(BaseModel):
             self.register_module("gap", nn.AdaptiveAvgPool2d((1, 1)))
 
             fc_obj = LotteryDense(in_features, 10)
-
+        
             if custom_init: 
                 fc_obj.reset_parameters = types.MethodType(conv_fc_init, fc_obj)
                 fc_obj.reset_parameters()

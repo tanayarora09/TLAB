@@ -6,8 +6,10 @@ from data.cifar10 import *
 from utils.serialization_utils import logs_to_pickle, save_tensor
 from utils.training_utils import plot_logs
 
-from training.VGG import VGG_CNN, VGG_IMP
-from models.VGG import VGG
+#from training.VGG import VGG_CNN, VGG_IMP
+from training.ResNet import ResNet_CNN, ResNet_IMP
+#from models.VGG import VGG
+from models.ResNet import ResNet
 from models.base import BaseModel
 
 import json
@@ -33,9 +35,9 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
     normalize = torch.jit.script(Normalize().to('cuda'))
     center_crop = torch.jit.script(CenterCrop().to('cuda'))
 
-    model = VGG(depth = 16, rank = rank, world_size = world_size, custom_init = True).cuda()
+    model = ResNet(rank = rank, world_size = world_size, depth = 20, custom_init = True).cuda() #VGG(depth = 16, rank = rank, world_size = world_size, custom_init = True).cuda()
     
-    T = VGG_IMP(model, rank, world_size)
+    T = ResNet_IMP(model, rank, world_size)
 
     T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay' : 1e-3},
             loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
@@ -50,7 +52,7 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
 
     dt, dv = get_loaders(rank, world_size, batch_size = 512) 
 
-    (logs, results), sparsities_d = T.TicketIMP(dt, dv, EPOCHS, CARDINALITY, old_name, 0.8, PRUNE_ITERS, rewind_iter = 5*CARDINALITY, validate = False)
+    (logs, results), sparsities_d = T.TicketIMP(dt, dv, EPOCHS, CARDINALITY, old_name, 0.8, PRUNE_ITERS, rewind_iter = 3*CARDINALITY, validate = False)
 
     if rank == 0:
 

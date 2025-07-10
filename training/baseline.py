@@ -6,14 +6,18 @@ from data.cifar10 import *
 from utils.serialization_utils import logs_to_pickle, save_tensor
 from utils.training_utils import plot_logs
 
-from training.VGG import VGG_CNN
-from models.VGG import VGG
+#from training.VGG import VGG_CNN
+#from models.VGG import VGG
+from training.ResNet import ResNet_CNN
+from models.ResNet import ResNet
 from models.base import BaseModel
 
 import json
 import pickle
 import gc
 import h5py
+
+#"2,4,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25"
 
 def main(rank, world_size, name: str, sp_exp: list, **kwargs):
 
@@ -26,7 +30,9 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
 
     if rank == 0: h5py.File(f"./logs/TICKETS/{old_name}.h5", "w").close()
 
-    for spe in sp_exp:
+    for spe in reversed(sp_exp):
+
+        if spe > 20: continue
 
         name = old_name + f"_{spe:02d}"
 
@@ -39,7 +45,8 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
         normalize = torch.jit.script(Normalize().to('cuda'))
         center_crop = torch.jit.script(CenterCrop().to('cuda'))
 
-        model = VGG(depth = 16, rank = rank, world_size = world_size, custom_init = True).cuda()
+        model = ResNet(rank, world_size, depth = 20, custom_init = True).cuda()
+        #VGG(depth = 16, rank = rank, world_size = world_size, custom_init = True).cuda()
 
         #model.prune_random(sp, distributed = True)
 
@@ -48,7 +55,7 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
         #            output_device = rank, 
         #            gradient_as_bucket_view = True)
 
-        T = VGG_CNN(model = model, rank = rank, world_size = world_size)
+        T = ResNet_CNN(model = model, rank = rank, world_size = world_size)
 
         #T.mm.prune_by_mg(sp, iteration = 1, root = 0)
         T.mm.prune_random(sp, distributed = False)

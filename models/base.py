@@ -41,6 +41,13 @@ class BaseModel(nn.Module):
         self.DISTRIBUTED = world_size > 1
 
         self._prunable_count = 0
+        self._learnable_count = 0
+
+        for param in self.parameters():
+            if param.requires_grad: self._learnable_count += param.numel()
+
+        self.is_continuous = False
+        self.concrete_temperature = None
 
         self.lottery_layers = tuple([layer for name, block in self.named_children() for name, layer in block.named_children() if isinstance(layer, Lottery)])
 
@@ -49,14 +56,80 @@ class BaseModel(nn.Module):
 
         self.register_buffer("MASK", torch.ones(self._prunable_count, dtype = torch.bool, 
                                                 device = "cuda", requires_grad = False), persistent = False)
-        
+
+        self.mask_is_active = True
+
+        self._reupdate_mask()
+
+    def _reupdate_mask(self):
         offset = 0       
         for layer in self.lottery_layers:
             layer.update_mask(self.get_buffer("MASK"), offset)
+            if self.concrete_temperature is not None: layer.update_temperature(self.concrete_temperature)
             offset += layer.MASK_NUMEL
 
+    def deactivate_mask(self):
+        for layer in self.lottery_layers: layer.deactivate_mask()
+        self.mask_is_active = False
 
+    def activate_mask(self):
+        for layer in self.lottery_layers: layer.activate_mask()
+        self.mask_is_active = True        
+
+    def prepare_for_continuous_optimization(self, initial_alpha: float = 0.0):
+        """
+        Ensure model.eval() is called.
+        """
+        setattr(self, "MASK", self.get_buffer("MASK").to(torch.float32)) # now MASK = log_alpha
+        self.concrete_temperature = torch.as_tensor(2./3., dtype = torch.float32, device = "cuda")
+        self.get_buffer("MASK").fill_(initial_alpha)
+        self.get_buffer("MASK").requires_grad_(True)
+        self.is_continuous = True
+        self._reupdate_mask()
+
+    #@torch.no_grad()
+    def get_expected_active(self):
+        return torch.sigmoid(self.get_buffer("MASK") / self.concrete_temperature).sum()
     
+    #@torch.no_grad()
+    def get_true_active(self):
+        return (self.get_buffer("MASK") > 0.).sum()
+
+    @torch.no_grad()
+    def get_continuous_ticket(self, sparsity_d: float = None):
+
+        if self.RANK == 0: 
+            if sparsity_d is None: ticket = self.get_buffer("MASK") > 0.
+            else: 
+                num_keep = int(sparsity_d * self.get_buffer("MASK").numel())
+                thresh = torch.kthvalue(self.get_buffer("MASK"), self.get_buffer("MASK").numel() - num_keep).values
+                ticket = self.get_buffer("MASK").detach().ge(thresh)
+        
+        elif self.DISTRIBUTED:
+            ticket = torch.zeros(self.num_prunable, device = "cuda", dtype = torch.bool) 
+        
+        if self.DISTRIBUTED:
+            dist.barrier(device_ids = [self.RANK])
+            dist.broadcast(ticket, src=0)
+
+        return ticket
+
+    @torch.no_grad()
+    def get_concrete_temperature(self):
+        return self.concrete_temperature.item()
+    
+    @torch.no_grad()
+    def set_concrete_temperature(self, x):
+        self.concrete_temperature.fill_(x)
+
+    def revert_to_binary_mask(self, ticket: torch.Tensor):
+        self.concrete_temperature = None
+        self.is_continuous = False
+        assert ticket.numel() == self.num_prunable
+        setattr(self, "MASK", torch.as_tensor(ticket, dtype = torch.bool, device = 'cuda').requires_grad_(False))
+        self._reupdate_mask()
+
+
     def set_ticket(self, mask: torch.Tensor, zero_out = False, realzo = False) -> None:
         with torch.no_grad():
             if mask.numel() != self.num_prunable: raise ValueError("Mask must have correct number of parameters.")
@@ -90,11 +163,14 @@ class BaseModel(nn.Module):
 
     @property
     def sparsity_d(self):
-        return (self.get_buffer("MASK").count_nonzero() / self.num_prunable)
-
+        if not self.is_continuous: return (self.get_buffer("MASK").count_nonzero() / self.num_prunable)
+        else: return (self.get_expected_active() / self.num_prunable)
 
     @property
     def num_prunable(self): return self._prunable_count
+
+    @property
+    def num_learnable(self): return self._learnable_count
 
     ### ------------------------------------- SERIALIZATION -------------------------
     
@@ -191,11 +267,13 @@ class BaseModel(nn.Module):
             if self.RANK == root or not self.DISTRIBUTED:
 
                 all_magnitudes = (torch.cat([(layer.get_parameter(layer.MASKED_NAME)).detach().view(-1) for layer in self.lottery_layers], 
-                                        dim = 0) * self.get_buffer("MASK")).abs_().cpu()
+                                        dim = 0) * self.get_buffer("MASK")).abs_()#.cpu()
         
-                threshold = np.quantile(all_magnitudes.numpy(), q = 1.0 - rate ** iteration, method = "higher")
+                num_to_keep = int((rate ** iteration) * all_magnitudes.numel())
 
-                ticket = all_magnitudes.ge(threshold).cuda()
+                threshold = torch.kthvalue(all_magnitudes, all_magnitudes.numel() - num_to_keep).values#np.quantile(all_magnitudes.numpy(), q = 1.0 - rate ** iteration, method = "higher")
+
+                ticket = all_magnitudes.ge(threshold)
 
             elif self.DISTRIBUTED: 
                 ticket = torch.zeros(self.num_prunable, dtype = torch.bool, device = "cuda")
@@ -209,6 +287,37 @@ class BaseModel(nn.Module):
             self.set_ticket(ticket)
 
             return 
+        
+
+    def prune_positives(self, rate: float, root: int = 0, negatives: bool = False):
+        with torch.no_grad():
+
+            if self.RANK == root or not self.DISTRIBUTED:
+
+                weights = torch.cat([(layer.get_parameter(layer.MASKED_NAME)).detach().view(-1) for layer in self.lottery_layers], dim = 0)
+                if negatives: weights = -weights
+
+                num_to_keep = int(rate * weights.numel())
+
+                threshold = torch.kthvalue(weights, num_to_keep).values
+
+                ticket = weights.le(threshold)
+
+            elif self.DISTRIBUTED: 
+                ticket = torch.zeros(self.num_prunable, dtype = torch.bool, device = "cuda")
+
+            if self.DISTRIBUTED:
+
+                dist.barrier(device_ids = [self.RANK])
+
+                dist.broadcast(ticket, src = root)
+
+            self.set_ticket(ticket)
+
+            return         
+        
+
+
     
     #@torch.no_grad()
     def prune_random(self, rate: float, distributed: bool, root: int = 0) -> None:

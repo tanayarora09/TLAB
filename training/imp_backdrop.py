@@ -37,7 +37,7 @@ def get_grasp_tickets(rank, world_size, model, transforms, spr):
     
     if rank == 0:
         pruner = GraSP_Pruner(0, 1, model.module)
-        pruner.build(spr, transforms, input_data = None)
+        pruner.build(spr, transforms, input = None)
         ticket, improved = pruner.grad_mask(improved = "2")
         pruner.finish()
         print(f"GraSP Ticket Sparsity: {100 * (ticket.sum()/ticket.numel()):.2f}")

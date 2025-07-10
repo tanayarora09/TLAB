@@ -7,10 +7,21 @@ class Lottery:
     def __init__(self):
         self.MASK_SHAPE = None
         self.MASK_NUMEL = None
-        self.MASKED_NAME = None       
+        self.MASKED_NAME = None   
+        self.is_continuous = None       
+        self.mask_is_active = True
         pass
 
+    def activate_mask(self):
+        self.mask_is_active = True
+
+    def deactivate_mask(self):
+        self.mask_is_active = False
+
     def update_mask(self, mask: torch.Tensor, offset: int) -> None:
+        pass
+
+    def update_temperature(self, mask: torch.Tensor) -> None:
         pass
 
 class LotteryDense(nn.Linear, Lottery):
@@ -24,12 +35,20 @@ class LotteryDense(nn.Linear, Lottery):
         self.MASK_NUMEL = in_features * out_features
         self.MASKED_NAME = "weight"
         self.weight_mask = torch.empty(*self.MASK_SHAPE, dtype = torch.bool, device = "cuda")
+        self.mask_is_active = True
+        self.is_continuous = False
+        self.concrete_temperature = None
         super(LotteryDense, self).__init__(in_features = in_features, out_features = out_features)        
 
 
-    @torch.no_grad()
+    #@torch.no_grad()
     def update_mask(self, mask: torch.Tensor, offset: int):
         self.weight_mask =  mask[offset: offset + self.MASK_NUMEL].view(self.MASK_SHAPE)
+        self.is_continuous = self.weight_mask.dtype != torch.bool
+
+    @torch.no_grad()
+    def update_temperature(self, mask: torch.Tensor) -> None:
+        self.concrete_temperature = mask
 
     def forward(self, inputs):
         if self.training:
@@ -37,7 +56,15 @@ class LotteryDense(nn.Linear, Lottery):
                 self.weight.data *= self.weight_mask
             return F.linear(inputs, self.weight, self.bias)
         else:
-            kernel = self.weight * self.weight_mask
+            if not self.mask_is_active: kernel = self.weight
+            elif not self.is_continuous: kernel = self.weight * self.weight_mask
+            else: 
+                u = torch.rand_like(self.weight_mask, requires_grad = False)
+                u = torch.clamp(u, 1e-10, 1.-1e-10)
+                l = torch.log(u) - torch.log(1 - u)
+                mask = F.sigmoid((l + self.weight_mask)/self.concrete_temperature)
+                kernel = self.weight * mask
+
             return F.linear(inputs, kernel, self.bias)
 
 class LotteryConv2D(nn.Conv2d, Lottery):
@@ -54,16 +81,31 @@ class LotteryConv2D(nn.Conv2d, Lottery):
         self.MASK_NUMEL = in_channels * out_channels * kernel_size * kernel_size
         self.MASKED_NAME = "weight"
         self.weight_mask = torch.empty(*self.MASK_SHAPE, dtype = torch.bool, device = "cuda")
+        self.is_continuous = False
+        self.mask_is_active = True
+        self.concrete_temperature = None
         super(LotteryConv2D, self).__init__(in_channels, out_channels, kernel_size = kernel_size, stride = stride, padding = padding, bias = False)
     
-    @torch.no_grad()
     def update_mask(self, mask: torch.Tensor, offset: int):
         self.weight_mask =  mask[offset: offset + self.MASK_NUMEL].view(self.MASK_SHAPE)
+        self.is_continuous = self.weight_mask.dtype != torch.bool
+
+    @torch.no_grad()
+    def update_temperature(self, mask: torch.Tensor) -> None:
+        self.concrete_temperature = mask
 
     def forward(self, inputs):
         if self.training:
             with torch.no_grad(): self.weight.data *= self.weight_mask
             return self._conv_forward(inputs, self.weight, self.bias)   
         else:
-            kernel = self.weight * self.weight_mask
+            if not self.mask_is_active: kernel = self.weight
+            elif not self.is_continuous: kernel = self.weight * self.weight_mask
+            else: 
+                u = torch.rand_like(self.weight_mask, requires_grad = False)
+                u = torch.clamp(u, 1e-10, 1.-1e-10)
+                l = torch.log(u) - torch.log(1 - u)
+                mask = F.sigmoid((l + self.weight_mask)/self.concrete_temperature)
+                kernel = self.weight * mask
+                
             return self._conv_forward(inputs, kernel, self.bias)
