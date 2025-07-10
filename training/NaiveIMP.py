@@ -1,0 +1,60 @@
+import torch
+from torch.nn.parallel import DistributedDataParallel as DDP
+
+from data.cifar10 import *
+
+from utils.serialization_utils import logs_to_pickle, save_tensor
+from utils.training_utils import plot_logs
+
+from training.VGG import VGG_IMP
+from models.VGG import VGG
+
+import json
+import pickle
+import gc
+
+def main(rank, world_size, name: str, amts: list, **kwargs):
+
+    EPOCHS = amts[0]
+    CARDINALITY = 98
+    PRUNE_ITERS = amts[1]
+    REWIND_ITER = amts[2] * CARDINALITY
+
+    dataAug = torch.jit.script(DataAugmentation().to('cuda'))
+    resize = torch.jit.script(Resize().to('cuda'))
+    normalize = torch.jit.script(Normalize().to('cuda'))
+    center_crop = torch.jit.script(CenterCrop().to('cuda'))
+
+    model = VGG(depth = 19, rank = rank, world_size = world_size, custom_init = True)
+
+
+    model = DDP(model.to('cuda'), 
+                device_ids = [rank],
+                output_device = rank, 
+                gradient_as_bucket_view = True)
+    
+    T = VGG_IMP(model, rank, world_size)
+
+    del model
+
+    torch.cuda.empty_cache()
+    gc.collect()
+    
+    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay': 1e-3},
+        loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
+        collective_transforms = (resize, normalize), train_transforms = (dataAug,),
+        eval_transforms = (center_crop,), final_collective_transforms = tuple(),
+        scale_loss = True, gradient_clipnorm = 2.0)
+
+    dt, dv = get_loaders(rank, world_size, batch_size = 512) 
+    
+
+    logs, sparsities_d = T.TicketIMP(dt, dv, EPOCHS, CARDINALITY, name, 0.8, PRUNE_ITERS, rewind_iter = REWIND_ITER)
+
+    if (rank == 0):
+            
+        logs_to_pickle(logs, name)
+    
+        for i in range(len(logs)):
+            plot_logs(logs[i], EPOCHS, name + f"_{(sparsities_d[i] * 100):.2f}", 
+                      CARDINALITY, start = (0 if i == 0 else amts[2])) 

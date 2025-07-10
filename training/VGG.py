@@ -244,9 +244,14 @@ class VGG_POC_FULL(BaseIMP):
         self.ACTS = tickets_dict != None
         self.TICKETS = tickets_dict # \\ {sparsity: (TICKET)}
         self._mgtickets = dict()
+        self._negtickets = dict()
         self.activation_log = defaultdict(defaultdict) # {IMP_ITERATION: {Iteration:{TICKET: [linearglobal, softglobal, linearlayer, softlayer]}}}
 
         #self.constant = 0
+
+        self._norm = torch.as_tensor(0.0, dtype = torch.float64, device = 'cuda')
+        self._norm.requires_grad_(False)
+
 
         self._hooks = list()
 
@@ -273,7 +278,7 @@ class VGG_POC_FULL(BaseIMP):
     ### ----------------------------------------------------------- ACTIVATION CAPTURING ---------------------------------------------------------------------------------------
 
     
-    def collect_activations_and_test(self, x: torch.Tensor, iteration) -> None:
+    """def collect_activations_and_test(self, x: torch.Tensor, iteration) -> None:
         with torch.no_grad():
             
             if self.ACTS: 
@@ -459,7 +464,156 @@ class VGG_POC_FULL(BaseIMP):
 
                     self.m.train()
 
-        return
+        return"""
+
+    def _grad_norm(self, x, y):
+        """
+        Assumes model ticket already set.
+        """
+        #with torch.autocast("cuda", dtype = torch.float16, enabled = True):
+        loss = self.criterion(self.mm(x), y)
+        grad_w = torch.autograd.grad(loss, self.mm.parameters(), allow_unused = True)
+        grad_max_vals = [g.detach().abs().amax() for g in grad_w]
+        max_val = torch.stack(grad_max_vals).amax().clamp(min=1e-30)
+        grad_w = [torch.nan_to_num(grad.to(torch.float64)/max_val, nan = 0.0) for grad in grad_w]
+        norms = list(torch._foreach_norm(grad_w, 2.0))
+        total_norm = torch.norm(torch.stack(norms), 2.0) * max_val
+        if torch.isinf(total_norm): raise ValueError("INF")
+        if torch.isnan(total_norm): raise ValueError("NAN")
+        return total_norm
+
+
+    def _mse_loss(self, x, full_activations): # NOT MEANED --- As with Angular Distillation, Performs division by norm then computes squared error.
+        self.mm(x)
+        for act in self.act_w: 
+            torch.nan_to_num_(act.div_(act.abs().amax(dim = 1, keepdim = True)), nan = 0.0)
+            act.div_(act.norm(2, dim = 1, keepdim = True))
+        difference = torch.cat(self.act_w, dim = 1) - full_activations
+        self.clear_act_captures()
+        return (difference * difference).sum()#F.mse_loss(curr_activations, full_activations, reduction = "sum")
+
+    def collect_activations_and_test(self, x: torch.Tensor, y: torch.Tensor, iteration) -> None:
+        with torch.no_grad():
+            
+            if self.ACTS: 
+                
+                with torch.random.fork_rng(devices = ["cuda:0", "cuda:1", "cuda:2", "cuda:3"], enabled = True):
+                    
+                    self.init_act_hooks()
+                    self.m.eval()
+                    
+                    self.mm(x)
+                    for act in self.act_w: 
+                        torch.nan_to_num_(act.div_(act.abs().amax(dim = 1, keepdim = True)), nan = 0.0)
+                        act.div_(act.norm(2, dim = 1, keepdim = True))
+                    full_activations = torch.cat(self.act_w, dim = 1)
+                    self.clear_act_captures()
+
+                    #full_acts = list() #LinearGlobal, SoftmaxGlobal, LinearLayer, SoftmaxLayer
+
+                    #print("MAKING FULL ACTS")
+
+                    #full_activations = torch.cat(self.act_w)
+
+                    eps = 5e-12#full_activations.masked_fill(full_activations == 0, float('inf')).min()
+
+                    """full_activations += eps
+                    full_activations.div_(full_activations.sum())
+                    full_acts.append((full_activations + eps).log())
+                    full_acts.append((full_activations + eps).log_softmax(0))
+
+                    for act in self.act_w:
+                        act += eps
+                        act.div_(act.sum())
+
+                    full_activations = torch.cat(self.act_w)
+                    full_activations += eps
+                    full_activations.div_(full_activations.sum())
+                    full_acts.append((full_activations + eps).log())
+                    full_acts.append((full_activations + eps).log_softmax(0))
+                    self.clear_act_captures()"""
+
+                    #print(f"MADE FULL ACTS: {len(full_acts)}")
+
+                    original_ticket = self.mm.export_ticket_cpu()
+
+                    for spd in self.TICKETS.keys():
+
+                        #print(f"RUNNING ON SPARSITY {spd}")
+
+                        # IMP
+
+                        ikl = list()
+
+                        self.mm.set_ticket(self.TICKETS[spd][0])
+                        
+                        ikl.append(self._mse_loss(x, full_activations))
+                        
+                        # Layerwise
+
+                        lkl = list()
+
+                        self.mm.set_ticket(self.TICKETS[spd][1])
+
+                        lkl.append(self._mse_loss(x, full_activations))
+
+                        # RandomSame
+
+                        rdkl = list()
+
+                        self.mm.set_ticket(self.TICKETS[spd][2])
+                        
+                        rdkl.append(self._mse_loss(x, full_activations))
+
+
+                        # Random
+
+                        rkl = list()
+
+                        self.mm.set_ticket(self.TICKETS[spd][3])
+                        
+                        rkl.append(self._mse_loss(x, full_activations))
+
+                        #MG_TICKET 
+                        
+
+                        mkl = list()
+
+                        self.mm.set_ticket(self._mgtickets[spd])
+                        
+                        mkl.append(self._mse_loss(x, full_activations))
+                        
+                        #NEG_TICKET 
+                        
+
+                        nkl = list()
+
+                        self.mm.set_ticket(self._negtickets[spd])
+                        
+                        nkl.append(self._mse_loss(x, full_activations))
+                        
+                        
+                        #EXPORT
+
+                        self.activation_log[spd][iteration] = {'IMP': [kl.item() for kl in ikl], 'LAYER_RANDOM': [kl.item() for kl in lkl], 
+                                                                'CLOSE_RANDOM': [kl.item() for kl in rdkl],
+                                                                'TRUE_RANDOM': [kl.item() for kl in rkl], 
+                                                                "REAL_TIME_MAGNITUDE": [kl.item() for kl in mkl], 
+                                                                "REAL_TIME_NEGATIVES": [kl.item() for kl in nkl],}
+
+                        #if not all([kl > 0 for key in self.activation_log[spd][iteration].keys() for kl in self.activation_log[spd][iteration][key]]):
+                        #    print(self.activation_log[spd][iteration])
+                        #    print(full_activations.sum(), full_activations.ge(0).all(), )
+                        
+                        #print(self.activation_log[spd][iteration])
+
+
+                    #Reset
+                    self.mm.set_ticket(original_ticket)
+
+                    self.m.train()
+
+            return
 
     def disable_act_hooks(self):
         for hook in self._hooks:
@@ -468,21 +622,22 @@ class VGG_POC_FULL(BaseIMP):
         return 
 
     def init_act_hooks(self):
+        #return
         if len(self._hooks) != 0: return
         for n, block in self.mm.named_children():
             for name, layer in block.named_children():
                 if name.endswith("relu"):
                     self._hooks.append(layer.register_forward_hook(self._activation_hook))
-                elif name.endswith("fc"):
-                    self._hooks.append(layer.register_forward_hook(self._fake_activation_hook))
+                #elif name.endswith("fc"):
+                #    self._hooks.append(layer.register_forward_hook(self._fake_activation_hook))
         return
 
     def _activation_hook(self, module, input, output: torch.Tensor) -> None:
-        self.act_w.append(output.detach().to(torch.float64).mean(dim = 0).view(-1))#.cpu().to(torch.float64).mean(dim = 0).view(-1))
+        self.act_w.append(output.detach().to(torch.float64).view(output.shape[0], -1))#.cpu().to(torch.float64).mean(dim = 0).view(-1))
         return
     
     def _fake_activation_hook(self, module, input, output: torch.Tensor) -> None:
-        self.act_w.append(F.relu(output.detach()).to(torch.float64).mean(dim = 0).view(-1))#.cpu()).to(torch.float64).mean(dim = 0).view(-1))
+        self.act_w.append(F.relu(output.detach()).to(torch.float64).view(output.shape[0], -1))#.cpu()).to(torch.float64).mean(dim = 0).view(-1))
         return
 
     def clear_act_captures(self) -> None:
@@ -504,12 +659,20 @@ class VGG_POC_FULL(BaseIMP):
         return
     
     def pre_epoch_hook(self, *args):
+
         self.mm.reset_ticket()
         for sparsity in self.TICKETS.keys():
+
             self.mm.prune_by_mg(sparsity, iteration = 1)
             mg_ticket = self.mm.export_ticket_cpu()
             self._mgtickets[sparsity] = mg_ticket
             self.mm.reset_ticket()
+            
+            self.mm.prune_positives(sparsity)
+            neg_ticket = self.mm.export_ticket_cpu()
+            self._negtickets[sparsity] = neg_ticket
+            self.mm.reset_ticket()
+
         return
 
     def post_epoch_hook(self, epoch, EPOCHS):
@@ -517,13 +680,14 @@ class VGG_POC_FULL(BaseIMP):
             self.reduce_learning_rate(10)
         return 
 
-    def pre_step_hook(self, step, steps_per_epoch):
-        if step % 3 == 0 and self.ACTS:
-            self.init_act_hooks()
+    #def pre_step_hook(self, step, steps_per_epoch):
+    #    if step % 2 == 0 and self.ACTS:
+    #        self.init_act_hooks()
 
     def post_step_hook(self, x, y, iteration, step, steps_per_epoch, **kwargs):
         #print(self.RANK, step)
-        if step % 3 == 0 and self.ACTS:
-            with torch.autocast('cuda', dtype = torch.float16, enabled = self.AMP):
-                self.collect_activations_and_test(x, iteration)
+        if step % 2 == 0 and self.ACTS:
+            #with torch.autocast('cuda', dtype = torch.float16, enabled = self.AMP):
+            self.init_act_hooks()
+            self.collect_activations_and_test(x, y, iteration)
             self.disable_act_hooks()

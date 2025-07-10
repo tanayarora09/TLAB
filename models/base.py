@@ -192,6 +192,8 @@ class BaseModel(nn.Module):
                 all_magnitudes = (torch.cat([(layer.get_parameter(layer.MASKED_NAME)).detach().view(-1) for layer in self.lottery_layers], 
                                         dim = 0) * self.get_buffer("MASK")).abs_().cpu()
         
+                #num_to_keep = int((rate ** iteration) * all_magnitudes.numel())
+
                 threshold = np.quantile(all_magnitudes.numpy(), q = 1.0 - rate ** iteration, method = "higher")
 
                 ticket = all_magnitudes.ge(threshold).cuda()
@@ -208,7 +210,34 @@ class BaseModel(nn.Module):
             self.set_ticket(ticket)
 
             return 
-    
+        
+    def prune_positives(self, rate: float, distributed = True, root: int = 0, negatives: bool = False) -> None:
+        with torch.no_grad():
+
+            if self.RANK == root or not distributed:#not self.DISTRIBUTED or not distributed:
+               
+                weights = torch.cat([(layer.get_parameter(layer.MASKED_NAME)).detach().view(-1) for layer in self.lottery_layers], dim = 0)
+                if negatives: weights = -weights
+                weights = weights.cpu()
+
+                threshold = np.quantile(weights.numpy(), q = rate, method = "lower")
+                
+                ticket = weights.le(threshold).cuda()
+
+            elif distributed:#self.DISTRIBUTED or distributed: 
+                ticket = torch.zeros(self.num_prunable, dtype = torch.bool, device = "cuda")
+
+            if distributed:#self.DISTRIBUTED or distributed:
+
+                dist.barrier(device_ids = [self.RANK])
+
+                dist.broadcast(ticket, src = root)
+
+            self.set_ticket(ticket)
+
+            return 
+
+
     #@torch.no_grad()
     def prune_random(self, rate: float, distributed: bool, root: int = 0) -> None:
         """

@@ -68,9 +68,10 @@ def build_tickets_dict(name:str, last_name: str, model: VGG, rank: int):
 
 def main(rank, world_size, name: str, amts: list, **kwargs):
 
-    last_name = ["ProofOfConcept_0_f", "ProofOfConcept_1_f", "ProofOfConceptMG_0_f"][int(name[-1])]
+    last_name = f"imp_vgg19_rep{int(name[-1])}"
 
     print(last_name)
+
 
     EPOCHS = amts[0]
     CARDINALITY = 98
@@ -111,7 +112,7 @@ def main(rank, world_size, name: str, amts: list, **kwargs):
     
     logs, sparsities_d = T.TicketIMP(dt, dv, EPOCHS, CARDINALITY, name, 0.8, PRUNE_ITERS, rewind_iter = REWIND_ITER)
 
-    with open(f"./logs/ACTIVATIONS/activation_log_{name}_{rank}.pickle", "wb") as f:
+    with open(f"./logs/ACTIVATIONS/mse_log_{name}_{rank}.pickle", "wb") as f:
         pickle.dump(T.activation_log, f, protocol=pickle.HIGHEST_PROTOCOL)
    
     if (rank == 0):    
