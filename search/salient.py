@@ -276,14 +276,14 @@ class SynFlow_Pruner(SaliencyPruning):
             for idx, grad in enumerate(torch.autograd.grad(loss, weights)):
                 grad_w[idx] += grad.abs()
 
-    def _single_shot_grad_mask(self, weights, grad_w):
+    def _single_shot_grad_mask(self, weights, grad_w, curr_sp):
         x, y = self.inp
         x, y = x.cuda(), y.cuda()
         for T in self.transforms: x = T(x)
         self._accumulate_saliency(x, y, weights, grad_w)
-        grads = [(w.data * g).abs() for w, g in zip(weights, grad_w)]
+        grads = [(w[0].data * w[1] * g).abs() for w, g in zip(weights, grad_w)]
         scores = torch.cat([g.view(-1) for g in grads]).to(torch.float64)
-        num_to_keep = int((self.spr) * scores.numel())
+        num_to_keep = int((curr_sp) * scores.numel())
         
         threshold = torch.kthvalue(scores, scores.numel() - num_to_keep).values
         ticket = scores.ge(threshold)
@@ -291,33 +291,12 @@ class SynFlow_Pruner(SaliencyPruning):
         
         return ticket
 
-    def _running_grad_mask(self, weights, grad_w):
-        for x, y, *_ in self.inp:
-            x, y = x.cuda(), y.cuda()
-            for T in self.transforms: x = T(x)
-            self._accumulate_saliency(x, y, weights, grad_w)
-
-        grads = [(w.data * g).abs() for w, g in zip(weights, grad_w)]
-        scores = torch.cat([g.view(-1) for g in grads]).to(torch.float64)
-        
-        if self.DISTRIBUTED: dist.all_reduce(scores, op=dist.ReduceOp.SUM)
-
-        ticket = torch.zeros_like(scores, dtype=torch.bool)
-        if self.IsRoot:
-            
-            num_to_keep = int(self.spr * scores.numel())
-            threshold = torch.kthvalue(scores, scores.numel() - num_to_keep).values
-            ticket = scores.ge(threshold)
-
-        if self.DISTRIBUTED: dist.broadcast(ticket, src=0)
-        return ticket
-
     def grad_mask(self):
 
         if self.spr == 1.: return torch.ones_like(self.mm.get_buffer("MASK"))
 
         self.mm.zero_grad()
-        weights = [layer.weight for layer in self.mm.lottery_layers]
+        weights = [(layer.weight, layer.weight_mask) for layer in self.mm.lottery_layers]
         signs = list()
         for bname, block in self.mm.named_children():
             for lname, layer in block.named_children():
@@ -325,14 +304,15 @@ class SynFlow_Pruner(SaliencyPruning):
                     if pname.endswith("weight"):
                         signs.append(torch.sign(param))
                         param.abs_()
-                        param.requires_grad_(any(param is p for p in weights))
+                        param.requires_grad_(any(param is p[0] for p in weights))
         
         grad_w = list()
 
-        if not self.running:
-            out = self._single_shot_grad_mask(weights, grad_w)
-        else:
-            out = self._running_grad_mask(weights, grad_w)
+        for n in range(100):
+            curr_sp = self.spr ** ((n + 1) / 100)
+            out = self._single_shot_grad_mask(weights, grad_w, curr_sp)
+            self.mm.set_ticket(out)
+
 
         idx = 0
         for bname, block in self.mm.named_children():
