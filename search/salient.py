@@ -186,6 +186,9 @@ class GraSP_Pruner(SaliencyPruning):
         If improved = "2", both are turned as a tuple: (not_improved, improved)
         """
         self.mm.zero_grad()
+        
+        if self.spr == 1.: return torch.ones_like(self.mm.get_buffer("MASK"))
+
         weights = [layer.weight for layer in self.mm.lottery_layers]
         for param in self.mm.parameters():
             param.requires_grad_(any(param is p for p in weights))
@@ -245,6 +248,8 @@ class SNIP_Pruner(SaliencyPruning):
         return ticket
 
     def grad_mask(self):
+
+        if self.spr == 1.: return torch.ones_like(self.mm.get_buffer("MASK"))
 
         self.mm.zero_grad()
         weights = [layer.weight for layer in self.mm.lottery_layers]
@@ -308,6 +313,8 @@ class SynFlow_Pruner(SaliencyPruning):
         return ticket
 
     def grad_mask(self):
+
+        if self.spr == 1.: return torch.ones_like(self.mm.get_buffer("MASK"))
 
         self.mm.zero_grad()
         weights = [layer.weight for layer in self.mm.lottery_layers]
@@ -422,6 +429,9 @@ class KLD_Pruner(ActivationSaliencyPruning):
         return self._get_ticket(magnitudes)
 
     def grad_mask(self):
+        
+        if self.spr == 1.: return torch.ones_like(self.mm.get_buffer("MASK"))
+
         if not self.running: return self._single_shot_grad_mask()
         else: return self._running_grad_mask()
 
@@ -479,6 +489,9 @@ class MSE_Pruner(ActivationSaliencyPruning):
         return self._get_ticket(magnitudes)
 
     def grad_mask(self):
+        
+        if self.spr == 1.: return torch.ones_like(self.mm.get_buffer("MASK"))
+
         if not self.running: return self._single_shot_grad_mask()
         else: return self._running_grad_mask()
 
