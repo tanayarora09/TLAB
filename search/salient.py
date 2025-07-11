@@ -312,10 +312,13 @@ class SynFlow_Pruner(SaliencyPruning):
         self.mm.zero_grad()
         weights = [layer.weight for layer in self.mm.lottery_layers]
         signs = list()
-        for param in self.mm.parameters():
-            signs.append(torch.sign(param))
-            param.abs_()
-            param.requires_grad_(any(param is p for p in weights)) 
+        for bname, block in self.mm.named_children():
+            for lname, layer in block.named_children():
+                for pname, param in layer.named_parameters():
+                    if pname.endswith("weight"):
+                        signs.append(torch.sign(param))
+                        param.abs_()
+                        param.requires_grad_(any(param is p for p in weights))
         
         grad_w = list()
 
@@ -324,9 +327,14 @@ class SynFlow_Pruner(SaliencyPruning):
         else:
             out = self._running_grad_mask(weights, grad_w)
 
-        for idx, param in enumerate(self.mm.parameters()):
-            param.data.mul_(signs[idx])
-
+        idx = 0
+        for bname, block in self.mm.named_children():
+            for lname, layer in block.named_children():
+                for pname, param in layer.named_parameters():
+                    if pname.endswith("weight"):
+                        param.data.mul_(signs[idx])
+                        idx += 1
+                        
         return out
 
 
