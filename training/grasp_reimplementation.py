@@ -48,19 +48,19 @@ def run_grasp(rank, world_size, name, old_name, is_grasp, is_vgg, spe, spr, tran
     state = model.state_dict()
     
     if rank == 0:
-        if is_grasp: pruner = GraSP_Pruner(0, 1, model)#.module)
-        else: pruner = SynFlow_Pruner(0, 1, model)#.module)
+        if is_grasp: pruner = GraSP_Pruner(0, 1, model.module)
+        else: pruner = SynFlow_Pruner(0, 1, model.module)
         #else: pruner = SNIP_Pruner(0, 1, model)#.module)
         #partial = get_partial_train_loader(rank, world_size, 10)
         pruner.build(spr, transforms, input = None)#partial)
         ticket = pruner.grad_mask()
         pruner.finish()
 
-    #else:
-    #    ticket = torch.zeros(model.module.num_prunable, dtype = torch.bool, device = 'cuda')
+    else:
+        ticket = torch.zeros(model.module.num_prunable, dtype = torch.bool, device = 'cuda')
 
-    #torch.distributed.barrier(device_ids = [rank])
-    #torch.distributed.broadcast(ticket, src = 0)
+    torch.distributed.barrier(device_ids = [rank])
+    torch.distributed.broadcast(ticket, src = 0)
 
     return state, ticket
 
@@ -68,12 +68,12 @@ def _make_trainer(rank, world_size, state, ticket, is_vgg):
 
     model = ddp_network(rank, world_size, is_vgg, 16)
     model.load_state_dict(state)
-    #model.module.set_ticket(ticket)
-    model.set_ticket(ticket)
+    model.module.set_ticket(ticket)
+    #model.set_ticket(ticket)
 
     if (rank == 0):
-        #print(model.module.sparsity, "\n")
-        print(model.sparsity, "\n")
+        print(model.module.sparsity, "\n")
+        #print(model.sparsity, "\n")
 
     return VGG_CNN(model, rank, world_size) if is_vgg else ResNet_CNN(model, rank, world_size)
 
