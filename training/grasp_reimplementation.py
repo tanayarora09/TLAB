@@ -116,7 +116,7 @@ def run_fit_and_export(rank, world_size, name, old_name, state, ticket, is_vgg, 
 
 def main(rank, world_size, name: str, sp_exp: list, **kwargs):
 
-    is_grasp = sp_exp.pop(-1) == 1
+    is_grasp = False #sp_exp.pop(-1) == 1
     is_vgg = sp_exp.pop(-1) == 1 # 1 is yes, 0 is no
     print(f"GRASP: {is_grasp} | VGG: {is_vgg}")
 
