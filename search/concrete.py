@@ -559,8 +559,8 @@ class StepAlignmentConcrete(TrajectoryConcrete):
 
     def _step_comparison_loss(self, step1, step2):
 
-        step1 = torch.cat([grad.sub(grad.mean()).div(grad.std()).view(-1) for grad in step1])
-        step2 = torch.cat([grad.sub(grad.mean()).div(grad.std()).view(-1) for grad in step2])
+        step1 = [grad.sub(grad.mean()).div(grad.std()).view(-1) for grad in step1]
+        step2 = [grad.sub(grad.mean()).div(grad.std()).view(-1) for grad in step2]
 
         """max1 = step1.abs().amax().clamp(min = 1e-30)
         max2 = step2.abs().amax().clamp(min = 1e-30)
@@ -568,7 +568,12 @@ class StepAlignmentConcrete(TrajectoryConcrete):
         norm1 = step1.div(max1).norm(2)
         norm2 = step2.div(max2).norm(2)"""
 
-        dist = F.mse_loss()
+        loss = torch.as_tensor(0.0, dtype = torch.float32, device = 'cuda')
+        cnt = 0
+
+        for sparse, dense in zip(step1, step2):
+            loss += F.mse_loss(sparse, dense, reduction = "mean")
+            cnt += 1
 
         #difference = (step1 - step2)
 
@@ -577,10 +582,4 @@ class StepAlignmentConcrete(TrajectoryConcrete):
 
         #max_shift = maxc.div(torch.sqrt(max1 * max2))
 
-        return dist
-
-
-class KldConcrete(TrajectoryConcrete):
-
-    def _step_comparison_loss(self, step1, step2):
-        return super()._step_comparison_loss(step1, step2)
+        return loss / cnt
