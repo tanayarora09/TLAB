@@ -272,11 +272,7 @@ class FrozenConcrete:
 
                     self.transfer_metrics()
                     
-                    state = self.optim_lagrangian.state_dict()['state']
-
                     if self.IsRoot:
-
-                        if len(state) > 0: print(f"{state[0]['momentum_buffer']}")
 
                         logs[iteration] = self.metric_results()
                         
@@ -437,7 +433,7 @@ class NormalizedMseFeatures(ActivationConcrete):
         
         super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, use_gradnorm_approach)
         self._loss_scaler_constant *= 100
-        self.optim_lagrangian.param_groups[0]["lr"] /= 10
+        if not use_gradnorm_approach: self.optim_lagrangian.param_groups[0]["lr"] /= 10
     
     def _compute_loss(self, x, y):
         
