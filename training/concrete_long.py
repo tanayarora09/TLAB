@@ -51,6 +51,7 @@ def run_concrete(rank, world_size, name, is_vgg, state, spe, spr, dt, transforms
 
     model = ddp_network(rank, world_size, is_vgg, depth = 16)
     if state is not None: model.load_state_dict(state)
+    state = model.state_dict()
 
     """captures = []
     fcaptures = []
@@ -183,7 +184,7 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
 
     #state, opt_state = run_start_train(rank, world_size, name, is_vgg, dt, dv,
     #                        (dataAug, resize, normalize, center_crop,))
-    state = None
+    #state = None
 
     for spe in reversed(sp_exp):
 
@@ -208,7 +209,7 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
         if DISTRIBUTED: torch.distributed.barrier(device_ids = [rank])
         """
 
-        _, ticket = run_concrete(rank, world_size, name, is_vgg, state, spe,
+        state, ticket = run_concrete(rank, world_size, name, is_vgg, None, spe,
                                     spr, dt, (resize, normalize, dataAug,))
 
         torch.cuda.empty_cache()
