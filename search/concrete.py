@@ -208,9 +208,10 @@ class FrozenConcrete:
             sparsity_grad_max = sparsity_grad.abs().amax().clamp_(min=1e-12)
             sparsity_grad_norm = sparsity_grad.div(sparsity_grad_max).norm(2)
 
-            target_lambda = task_grad_norm * task_grad_max / (sparsity_grad_norm * sparsity_grad_max + 1e-12)
+            target_lambda = (task_grad_norm * task_grad_max) / (sparsity_grad_norm * sparsity_grad_max + 1e-12)
 
             with torch.no_grad():
+                print(f"[rank {self.RANK}] {self.lagrange_multiplier}, {target_lambda}, {self.lagrangian_smoothing}")
                 dist.all_reduce(target_lambda, op = dist.ReduceOp.AVG)
                 if self.lagrange_multiplier != float("-inf"): 
                     self.lagrange_multiplier = self.lagrange_multiplier * (1 - self.lagrangian_smoothing) + target_lambda * self.lagrangian_smoothing
