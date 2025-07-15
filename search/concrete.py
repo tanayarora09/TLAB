@@ -124,6 +124,7 @@ class FrozenConcrete:
         self.mm.set_concrete_temperature(self.concrete_temperature)
 
         self.lagrange_multiplier = torch.as_tensor(0.0, device = 'cuda', dtype = torch.float32).requires_grad_(not use_gradnorm_approach)
+        self._output_target_lambda = None
 
         lambda_lr = 1e-3
 
@@ -211,11 +212,13 @@ class FrozenConcrete:
                 sparsity_grad_max = sparsity_grad.abs().amax().clamp_(min=1e-12)
                 sparsity_grad_norm = sparsity_grad.div(sparsity_grad_max).norm(2)
 
-                target_lambda = 0.1 * (task_grad_norm * task_grad_max) / (sparsity_grad_norm * sparsity_grad_max + 1e-12)
+                target_lambda = (task_grad_norm * task_grad_max) / (sparsity_grad_norm * sparsity_grad_max + 1e-12)
                 target_lambda = torch.sign(sparsity_error) * target_lambda
 
                 dist.all_reduce(target_lambda, op = dist.ReduceOp.AVG)
-                
+
+                self._output_target_lambda = target_lambda
+
                 if self.lagrange_multiplier != float("-inf"): 
                     self.lagrange_multiplier = self.lagrange_multiplier * (1 - self.lagrangian_smoothing) + target_lambda * self.lagrangian_smoothing
 
@@ -280,7 +283,8 @@ class FrozenConcrete:
 
                         logs[iteration] = self.metric_results()
                         
-                        bar.set_postfix_str(f"Loss: {logs[iteration]['loss']:.4e} | Expected {logs[iteration]['sparsity']:.3f}% | Gated {logs[iteration]['true_sparsity']:.3f}% | LOGIT STD : {self.mm.get_buffer("MASK").std().item():.3f} | Lagrangian {self.lagrange_multiplier.item():.3e}")
+                        bar.set_postfix_str(f"Loss: {logs[iteration]['loss']:.4e} | Expected {logs[iteration]['sparsity']:.3f}% | Gated {logs[iteration]['true_sparsity']:.3f}% | STD : {self.mm.get_buffer("MASK").std().item():.3f} | Lagrangian {self.lagrange_multiplier.item():.3e} | Last Target {self._output_target_lambda.item():.3e}",
+                                            refresh = False)
                         
                         bar.update(iteration - last_iter)
                         last_iter = iteration
