@@ -313,10 +313,11 @@ class GraSPConcrete(FrozenConcrete):
 
     def build(self, desired_sparsity: float, optimizer, 
               optimizer_kwargs: dict, 
-              transforms: Tuple[Callable]):
+              transforms: Tuple[Callable],
+              use_gradnorm_approach = False):
         
         #optimizer_kwargs["maximize"] = True
-        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms)
+        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, use_gradnorm_approach)
 
         #self._sparsity_scaler_constant *= 100
         #self._loss_scaler_constant *= 1e-2 # so loss ~ 5e-3
@@ -350,8 +351,10 @@ class SNIPConcrete(FrozenConcrete):
     
     def build(self, desired_sparsity: float, optimizer, 
               optimizer_kwargs: dict, 
-              transforms: Tuple[Callable]):
-        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms)
+              transforms: Tuple[Callable],
+              use_gradnorm_approach = False):
+        
+        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, use_gradnorm_approach)
         #self._sparsity_scaler_constant *= 100
         self._loss_scaler_constant *= 100
 
@@ -377,9 +380,10 @@ class ActivationConcrete(FrozenConcrete):
 
     def build(self, desired_sparsity: float, 
               optimizer, optimizer_kwargs: dict, 
-              transforms: Tuple[Callable]):
+              transforms: Tuple[Callable],
+              use_gradnorm_approach = False):
         
-        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms)
+        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, use_gradnorm_approach)
 
         #self._add_dense_to_capture_layers()
         self.init_hooks()
@@ -399,9 +403,10 @@ class KldLogit(ActivationConcrete):
 
     def build(self, desired_sparsity: float, optimizer, 
               optimizer_kwargs: dict, 
-              transforms: Tuple[Callable]):
+              transforms: Tuple[Callable],
+              use_gradnorm_approach = False):
         
-        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms)
+        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, use_gradnorm_approach)
         self._loss_scaler_constant *= 100
 
     def _compute_loss(self, x, y):
@@ -427,9 +432,10 @@ class NormalizedMseFeatures(ActivationConcrete):
     
     def build(self, desired_sparsity: float, optimizer, 
               optimizer_kwargs: dict, 
-              transforms: Tuple[Callable]):
+              transforms: Tuple[Callable],
+              use_gradnorm_approach = False):
         
-        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms)
+        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, use_gradnorm_approach)
         self._loss_scaler_constant *= 100
         self.optim_lagrangian.param_groups[0]["lr"] /= 10
     
@@ -467,9 +473,10 @@ class OldKld(ActivationConcrete):
     
     def build(self, desired_sparsity: float, optimizer, 
               optimizer_kwargs: dict, 
-              transforms: Tuple[Callable]):
+              transforms: Tuple[Callable],
+              use_gradnorm_approach = False):
         
-        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms)
+        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, use_gradnorm_approach)
         self._loss_scaler_constant *= 100 
 
     def _compute_loss(self, x, y):
@@ -534,9 +541,10 @@ class TrajectoryConcrete(FrozenConcrete):
     def build(self, desired_sparsity: float, 
               optimizer, 
               optimizer_kwargs: dict, 
-              transforms: Tuple[Callable]):
+              transforms: Tuple[Callable],
+              use_gradnorm_approach = False):
         
-        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms)
+        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, use_gradnorm_approach)
         
         for weight in self.weights: weight.requires_grad_(True)        
         self.mm.zero_grad()
@@ -579,9 +587,10 @@ class StepAlignmentConcrete(TrajectoryConcrete):
     def build(self, desired_sparsity: float, 
               optimizer, 
               optimizer_kwargs: dict, 
-              transforms: Tuple[Callable]):
+              transforms: Tuple[Callable],
+              use_gradnorm_approach = False):
         
-        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms)
+        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, use_gradnorm_approach)
         
         self._loss_scaler_constant *= 100
 
