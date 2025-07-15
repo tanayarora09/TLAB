@@ -132,7 +132,7 @@ class FrozenConcrete:
         self.optim_lagrangian = None
         if not use_gradnorm_approach: self.optim_lagrangian = torch.optim.SGD((self.lagrange_multiplier, ), lr = lambda_lr, maximize = True)
         if use_gradnorm_approach: 
-            self.lagrangian_smoothing = 0.1
+            self.lagrangian_smoothing = 1e-2
             self.lagrange_multiplier.fill_(float("-inf"))
 
         self.optim = optimizer((self.mm.get_buffer("MASK"),), **optimizer_kwargs)
@@ -204,14 +204,14 @@ class FrozenConcrete:
             task_grad_max = task_grad.abs().amax().clamp_(min=1e-12)
             task_grad_norm = task_grad.div(task_grad_max).norm(2)
 
-            sparsity_grad = torch.autograd.grad(loss, self.mm.get_buffer("MASK"))[0]
+            sparsity_grad = torch.autograd.grad(sparsity_error, self.mm.get_buffer("MASK"))[0]
             sparsity_grad_max = sparsity_grad.abs().amax().clamp_(min=1e-12)
             sparsity_grad_norm = sparsity_grad.div(sparsity_grad_max).norm(2)
 
-            target_lambda = (task_grad_norm * task_grad_max) / (sparsity_grad_norm * sparsity_grad_max + 1e-12)
+            target_lambda = 0.1 * (task_grad_norm * task_grad_max) / (sparsity_grad_norm * sparsity_grad_max + 1e-12)
 
             with torch.no_grad():
-                print(f"[rank {self.RANK}] {self.lagrange_multiplier}, {target_lambda}, {self.lagrangian_smoothing}")
+
                 dist.all_reduce(target_lambda, op = dist.ReduceOp.AVG)
                 if self.lagrange_multiplier != float("-inf"): 
                     self.lagrange_multiplier = self.lagrange_multiplier * (1 - self.lagrangian_smoothing) + target_lambda * self.lagrangian_smoothing
