@@ -24,8 +24,8 @@ import gc
 
 EPOCHS = 160
 CARDINALITY = 98
-START_EPOCHS = 10
-CONCRETE_EPOCHS = 25 
+START_EPOCHS = 0#10
+CONCRETE_EPOCHS = 160#25 
 
 
 def ddp_network(rank, world_size, is_vgg, depth = 16):
@@ -58,7 +58,7 @@ def run_concrete(rank, world_size, name, is_vgg, state, spe, spr, dt, transforms
         for lname, layer in block.named_children():
             if lname.endswith("relu")"""
 
-    search = KldLogit(rank, world_size, model)
+    search = SNIPConcrete(rank, world_size, model)#KldLogit(rank, world_size, model)
     #if not tmp_is_step_alignment: search = SNIPConcrete(rank, world_size, model)
     #else: search = StepAlignmentConcrete(rank, world_size, model, optimizer_state = opt_state)
 
@@ -77,10 +77,13 @@ def _make_trainer(rank, world_size, is_vgg, state = None, ticket = None):
 
     model = ddp_network(rank, world_size, is_vgg, 16)
     if state is not None: model.load_state_dict(state)#{k[7:]:v for k,v in state.items()} if world_size == 1 else state)
-    if ticket is not None: model.set_ticket(ticket)#.module.set_ticket(ticket)
+    if ticket is not None and world_size == 1: model.set_ticket(ticket)#.module.set_ticket(ticket)
+    elif ticket is not None: model.module.set_ticket(ticket)
 
     if (rank == 0):
-        print(f"Training with sparsity {(100 - model.sparsity.item()):.3f}% \n")
+        if world_size == 1: print(f"Training with sparsity {(100 - model.sparsity.item()):.3f}% \n")
+        else: print(f"Training with sparsity {(100 - model.module.sparsity.item()):.3f}% \n")
+
 
     return VGG_CNN(model, rank, world_size) if is_vgg else ResNet_CNN(model, rank, world_size)
 
@@ -178,8 +181,9 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
 
     dt, dv = get_loaders(rank, world_size, batch_size = 512)
 
-    state, opt_state = run_start_train(rank, world_size, name, is_vgg, dt, dv,
-                            (dataAug, resize, normalize, center_crop,))
+    #state, opt_state = run_start_train(rank, world_size, name, is_vgg, dt, dv,
+    #                        (dataAug, resize, normalize, center_crop,))
+    state = None
 
     for spe in reversed(sp_exp):
 
@@ -205,7 +209,7 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
         """
 
         _, ticket = run_concrete(rank, world_size, name, is_vgg, state, spe,
-                                    spr, dt, (resize, normalize, center_crop,))
+                                    spr, dt, (resize, normalize, dataAug,))
 
         torch.cuda.empty_cache()
         gc.collect()

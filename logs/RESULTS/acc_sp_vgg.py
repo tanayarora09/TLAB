@@ -26,16 +26,17 @@ if __name__ == '__main__':
 
     FINAL_SP = 25
 
-    names = ["rbt", "mbt", "grasp", "grasp_improved", "snip", "imp_vgg16"]#"postmg",]
+    names = ["rbt", "grasp",  "snip", "imp_vgg16", "loss_concrete_long_finetuned"]#"postmg",]
     titles = {"rbt": "Random", "mgsearch": "GTS with Magnitude", "mbt": "Magnitude", 
               "strengthen_early": "GTS with Lottery (Strong)", "imp_vgg16": "IMP (Frankle et al.)", 
               "randsearch": "GTS with Random", "strengthen_weak": "GTS with Lottery (Weak)",
               "grasp": "GraSP (Wang et al.)", "grasp_improved": "GraSP Magnitude",
-              "mse_v2": "MSE Saliency"}#"postmg": "Magnitude after Training"}
+              "snip": "SNIP (Lee et al.)",
+              "loss_concrete_long_finetuned": "Long Concrete (Task Loss)"}#"postmg": "Magnitude after Training"}
 
-    colors = {"rbt": COLORS["red"], "snip": COLORS["blue"], "mbt": COLORS["green"], 
-              "grasp_improved": COLORS["purple"], "imp_vgg16": COLORS["orange"], 
-              "grasp": COLORS["brown"],}#,"postmg": "pink"}
+    colors = {"rbt": COLORS["red"], "snip": COLORS["green"], "mbt": COLORS["green"], 
+              "grasp_improved": COLORS["brown"], "imp_vgg16": COLORS["orange"], 
+              "grasp": COLORS["purple"],"loss_concrete_long_finetuned": "blue"}
 
     results = dict()
 
@@ -81,8 +82,10 @@ if __name__ == '__main__':
     ax.set_xticks(sparsity_plots[::2])
     ax.set_xticklabels([f"{(100 - val):.1f}" for val in sparsities[::2]], fontsize = 11)
 
-    ax.set_ylim(85.5, 94.5)
-    ax.set_yticks(np.arange(86,95,2))
+    #ax.set_ylim(85.5, 94.5)
+    #ax.set_yticks(np.arange(86,95,2))
+    ax.set_ylim(65.5, 94.5)
+    ax.set_yticks(np.arange(66,95,5))
     ax.tick_params(axis = 'y', labelsize = '11')
 
     handles, _ = plt.gca().get_legend_handles_labels()

@@ -7,11 +7,12 @@ output_valL = dict()
 output_A = dict()
 output_L = dict()
 
-out_name = "resnet20/loss_concrete_long_finetuned"
-prefix_name = "LONG_LOSSCONCRETE_RESNET"
+out_name = "vgg16/loss_concrete_long_finetuned"
+prefix_name = "LONG_LOSSCONCRETE_VGG"
 
-#sparsity_indexes = #[2,4,6,8,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25] #0,
-sparsity_indexes = [2,4,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,] # RESNET
+sparsity_indexes = [2,4,6,8,10,12,14,16,17,18,19,20,21,22,23,24,25] #0,
+#sparsity_indexes = [2,4,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22] # RESNET
+#sparsity_indexes = [21, 22]
 
 is_adding = False
 
@@ -29,7 +30,6 @@ for spidx in sparsity_indexes:
     tmpL = list()
 
     for rep in range(reps):
-        if spidx < 18 and rep == reps-1: continue
         name = f"{prefix_name}_{rep}_{spidx}.json"
         with open(name, 'r') as f:
             print(f"Opened {name}")
@@ -94,4 +94,4 @@ if is_adding:
         json.dump(output_L, f, indent = 6 )
 
     with open(f"{out_name}_loss_val.json", 'w') as f:
-        json.dump(output_valL, f, indent = 6 )
+        json.dump(output_valL, f, indent = 6 ) 

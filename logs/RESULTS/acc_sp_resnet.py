@@ -26,17 +26,21 @@ if __name__ == '__main__':
 
     FINAL_SP = 22
 
-    names = ["rbt", "mbt", "imp_resnet20", "loss_concrete_long_finetuned", "snip", "grasp_improved"]#, "mse_v1", "imp_resnet20"]#"postmg",]
+    names = ["rbt", "imp_resnet20", "loss_concrete_long_finetuned", "kld_concrete_short_finetuned", "snip", "grasp"]#, "mse_v1", "imp_resnet20"]#"postmg",]
     titles = {"rbt": "Random", "mbt": "Magnitude",
               "imp_resnet20": "IMP (Frankle et al.)", 
               "grasp": "GraSP (Wang et al.)", 
               "grasp_improved": "GraSP Magnitude",
               "snip": "SNIP (Lee et al.)",
-              "loss_concrete_long_finetuned": "Long Concrete (Task Loss)"}#"postmg": "Magnitude after Training"}
+              "loss_concrete_long_finetuned": "Long Concrete (Task Loss)",
+              "kld_concrete_short_finetuned": "Short Concrete (Logit Loss)"}#"postmg": "Magnitude after Training"}
 
     colors = {"rbt": COLORS["red"], "mbt": COLORS["green"], 
-              "grasp_improved": COLORS["purple"], "imp_resnet20": COLORS["orange"], 
-              "snip": COLORS["blue"], "loss_concrete_long_finetuned": COLORS["brown"],}
+              "grasp": COLORS["purple"], 
+              "imp_resnet20": COLORS["orange"], 
+              "kld_concrete_short_finetuned": COLORS["blue"], 
+              "loss_concrete_long_finetuned": COLORS["grey"],
+              "snip": COLORS["green"]}
 
     results = dict()
 

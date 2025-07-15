@@ -87,7 +87,8 @@ class FrozenConcrete:
 
     def build(self, desired_sparsity: float, optimizer, 
               optimizer_kwargs: dict, 
-              transforms: Tuple[Callable]):
+              transforms: Tuple[Callable],
+              ):
 
         """
         desired_sparsity = 0.2 --> 80% Sparse, 20% Dense
@@ -110,7 +111,7 @@ class FrozenConcrete:
 
         self.leafed_state_dict = self.m.state_dict()
         
-        self.m.eval()
+        self.m.eval() 
         for param in self.mm.parameters():
             param.grad = None
             param.requires_grad_(False)
@@ -395,7 +396,15 @@ class KldLogit(ActivationConcrete):
     def _fhook(self, func, _, __, output): return #self.act_w.append(func(output).view(output.shape[0], -1))
 
 class NormalizedMseFeatures(ActivationConcrete):
-
+    
+    def build(self, desired_sparsity: float, optimizer, 
+              optimizer_kwargs: dict, 
+              transforms: Tuple[Callable]):
+        
+        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms)
+        self._loss_scaler_constant *= 100
+        self.optim_lagrangian.param_groups[0]["lr"] /= 10
+    
     def _compute_loss(self, x, y):
         
         self.clear_capture()
@@ -403,26 +412,37 @@ class NormalizedMseFeatures(ActivationConcrete):
         with torch.no_grad(): 
             self.mm.deactivate_mask()
             self.mm(x)
-            dense_acts = [act for act in self.act_w]
+            dense_acts =  [act for act in self.act_w]
             self.clear_capture()
             self.mm.activate_mask()
-            
+        
         self.mm(x)
-
+        
         loss = torch.as_tensor(0.0, dtype = torch.float32, device = 'cuda')
+        cnt = 0
 
         for idx, act in enumerate(self.act_w):
-            loss += F.mse_loss(act, dense_acts[idx], reduction = "mean")
+            std, mean = torch.std_mean(dense_acts[idx], dim = 1, keepdim = True)
+            loss += F.mse_loss(act.sub(act.mean(dim = 1, keepdim = True)).div(act.std(dim = 1, keepdim = True)), 
+                               dense_acts[idx].sub(mean).div(std), reduction = "mean")
+            cnt += 1
 
         self.clear_capture()
 
-        return loss
+        return loss / cnt
 
     def _hook(self, _, __, output): return self.act_w.append(output.view(output.shape[0], -1))
-    def _fhook(self, func, _, __, output): return #self.act_w.append(func(output).view(output.shape[0], -1))
+    def _fhook(self, func, _, __, output): return self.act_w.append(func(output).view(output.shape[0], -1))
 
 
 class OldKld(ActivationConcrete):
+    
+    def build(self, desired_sparsity: float, optimizer, 
+              optimizer_kwargs: dict, 
+              transforms: Tuple[Callable]):
+        
+        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms)
+        self._loss_scaler_constant *= 100 
 
     def _compute_loss(self, x, y):
         
@@ -539,8 +559,8 @@ class StepAlignmentConcrete(TrajectoryConcrete):
 
     def _step_comparison_loss(self, step1, step2):
 
-        step1 = torch.cat([grad.view(-1) for grad in step1])
-        step2 = torch.cat([grad.view(-1) for grad in step2])
+        step1 = torch.cat([grad.sub(grad.mean()).div(grad.std()).view(-1) for grad in step1])
+        step2 = torch.cat([grad.sub(grad.mean()).div(grad.std()).view(-1) for grad in step2])
 
         """max1 = step1.abs().amax().clamp(min = 1e-30)
         max2 = step2.abs().amax().clamp(min = 1e-30)
@@ -548,10 +568,12 @@ class StepAlignmentConcrete(TrajectoryConcrete):
         norm1 = step1.div(max1).norm(2)
         norm2 = step2.div(max2).norm(2)"""
 
-        difference = (step1 - step2)
+        dist = F.mse_loss()
 
-        maxc = difference.abs().amax().clamp(min = 1e-8).div(difference.numel())
-        dist = difference.div(maxc).norm(2) * maxc
+        #difference = (step1 - step2)
+
+        #maxc = difference.abs().amax().clamp(min = 1e-8).div(difference.numel())
+        #dist = difference.div(maxc).norm(2) * maxc
 
         #max_shift = maxc.div(torch.sqrt(max1 * max2))
 

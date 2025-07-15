@@ -60,10 +60,10 @@ def run_concrete(rank, world_size, name, is_vgg, state, spe, spr, dt, transforms
             if lname.endswith("relu"): captures.append(layer)
             elif lname.endswith("fc"): fcaptures.append((layer, torch.relu))
 
-    if not tmp_is_step_alignment: search = search = OldKld(rank, world_size, model, capture_layers = captures, fake_capture_layers = fcaptures) # GraSPConcrete(rank, world_size, model)
+    if not tmp_is_step_alignment: search = NormalizedMseFeatures(rank, world_size, model, capture_layers=captures, fake_capture_layers = fcaptures)#OldKld(rank, world_size, model, capture_layers = captures, fake_capture_layers = fcaptures) # GraSPConcrete(rank, world_size, model)
     else: search = StepAlignmentConcrete(rank, world_size, model, optimizer_state = opt_state)
     
-    search.build(spr, torch.optim.AdamW, optimizer_kwargs = {'lr': 1e-1}, transforms = transforms)
+    search.build(spr, torch.optim.Adam, optimizer_kwargs = {'lr': 1e-1}, transforms = transforms)
 
     logs, ticket = search.optimize_mask(dt, CONCRETE_EPOCHS, CARDINALITY, dynamic_epochs = False)
 
