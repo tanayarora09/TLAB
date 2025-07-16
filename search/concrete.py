@@ -213,7 +213,8 @@ class FrozenConcrete:
                 sparsity_grad_norm = sparsity_grad.div(sparsity_grad_max).norm(2)
 
                 target_lambda = (task_grad_norm * task_grad_max) / (sparsity_grad_norm * sparsity_grad_max + 1e-12)
-                target_lambda = torch.sign(sparsity_error) * target_lambda
+                if sparsity_error < 0: target_lambda.fill_(0.0)
+                #target_lambda = torch.sign(sparsity_error) * target_lambda
 
                 dist.all_reduce(target_lambda, op = dist.ReduceOp.AVG)
 
