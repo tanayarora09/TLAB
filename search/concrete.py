@@ -317,9 +317,6 @@ class FrozenConcrete:
 
 class GraSPConcrete(FrozenConcrete):
 
-    def __init__(self, rank: int, world_size: int, model: Module | DDP):
-        super().__init__(rank, world_size, model, capture_layers = None, fake_capture_layers = None)
-
     def build(self, desired_sparsity: float, optimizer, 
               optimizer_kwargs: dict, 
               transforms: Tuple[Callable],
@@ -354,9 +351,6 @@ class GraSPConcrete(FrozenConcrete):
         return -total_norm # maximize
     
 class SNIPConcrete(FrozenConcrete):
-
-    def __init__(self, rank: int, world_size: int, model: Module | DDP):
-        super().__init__(rank, world_size, model, capture_layers = None, fake_capture_layers = None)
     
     def build(self, desired_sparsity: float, optimizer, 
               optimizer_kwargs: dict, 
@@ -377,8 +371,9 @@ class ActivationConcrete(FrozenConcrete):
     def __init__(self, rank: int, world_size: int, 
                  model: DDP,
                  capture_layers: List[Module] = [],
-                 fake_capture_layers: List[Tuple[Module, Callable]] = []):
-        super().__init__(rank, world_size, model, capture_layers, fake_capture_layers)
+                 fake_capture_layers: List[Tuple[Module, Callable]] = [],
+                 concrete_temperature = 2./3.):
+        super().__init__(rank, world_size, model, capture_layers, fake_capture_layers, concrete_temperature = concrete_temperature)
         self.full_activations = []
         """self.dense_mm = copy.deepcopy(self.mm)
         self.dense_mm.reset_ticket()
@@ -522,14 +517,15 @@ class TrajectoryConcrete(FrozenConcrete):
     def __init__(self, rank: int, 
                  world_size: int, 
                  model: DDP,
-                 optimizer_state: dict):
+                 optimizer_state: dict,
+                 concrete_temperature = 2./3.):
         
         """
         Should be used after training, optimizer state is optimizer.state_dict() output
         type_of_optimizer: "sgd"
         """
         
-        super().__init__(rank, world_size, model)
+        super().__init__(rank, world_size, model, concrete_temperature=concrete_temperature)
 
         self.lottery_weights = [layer.get_parameter(layer.MASKED_NAME) for layer in self.mm.lottery_layers]
         self.weights = list(self.mm.parameters())
