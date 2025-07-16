@@ -133,8 +133,8 @@ class FrozenConcrete:
         self.optim_lagrangian = None
         if not use_gradnorm_approach: self.optim_lagrangian = torch.optim.SGD((self.lagrange_multiplier, ), lr = lambda_lr, maximize = True)
         if use_gradnorm_approach: 
-            self.lagrangian_smoothing = 1e-2
-            self.lagrange_multiplier.fill_(float("-inf"))
+            self.lagrangian_smoothing = 1e-1
+            self.lagrange_multiplier.fill_(10.0)#float("-inf"))
 
         self.optim = optimizer((self.mm.get_buffer("MASK"),), **optimizer_kwargs)
 
