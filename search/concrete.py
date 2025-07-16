@@ -104,6 +104,7 @@ class FrozenConcrete:
 
         self.spr = desired_sparsity
         self._desired_active = self.spr * self.mm.num_prunable
+        if use_gradnorm_approach: self._desired_active *= 1.2
         self._inv_desired_active = 1. / self._desired_active
         self._sparsity_scaler_constant = 100. #100. / self.mm.num_prunable
 
@@ -133,8 +134,8 @@ class FrozenConcrete:
         self.optim_lagrangian = None
         if not use_gradnorm_approach: self.optim_lagrangian = torch.optim.SGD((self.lagrange_multiplier, ), lr = lambda_lr, maximize = True)
         if use_gradnorm_approach: 
-            self.lagrangian_smoothing = 1e-1
-            self.lagrange_multiplier.fill_(10.0)#float("-inf"))
+            self.lagrangian_smoothing = 1e-2
+            self.lagrange_multiplier.fill_(float("-inf"))
 
         self.optim = optimizer((self.mm.get_buffer("MASK"),), **optimizer_kwargs)
 
