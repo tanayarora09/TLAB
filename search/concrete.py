@@ -24,7 +24,9 @@ __all__ = ["SNIPConcrete", "GraSPConcrete", "NormalizedMseFeatures", "KldLogit",
 class FrozenConcrete:
     def __init__(self, rank: int, world_size: int, model: BaseModel | DDP,
                  capture_layers: List[Module] = None,
-                 fake_capture_layers: List[Tuple[Module, Callable]] = None):
+                 fake_capture_layers: List[Tuple[Module, Callable]] = None,
+                 concrete_temperature = 2./3.):
+        
         self.RANK = rank
         self.IsRoot = rank == 0
         self.WORLD_SIZE = world_size
@@ -37,6 +39,8 @@ class FrozenConcrete:
         self._fcaptures = fake_capture_layers or []
         self._handles = []
         self.act_w = []
+
+        self.concrete_temperature = concrete_temperature
 
     def metric_results(self) -> dict[str, float]:
         """
@@ -104,7 +108,7 @@ class FrozenConcrete:
 
         self.spr = desired_sparsity
         self._desired_active = self.spr * self.mm.num_prunable
-        if use_gradnorm_approach: self._desired_active *= 1.2
+        if use_gradnorm_approach: self._desired_active *= 1.1
         self._inv_desired_active = 1. / self._desired_active
         self._sparsity_scaler_constant = 100. #100. / self.mm.num_prunable
 
@@ -119,7 +123,6 @@ class FrozenConcrete:
             param.grad = None
             param.requires_grad_(False)
         
-        self.concrete_temperature = 2./3.
         self.target_logit = torch.log(torch.as_tensor(desired_sparsity/(1 - desired_sparsity), device = 'cuda')) * self.concrete_temperature 
         self.mm.prepare_for_continuous_optimization(initial_alpha = self.target_logit)
         self.mm.set_concrete_temperature(self.concrete_temperature)
