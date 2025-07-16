@@ -11,6 +11,16 @@ from typing import List
 
 from utils.data_utils import jitToList2D
 
+import os
+import shutil
+import subprocess
+from filelock import FileLock
+
+
+IS_ORCA = False
+
+dataset_path = "/tmp/CIFAR10/" if IS_ORCA else "/u/tanaya_guest/tlab/datasets/CIFAR10/"
+
 class DataAugmentation(nn.Module):
     
     def __init__(self):
@@ -151,12 +161,14 @@ def get_loaders(rank, world_size, batch_size = 512, train = True, validation = T
     """
     Iterate if there are weird behaviors with sample counts
     """
+    
+    if IS_ORCA: _use_scratch_orca()
 
     dt, dv = None, None
     
     if train:
 
-        train_data = torchvision.datasets.CIFAR10("/u/tanaya_guest/tlab/datasets/CIFAR10/", train = True, download = False,
+        train_data = torchvision.datasets.CIFAR10(dataset_path, train = True, download = False,
                                                 transform = ScriptedToTensor())
 
         dt = DataLoader(train_data, batch_size = batch_size//world_size, 
@@ -167,7 +179,7 @@ def get_loaders(rank, world_size, batch_size = 512, train = True, validation = T
 
     if validation:
 
-        test_data = torchvision.datasets.CIFAR10("/u/tanaya_guest/tlab/datasets/CIFAR10/", train = False, download = False,
+        test_data = torchvision.datasets.CIFAR10(dataset_path, train = False, download = False,
                                             transform = ScriptedToTensor())
 
         dv = DataLoader(test_data, batch_size = batch_size//world_size, 
@@ -180,7 +192,9 @@ def get_loaders(rank, world_size, batch_size = 512, train = True, validation = T
 
 def get_partial_train_loader(rank, world_size, data_fraction_factor: float = None, batch_count: float = None, batch_size = 128):
     
-    train_data = torchvision.datasets.CIFAR10("/u/tanaya_guest/tlab/datasets/CIFAR10/", train = True, download = False,
+    if IS_ORCA: _use_scratch_orca()
+
+    train_data = torchvision.datasets.CIFAR10(dataset_path, train = True, download = False,
                                               transform = ScriptedToTensor())
     
     size = len(train_data)
@@ -230,3 +244,22 @@ def custom_fetch_data(dataloader, amount, samples=10, classes=10, sampler_offset
         results.append((X, Y))
 
     return results
+
+def _use_scratch_orca():
+    source_dir = os.path.expanduser("~/datasets/CIFAR10")
+    target_dir = "/tmp/CIFAR10"
+    lock_path = "/tmp/CIFAR10.lock"
+
+    def is_non_empty_dir(path):
+        return os.path.isdir(path) and len(os.listdir(path)) > 0
+
+    with FileLock(lock_path):
+        if not is_non_empty_dir(target_dir):
+            print(f"[{os.getpid()}] Copying CIFAR-10 dataset with rsync...")
+            if os.path.exists(target_dir):
+                shutil.rmtree(target_dir)
+            os.makedirs(target_dir, exist_ok=True)
+            subprocess.run(["rsync", "-a", f"{source_dir}/", target_dir], check=True)
+            print(f"[{os.getpid()}] Copy complete.")
+        else:
+            print(f"[{os.getpid()}] Dataset already available.")
