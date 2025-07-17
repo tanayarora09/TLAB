@@ -280,6 +280,7 @@ class SynFlow_Pruner(SaliencyPruning):
         x, y = self.inp
         x, y = x.cuda(), y.cuda()
         for T in self.transforms: x = T(x)
+        grad_w.clear()
         self._accumulate_saliency(x, y, weights, grad_w)
         grads = [(w.data * g).abs() for w, g in zip(weights, grad_w)]
         scores = torch.cat([g.view(-1) for g in grads]).to(torch.float64) * self.mm.get_buffer("MASK")

@@ -6,9 +6,9 @@ from data.cifar10 import *
 from utils.serialization_utils import logs_to_pickle, save_tensor
 from utils.training_utils import plot_logs
 
-#from training.VGG import VGG_CNN, VGG_IMP
+from training.VGG import VGG_CNN, VGG_IMP
 from training.ResNet import ResNet_CNN, ResNet_IMP
-#from models.VGG import VGG
+from models.VGG import VGG
 from models.ResNet import ResNet
 from models.base import BaseModel
 
@@ -24,7 +24,11 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
     EPOCHS = 160
     CARDINALITY = 98
     PRUNE_ITERS = sp_exp[0] #should only be one argument
-    if len(sp_exp) != 1: raise ValueError()
+    is_vgg = sp_exp.pop(-1) == 1
+
+    REWIND_EPOCH = 5 if is_vgg else 3
+
+    if len(sp_exp) != 2: raise ValueError()
 
     old_name = name
 
@@ -37,7 +41,9 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
 
     model = ResNet(rank = rank, world_size = world_size, depth = 20, custom_init = True).cuda() #VGG(depth = 16, rank = rank, world_size = world_size, custom_init = True).cuda()
     
-    T = ResNet_IMP(model, rank, world_size)
+    if is_vgg: model = VGG(rank = rank, world_size = world_size, depth = 16, custom_init = True).cuda()
+
+    T = VGG_IMP(model, rank, world_size) if is_vgg else ResNet_IMP(model, rank, world_size)
 
     T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay' : 1e-3},
             loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
@@ -50,9 +56,9 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
     torch.cuda.empty_cache()
     gc.collect()
 
-    dt, dv = get_loaders(rank, world_size, batch_size = 512) 
+    dt, dv = get_loaders(rank, world_size, batch_size = 512)
 
-    (logs, results), sparsities_d = T.TicketIMP(dt, dv, EPOCHS, CARDINALITY, old_name, 0.8, PRUNE_ITERS, rewind_iter = 3*CARDINALITY, validate = False)
+    (logs, results), sparsities_d = T.TicketIMP(dt, dv, EPOCHS, CARDINALITY, old_name, 0.8, PRUNE_ITERS, rewind_iter = REWIND_EPOCH*CARDINALITY, validate = False)
 
     if rank == 0:
 
@@ -60,6 +66,6 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
             with open(f"./logs/RESULTS/{old_name}_{spe}.json", "w") as f:
                 json.dump(results[spe], f, indent = 6)
 
-        #logs_to_pickle(logs, name)
+        logs_to_pickle(logs, name)
 
     torch.distributed.barrier(device_ids = [rank])

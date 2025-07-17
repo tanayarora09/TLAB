@@ -528,7 +528,7 @@ class TrajectoryConcrete(FrozenConcrete):
         super().__init__(rank, world_size, model, concrete_temperature=concrete_temperature)
 
         self.lottery_weights = [layer.get_parameter(layer.MASKED_NAME) for layer in self.mm.lottery_layers]
-        self.weights = list(self.mm.parameters())
+        self.weights = self.lottery_weights#list(self.mm.parameters())
         self.lottery_weight_ids = set(id(weight) for weight in self.lottery_weights)
         self.weight_ids = set(id(weight) for weight in self.weights)
 
@@ -540,6 +540,7 @@ class TrajectoryConcrete(FrozenConcrete):
     def _make_optimizer_state(self, state):
         
         self.momentum_state = {}
+        return
         for idx, param in enumerate(self.m.parameters()):
                 if id(param) in self.weight_ids: self.momentum_state[id(param)] = state[idx]['momentum_buffer']    
 
@@ -570,7 +571,7 @@ class TrajectoryConcrete(FrozenConcrete):
                 if curr_id in self.lottery_weight_ids:
                     #weight = weight * F.sigmoid(self.mm.lottery_layers[cnt].weight_mask / self.mm.concrete_temperature)
                     cnt += 1
-                grad_d_mom.append(grad.detach() + self.momentum * self.momentum_state[curr_id])# + self.weight_decay * weight + self.momentum * self.momentum_state[curr_id])
+                grad_d_mom.append(grad.detach() )#+ self.momentum * self.momentum_state[curr_id])# + self.weight_decay * weight + self.momentum * self.momentum_state[curr_id])
 
         self.mm.activate_mask()
         loss = F.cross_entropy(self.mm(x), y)
@@ -582,7 +583,7 @@ class TrajectoryConcrete(FrozenConcrete):
             if curr_id in self.lottery_weight_ids:
                 #weight = weight * F.sigmoid(self.mm.lottery_layers[cnt].weight_mask / self.mm.concrete_temperature)
                 cnt += 1
-            grad_s_mom.append(grad + self.momentum * self.momentum_state[curr_id])#+ self.weight_decay * weight + self.momentum * self.momentum_state[curr_id])
+            grad_s_mom.append(grad )#+ self.momentum * self.momentum_state[curr_id])#+ self.weight_decay * weight + self.momentum * self.momentum_state[curr_id])
         
         return self._step_comparison_loss(grad_s_mom, grad_d_mom)
     
