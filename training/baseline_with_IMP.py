@@ -28,7 +28,7 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
 
     REWIND_EPOCH = 5 if is_vgg else 3
 
-    if len(sp_exp) != 2: raise ValueError()
+    if len(sp_exp) != 1: raise ValueError()
 
     old_name = name
 
@@ -42,6 +42,11 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
     model = ResNet(rank = rank, world_size = world_size, depth = 20, custom_init = True).cuda() #VGG(depth = 16, rank = rank, world_size = world_size, custom_init = True).cuda()
     
     if is_vgg: model = VGG(rank = rank, world_size = world_size, depth = 16, custom_init = True).cuda()
+
+    model = DDP(model, 
+            device_ids = [rank],
+            output_device = rank, 
+            gradient_as_bucket_view = True)
 
     T = VGG_IMP(model, rank, world_size) if is_vgg else ResNet_IMP(model, rank, world_size)
 
