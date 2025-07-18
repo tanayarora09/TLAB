@@ -306,8 +306,8 @@ class SynFlow_Pruner(SaliencyPruning):
         weights = [layer.get_parameter(layer.MASKED_NAME) for layer in self.mm.lottery_layers]
         signs = dict()
 
-        for pidx, param in enumerate(self.mm.parameters()):
-            signs[pidx] = torch.sign(param)
+        for name, param in self.mm.named_parameters():
+            signs[name] = torch.sign(param)
             with torch.no_grad(): param.abs_()
             #param.requires_grad_(any(param is weight for weight in weights))
 
@@ -317,8 +317,8 @@ class SynFlow_Pruner(SaliencyPruning):
             self.mm.set_ticket(out)
         
         with torch.no_grad():
-            for pidx, param in enumerate(self.mm.parameters()):
-                param.data.mul_(signs[pidx])
+            for name, param in self.mm.named_parameters():
+                param.data.mul_(signs[name])
                         
         return out
 
