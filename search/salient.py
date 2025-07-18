@@ -273,7 +273,7 @@ class SynFlow_Pruner(SaliencyPruning):
         for param in self.mm.parameters():
             param.requires_grad_(True)
             param.grad = None
-        self.mm.train()
+        self.m.train()
 
     def _accumulate_saliency(self, x, y, weights):
         loss = self.mm(torch.ones(x.shape, dtype=x.dtype, device=x.device)).sum()
@@ -306,20 +306,33 @@ class SynFlow_Pruner(SaliencyPruning):
         weights = [layer.get_parameter(layer.MASKED_NAME) for layer in self.mm.lottery_layers]
         signs = dict()
 
-        for name, param in self.mm.named_parameters():
-            signs[name] = torch.sign(param)
-            with torch.no_grad(): param.abs_()
-            #param.requires_grad_(any(param is weight for weight in weights))
+        def linearize(model):
+            for name, param in model.named_parameters():
+                param.data = param.data.abs()
+                signs[name] = torch.sign(param.data)
+            for bname, block in model.named_children():
+                for lname, layer in block.named_children():
+                    if lname.endswith("relu"):
+                        layer.forward = lambda x: x
+
+        def unlinearize(model):
+            for name, param in model.named_parameters():
+                with torch.no_grad():
+                    param.data.mul_(signs[name])
+            for bname, block in model.named_children():
+                for lname, layer in block.named_children():
+                    if lname.endswith("relu"):
+                        layer.forward = lambda x: F.relu(x)
+                        
+        linearize(self.mm)
 
         for n in range(100):
             curr_sp = self.spr ** ((n + 1) / 100)
             out = self._single_shot_grad_mask(weights, curr_sp)
             self.mm.set_ticket(out)
-        
-        with torch.no_grad():
-            for name, param in self.mm.named_parameters():
-                param.data.mul_(signs[name])
-                        
+
+        unlinearize(self.mm)
+
         return out
 
 
