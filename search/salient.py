@@ -268,6 +268,13 @@ class SynFlow_Pruner(SaliencyPruning):
     def __init__(self, rank: int, world_size: int, model: Module | DDP):
         super().__init__(rank, world_size, model)
 
+    def build(self, *args, **kwargs):
+        super().build(*args, **kwargs)
+        for param in self.mm.parameters():
+            param.requires_grad_(True)
+            param.grad = None
+        self.mm.train()
+
     def _accumulate_saliency(self, x, y, weights):
         loss = self.mm(torch.ones(x.shape, dtype=x.dtype, device=x.device)).sum()
         loss.backward()
@@ -281,7 +288,8 @@ class SynFlow_Pruner(SaliencyPruning):
         grad_w = self._accumulate_saliency(x, y, weights)
         grads = [(w.data.to(torch.float64) * w.grad.data.to(torch.float64)).abs() for w in weights]
         self.mm.zero_grad()
-        scores = torch.cat([g.view(-1) for g in grads]) * self.mm.get_buffer("MASK")
+        scores = torch.cat([g.view(-1) for g in grads]).mul(self.mm.get_buffer("MASK"))
+        scores.div_(scores.norm() + 1e-8)
         num_to_keep = int((curr_sp) * scores.numel())
         
         threshold = torch.kthvalue(scores, scores.numel() - num_to_keep).values
@@ -301,7 +309,7 @@ class SynFlow_Pruner(SaliencyPruning):
         for pidx, param in enumerate(self.mm.parameters()):
             signs[pidx] = torch.sign(param)
             with torch.no_grad(): param.abs_()
-            param.requires_grad_(any(param is weight for weight in weights))
+            #param.requires_grad_(any(param is weight for weight in weights))
 
         for n in range(100):
             curr_sp = self.spr ** ((n + 1) / 100)
