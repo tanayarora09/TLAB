@@ -269,8 +269,9 @@ class SynFlow_Pruner(SaliencyPruning):
         super().__init__(rank, world_size, model)
 
     def _accumulate_saliency(self, x, y, weights):
-        loss = self.mm(torch.ones(([1,] + list(x.shape[1:])), dtype=x.dtype, device=x.device)).sum()
-        return (grad.to(torch.float64) for grad in torch.autograd.grad(loss, weights))
+        loss = self.mm(torch.ones(x.shape, dtype=x.dtype, device=x.device)).sum()
+        loss.backward()
+        return None#[weight.grad.to(torch.float64) for weight in weights]
 
 
     def _single_shot_grad_mask(self, weights, curr_sp):
@@ -278,15 +279,16 @@ class SynFlow_Pruner(SaliencyPruning):
         x, y = x.cuda(), y.cuda()
         for T in self.transforms: x = T(x)
         grad_w = self._accumulate_saliency(x, y, weights)
-        grads = [(w.data.to(torch.float64) * g).abs() for w, g in zip(weights, grad_w)]
+        grads = [(w.data.to(torch.float64) * w.grad.data.to(torch.float64)).abs() for w in weights]
+        self.mm.zero_grad()
         scores = torch.cat([g.view(-1) for g in grads]) * self.mm.get_buffer("MASK")
         num_to_keep = int((curr_sp) * scores.numel())
         
         threshold = torch.kthvalue(scores, scores.numel() - num_to_keep).values
         ticket = scores.ge(threshold)
-        print(f"Saliency (Sum): {scores.sum()} | Pruning Threshold: {threshold}")
+        print(f"{curr_sp * 100:.3f}% | Saliency (Sum): {scores.sum()} | Pruning Threshold: {threshold} | Current Sparsity: {self.mm.sparsity:.3f}%")
         
-        return ticket
+        return ticket * self.mm.get_buffer("MASK")
 
     def grad_mask(self):
 
@@ -298,16 +300,17 @@ class SynFlow_Pruner(SaliencyPruning):
 
         for pidx, param in enumerate(self.mm.parameters()):
             signs[pidx] = torch.sign(param)
-            param.abs_()
+            with torch.no_grad(): param.abs_()
             param.requires_grad_(any(param is weight for weight in weights))
 
         for n in range(100):
             curr_sp = self.spr ** ((n + 1) / 100)
             out = self._single_shot_grad_mask(weights, curr_sp)
             self.mm.set_ticket(out)
-
-        for pidx, param in enumerate(self.mm.parameters()):
-            param.data.mul_(signs[pidx])
+        
+        with torch.no_grad():
+            for pidx, param in enumerate(self.mm.parameters()):
+                param.data.mul_(signs[pidx])
                         
         return out
 
