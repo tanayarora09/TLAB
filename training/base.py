@@ -569,9 +569,9 @@ class BaseIMP(BaseCNNTrainer):
 
         self.print(f"\nRUNNING IMP ON {self.mm.num_prunable} PRUNABLE WEIGHTS.", "pink")
 
-        self.print(f"\nSPARSITY: {current_sparsity:.2f}\n", "red")
+        self.print(f"\nSPARSITY: {current_sparsity:.3e}\n", "red")
 
-        total_logs[0] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_{(100.0):.2f}", save = True, verbose = False,
+        total_logs[0] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_{(100.0):.3e}", save = True, verbose = False,
                                  rewind_iter = rewind_iter, sampler_offset = sampler_offset, validate = validate)
         
         if not validate: results[0] = self._get_results(train_data, validation_data)
@@ -584,18 +584,18 @@ class BaseIMP(BaseCNNTrainer):
 
             sparsities_d[iteration] = current_sparsity.item() / 100
 
-            self.print(f"\nSPARSITY: {current_sparsity:.2f} | SEEDED: {torch.rand(1).item()}\n", "red")
+            self.print(f"\nSPARSITY: {current_sparsity:.3e} | SEEDED: {torch.rand(1).item()}\n", "red")
 
             self.post_prune_hook(iteration, epochs_per_run)
 
-            self.mm.export_ticket(name, entry_name = f"{(current_sparsity):.2f}")
+            self.mm.export_ticket(name, entry_name = f"{(current_sparsity):.3e}")
 
-            self.load_ckpt(name + f"_{(100.0):.2f}", prefix = "rewind", weights_only = True)
+            self.load_ckpt(name + f"_{(100.0):.3e}", prefix = "rewind", weights_only = True)
 
             #sampler_offset += 1
 
             total_logs[iteration] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, 
-                                             name + f"_{(current_sparsity):.2f}", save = False, verbose = False,
+                                             name + f"_{(current_sparsity):.3e}", save = False, verbose = False,
                                              sampler_offset = sampler_offset, start = rewind_iter//train_cardinality,
                                              save_init = False, validate = validate)
             

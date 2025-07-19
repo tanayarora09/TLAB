@@ -114,7 +114,7 @@ def run_fit_and_export(rank, world_size, name, old_name, state, ticket, is_vgg, 
         
         logs_to_pickle(logs, name)
         
-    T.mm.export_ticket(old_name, entry_name = f"{spr * 100:.2f}", root = 0)
+    T.mm.export_ticket(old_name, entry_name = f"{spr * 100:.3e}", root = 0)
 
     del dt, dv
 

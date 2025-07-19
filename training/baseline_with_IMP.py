@@ -43,7 +43,7 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
     
     if is_vgg: model = VGG(rank = rank, world_size = world_size, depth = 16, custom_init = True).cuda()
 
-    model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model) if world_size > 1 else model
+    #model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model) if world_size > 1 else model
 
     if world_size > 1:
         model = DDP(model, 

@@ -56,7 +56,7 @@ def main(rank, world_size, name: str, **kwargs):
         logs_to_pickle(logs, name)
     
         for i in range(len(logs)):
-            plot_logs(logs[i], EPOCHS, name + f"_{(sparsities_d[i] * 100):.2f}", 
+            plot_logs(logs[i], EPOCHS, name + f"_{(sparsities_d[i] * 100):.3e}", 
                       CARDINALITY, start = (0 if i == 0 else 13)) 
             
         with open(f"./logs/PICKLES/{name}_best_fitnesses.json", "w", encoding = "utf-8") as f:
@@ -79,4 +79,4 @@ def main(rank, world_size, name: str, **kwargs):
             with open(f"./logs/RESULTS/{old_name}_{spe}.json", "w") as f:
                 json.dump(train_res, f, indent = 6)
             
-            T.mm.export_ticket(old_name, entry_name = f"{sp * 100:.2f}")
+            T.mm.export_ticket(old_name, entry_name = f"{sp * 100:.3e}")
