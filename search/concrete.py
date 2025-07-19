@@ -364,7 +364,7 @@ class SNIPConcrete(FrozenConcrete):
     def _compute_loss(self, x, y):
         loss = F.cross_entropy(self.mm(x), y)
         return loss.abs()
-    
+
 
 class ActivationConcrete(FrozenConcrete):
 

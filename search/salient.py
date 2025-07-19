@@ -268,17 +268,9 @@ class SynFlow_Pruner(SaliencyPruning):
     def __init__(self, rank: int, world_size: int, model: Module | DDP):
         super().__init__(rank, world_size, model)
 
-    def build(self, *args, **kwargs):
-        super().build(*args, **kwargs)
-        for param in self.mm.parameters():
-            param.requires_grad_(True)
-            param.grad = None
-        self.m.train()
-
     def _accumulate_saliency(self, x, y, weights):
-        loss = self.mm(torch.ones(x.shape, dtype=x.dtype, device=x.device)).sum()
-        loss.backward()
-        return None#[weight.grad.to(torch.float64) for weight in weights]
+        inp = torch.ones([1,] + list(x[0,:].shape), dtype=x.dtype, device=x.device)
+        return torch.autograd.grad(torch.sum(self.mm(inp)), weights)
 
 
     def _single_shot_grad_mask(self, weights, curr_sp):
@@ -286,15 +278,14 @@ class SynFlow_Pruner(SaliencyPruning):
         x, y = x.cuda(), y.cuda()
         for T in self.transforms: x = T(x)
         grad_w = self._accumulate_saliency(x, y, weights)
-        grads = [(w.data.to(torch.float64) * w.grad.data.to(torch.float64)).abs() for w in weights]
+        grads = [(w * g).detach().abs() for w, g in zip(weights, grad_w)]
         self.mm.zero_grad()
-        scores = torch.cat([g.view(-1) for g in grads]).mul(self.mm.get_buffer("MASK"))
-        scores.div_(scores.norm() + 1e-8)
+        scores = torch.cat([g.view(-1) for g in grads])
         num_to_keep = int((curr_sp) * scores.numel())
         
         threshold = torch.kthvalue(scores, scores.numel() - num_to_keep).values
         ticket = scores.ge(threshold)
-        print(f"{curr_sp * 100:.3f}% | Saliency (Sum): {scores.sum()} | Pruning Threshold: {threshold} | Current Sparsity: {self.mm.sparsity:.3f}%")
+        print(f"{curr_sp * 100:.3f}% | Saliency (Sum): {scores.sum()} | Pruning Threshold: {threshold}")
         
         return ticket * self.mm.get_buffer("MASK")
 
@@ -304,34 +295,31 @@ class SynFlow_Pruner(SaliencyPruning):
 
         self.mm.zero_grad()
         weights = [layer.get_parameter(layer.MASKED_NAME) for layer in self.mm.lottery_layers]
-        signs = dict()
 
+        @torch.no_grad()
         def linearize(model):
+            signs = dict()
             for name, param in model.named_parameters():
-                param.data = param.data.abs()
+                param.abs_()
                 signs[name] = torch.sign(param.data)
-            for bname, block in model.named_children():
-                for lname, layer in block.named_children():
-                    if lname.endswith("relu"):
-                        layer.forward = lambda x: x
+                param.requires_grad_(any(param is p for p in weights))
 
-        def unlinearize(model):
+            return signs
+        
+        @torch.no_grad()
+        def unlinearize(model, signs):
             for name, param in model.named_parameters():
                 with torch.no_grad():
                     param.data.mul_(signs[name])
-            for bname, block in model.named_children():
-                for lname, layer in block.named_children():
-                    if lname.endswith("relu"):
-                        layer.forward = lambda x: F.relu(x)
                         
-        linearize(self.mm)
+        signs = linearize(self.mm)
 
         for n in range(100):
             curr_sp = self.spr ** ((n + 1) / 100)
             out = self._single_shot_grad_mask(weights, curr_sp)
             self.mm.set_ticket(out)
 
-        unlinearize(self.mm)
+        unlinearize(self.mm, signs)
 
         return out
 

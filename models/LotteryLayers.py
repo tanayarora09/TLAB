@@ -29,7 +29,8 @@ class LotteryDense(nn.Linear, Lottery):
     def __init__(
         self,
         in_features,
-        out_features
+        out_features,
+        bias = True,
         ):
         self.MASK_SHAPE = (out_features, in_features)
         self.MASK_NUMEL = in_features * out_features
@@ -38,7 +39,7 @@ class LotteryDense(nn.Linear, Lottery):
         self.mask_is_active = True
         self.is_continuous = False
         self.concrete_temperature = None
-        super(LotteryDense, self).__init__(in_features = in_features, out_features = out_features)        
+        super(LotteryDense, self).__init__(in_features = in_features, out_features = out_features, bias = bias)        
 
 
     #@torch.no_grad()
@@ -75,7 +76,8 @@ class LotteryConv2D(nn.Conv2d, Lottery):
         out_channels,
         kernel_size: int = 3,
         stride: int = 1,
-        padding = 'same'
+        padding = 'same',
+        bias = False,
     ):
         self.MASK_SHAPE = (out_channels, in_channels, kernel_size, kernel_size)
         self.MASK_NUMEL = in_channels * out_channels * kernel_size * kernel_size
@@ -84,7 +86,7 @@ class LotteryConv2D(nn.Conv2d, Lottery):
         self.is_continuous = False
         self.mask_is_active = True
         self.concrete_temperature = None
-        super(LotteryConv2D, self).__init__(in_channels, out_channels, kernel_size = kernel_size, stride = stride, padding = padding, bias = False)
+        super(LotteryConv2D, self).__init__(in_channels, out_channels, kernel_size = kernel_size, stride = stride, padding = padding, bias = bias)
     
     def update_mask(self, mask: torch.Tensor, offset: int):
         self.weight_mask =  mask[offset: offset + self.MASK_NUMEL].view(self.MASK_SHAPE)

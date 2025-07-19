@@ -22,19 +22,22 @@ EPOCHS = 160
 CARDINALITY = 98
 
 
-def ddp_network(rank, world_size, is_vgg, depth = 16):
+def ddp_network(rank, world_size, is_vgg, depth = 16, bn_track = False):
 
     if not is_vgg: depth = 20
     
     if is_vgg:
-        model = VGG(depth = depth, rank = rank, world_size = world_size, custom_init = True) 
+        model = VGG(depth = depth, rank = rank, world_size = world_size, custom_init = True, bn_track = bn_track) 
     else: 
-        model =  ResNet(depth = depth, rank = rank, world_size = world_size, custom_init = True)
+        model =  ResNet(depth = depth, rank = rank, world_size = world_size, custom_init = True, bn_track = bn_track)
     
     model = model.cuda()
     #print(type(model))
     
     if world_size > 1:
+
+        if bn_track: model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+
         model = DDP(model, 
                 device_ids = [rank],
                 output_device = rank, 
@@ -44,7 +47,7 @@ def ddp_network(rank, world_size, is_vgg, depth = 16):
 
 def run_grasp(rank, world_size, name, old_name, is_grasp, is_vgg, spe, spr, transforms): #ONLY ON ROOT
 
-    model = ddp_network(rank, world_size, is_vgg, 16)
+    model = ddp_network(rank, world_size, is_vgg, 16, bn_track = True)
     state = model.state_dict()
     
     if rank == 0:
@@ -68,7 +71,7 @@ def run_grasp(rank, world_size, name, old_name, is_grasp, is_vgg, spe, spr, tran
 def _make_trainer(rank, world_size, state, ticket, is_vgg):
 
     model = ddp_network(rank, world_size, is_vgg, 16)
-    model.load_state_dict(state)
+    model.load_state_dict(state, strict = False)
     if world_size > 1: model.module.set_ticket(ticket)
     else: model.set_ticket(ticket)
 
@@ -133,6 +136,7 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
     for spe in reversed(sp_exp):
 
         spr = 0.8**spe
+        if spe == 50: spr = 0.0022 
         name = old_name + f"_{spe:02d}"
 
         state, ticket = run_grasp(rank, world_size, name, old_name, is_grasp, is_vgg, 

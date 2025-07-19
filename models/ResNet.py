@@ -38,9 +38,9 @@ class ResNet(BaseModel):
                 
             return conv_obj
         
-        def _make_bn_obj(self, num_filters, custom_init):
+        def _make_bn_obj(self, num_filters, custom_init, bn_track):
 
-            norm_obj = nn.BatchNorm2d(num_filters, track_running_stats = False)
+            norm_obj = nn.BatchNorm2d(num_filters, track_running_stats = bn_track)
 
             if custom_init: 
                 norm_obj.reset_parameters = types.MethodType(bn_init, norm_obj)
@@ -55,7 +55,8 @@ class ResNet(BaseModel):
                         stride: int = 1,
                         padding: int = 1,
                         custom_init = True,
-                        downsample: bool = False):
+                        downsample: bool = False,
+                        bn_track: bool = False):
 
             super(ResNet.ResBlock, self).__init__()        
 
@@ -68,7 +69,7 @@ class ResNet(BaseModel):
                                                               custom_init))
 
 
-            self.register_module("1norm", self._make_bn_obj(num_filters, custom_init))
+            self.register_module("1norm", self._make_bn_obj(num_filters, custom_init, bn_track))
 
             self.register_module("1relu", nn.ReLU())
 
@@ -76,7 +77,7 @@ class ResNet(BaseModel):
                                                               kernel_size, 1, padding, 
                                                               custom_init))
 
-            self.register_module("2norm", self._make_bn_obj(num_filters, custom_init))
+            self.register_module("2norm", self._make_bn_obj(num_filters, custom_init, bn_track))
 
             if downsample or input_channels != num_filters:
                 
@@ -84,7 +85,7 @@ class ResNet(BaseModel):
                                                                 kernel_size, stride, padding, 
                                                                 custom_init))              
 
-                self.register_module("3norm", self._make_bn_obj(num_filters, custom_init))
+                self.register_module("3norm", self._make_bn_obj(num_filters, custom_init, bn_track))
 
             self.register_module("2relu", nn.ReLU())
 
@@ -120,9 +121,9 @@ class ResNet(BaseModel):
                 
             return conv_obj
         
-        def _make_bn_obj(self, num_filters, custom_init):
+        def _make_bn_obj(self, num_filters, custom_init, bn_track):
 
-            norm_obj = nn.BatchNorm2d(num_filters, track_running_stats = False)
+            norm_obj = nn.BatchNorm2d(num_filters, track_running_stats = bn_track)
 
             if custom_init: 
                 norm_obj.reset_parameters = types.MethodType(bn_init, norm_obj)
@@ -135,7 +136,8 @@ class ResNet(BaseModel):
                         kernel_size: int = 3,
                         stride: int = 1,
                         padding: int = 1,
-                        custom_init = True):
+                        custom_init = True,
+                        bn_track: bool = False):
 
             super(ResNet.InBlock, self).__init__()        
 
@@ -144,7 +146,7 @@ class ResNet(BaseModel):
                                                             custom_init))
 
 
-            self.register_module("norm", self._make_bn_obj(num_filters, custom_init))
+            self.register_module("norm", self._make_bn_obj(num_filters, custom_init, bn_track))
 
             self.register_module("relu", nn.ReLU())
 
@@ -176,7 +178,7 @@ class ResNet(BaseModel):
             x = self.get_submodule("fc")(x)
             return x
 
-    def __init__(self, rank: int, world_size: int, depth: int = 20, input_channels: int = 3, custom_init = True):
+    def __init__(self, rank: int, world_size: int, depth: int = 20, input_channels: int = 3, custom_init = True, bn_track = False):
         super(ResNet, self).__init__()
 
         if depth not in valid:
@@ -188,7 +190,7 @@ class ResNet(BaseModel):
         plan = modelcfgs(depth)
         
         current = plan[0][0]
-        self.inblock = self.InBlock(3, current, custom_init = custom_init)
+        self.inblock = self.InBlock(3, current, custom_init = custom_init, bn_track = bn_track)
 
 
         for idx, (filters, num_blocks) in enumerate(plan):
@@ -198,7 +200,8 @@ class ResNet(BaseModel):
                                      self.ResBlock(current, filters, 
                                                 stride = 2 if downsample else 1,
                                                 downsample = downsample,
-                                                custom_init = custom_init))
+                                                custom_init = custom_init,
+                                                bn_track = bn_track))
                 self.layers.append(f"block{idx}{block_idx}")
                 current = filters
 

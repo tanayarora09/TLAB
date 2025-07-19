@@ -35,12 +35,14 @@ class VGG(BaseModel):
                         kernel_size: int = 3, 
                         stride: int = 1, 
                         padding: str = "same",
+                        bias: bool = False,
+                        bn_track: bool = False,
                         custom_init = False): 
             
             super(VGG.ConvBN, self).__init__()
 
             conv_obj = LotteryConv2D(input_channels, num_filters, 
-                                kernel_size, stride, padding)
+                                kernel_size, stride, padding, bias)
 
             if custom_init: 
                 conv_obj.reset_parameters = types.MethodType(conv_fc_init, conv_obj)
@@ -48,7 +50,7 @@ class VGG(BaseModel):
 
             self.register_module("conv", conv_obj)
             
-            norm_obj = nn.BatchNorm2d(num_filters, track_running_stats = False)
+            norm_obj = nn.BatchNorm2d(num_filters, track_running_stats = bn_track)
 
             if custom_init: 
                 norm_obj.reset_parameters = types.MethodType(bn_init, norm_obj)
@@ -94,7 +96,7 @@ class VGG(BaseModel):
             x = self.get_submodule("fc")(x)
             return x
 
-    def __init__(self, rank: int, world_size: int, depth: int = 19, input_channels: int = 3, custom_init = True):
+    def __init__(self, rank: int, world_size: int, depth: int = 19, input_channels: int = 3, custom_init = True, conv_bias = False, bn_track = False):
         super(VGG, self).__init__()
 
         if depth not in valid:
@@ -113,7 +115,7 @@ class VGG(BaseModel):
                 curr_num = 1
 
             else:
-                self.register_module(f"block{curr_block}{curr_num}", self.ConvBN(input_channels, value, custom_init = custom_init))
+                self.register_module(f"block{curr_block}{curr_num}", self.ConvBN(input_channels, value, custom_init = custom_init, bias = conv_bias, bn_track = bn_track))
                 self.layers.append(f"block{curr_block}{curr_num}")
                 curr_num += 1
                 input_channels = value
