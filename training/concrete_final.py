@@ -64,7 +64,8 @@ def run_concrete(rank, world_size,
     if type_of_concrete == 3:
         captures = []
         fcaptures = []
-        for bname, block in model.module.named_children():
+        model_to_inspect = model.module if world_size > 1 else model
+        for bname, block in model_to_inspect.named_children():
             for lname, layer in block.named_children():
                 if lname.endswith("relu"): captures.append(layer)
                 elif lname.endswith("fc"): fcaptures.append((layer, torch.softmax))
@@ -84,10 +85,10 @@ def run_concrete(rank, world_size,
 
 def _make_trainer(rank, world_size, is_vgg, state = None, ticket = None):
 
-    model = ddp_network(rank, world_size, is_vgg, 16)
+    model = ddp_network(rank, world_size, is_vgg)
     if state is not None: model.load_state_dict(state)
-    if ticket is not None and world_size == 1: model.set_ticket(ticket)
-    elif ticket is not None: model.module.set_ticket(ticket)
+    model_to_inspect = model.module if world_size > 1 else model
+    if ticket is not None: model_to_inspect.set_ticket(ticket)
 
     if (rank == 0):
         if world_size == 1: print(f"Training with sparsity {(model.sparsity.item()):.3e}% \n")
@@ -212,7 +213,7 @@ def main(rank, world_size, name: str, args: list, **kwargs):
     dt, dv = get_loaders(rank, world_size, batch_size = 512)
 
     if is_init: 
-        ostate, opt_state = run_start_train(rank = rank, world_size = world_size, 
+        ostate, _ = run_start_train(rank = rank, world_size = world_size, 
                                             name = name, is_vgg = is_vgg, start_epochs = start_epochs,
                                             dt = dt, dv = dv, transforms = (dataAug, resize, normalize, center_crop,))
     else: 
