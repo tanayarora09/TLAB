@@ -90,7 +90,7 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
             train_res = T.metric_results()
             print("Train Results: ", train_res)
 
-            T.mm.export_ticket(old_name, entry_name = f"{sp * 100:.2f}")
+            T.mm.export_ticket(old_name, entry_name = f"{sp * 100:.3e}")
 
         T.evaluate(dv)
         

@@ -532,9 +532,9 @@ class TrajectoryConcrete(FrozenConcrete):
         self.lottery_weight_ids = set(id(weight) for weight in self.lottery_weights)
         self.weight_ids = set(id(weight) for weight in self.weights)
 
-        self._make_optimizer_state(optimizer_state['state'])
-        self.weight_decay = optimizer_state['param_groups'][0]['weight_decay']
-        self.momentum = optimizer_state['param_groups'][0]['momentum']
+        #self._make_optimizer_state(optimizer_state['state'])
+        #self.weight_decay = optimizer_state['param_groups'][0]['weight_decay']
+        #self.momentum = optimizer_state['param_groups'][0]['momentum']
         #self.dampening = optimizer_state['param_groups'][0]['dampening'] # DOES NOT IMPLEMENT
 
     def _make_optimizer_state(self, state):

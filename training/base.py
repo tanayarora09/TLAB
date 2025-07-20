@@ -527,6 +527,7 @@ class BaseIMP(BaseCNNTrainer):
 
     def _get_results(self, train_data, validation_data):
         self.m.eval()
+        train_res = None
         self.evaluate(train_data)
         if self.RANK == 0:
             train_res = self.metric_results()
