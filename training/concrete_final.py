@@ -72,7 +72,7 @@ def run_concrete(rank, world_size,
     
     search = CONCRETE_EXPERIMENTS[type_of_concrete][1](**inp_args)
 
-    search.build(spr, torch.optim.Adam, optimizer_kwargs = {'lr': 1e-1}, transforms = transforms)
+    search.build(spr, torch.optim.Adam, optimizer_kwargs = {'lr': 1e-1}, transforms = transforms, use_gradnorm_approach = True)
 
     logs, ticket = search.optimize_mask(dt, concrete_epochs, CARDINALITY, dynamic_epochs = False, reduce_epochs = [120])
 

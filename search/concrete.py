@@ -222,8 +222,6 @@ class FrozenConcrete:
 
                 dist.all_reduce(target_lambda, op = dist.ReduceOp.AVG)
 
-                self._output_target_lambda = target_lambda
-
                 if self.lagrange_multiplier != float("-inf"): 
                     self.lagrange_multiplier = self.lagrange_multiplier * (1 - self.lagrangian_smoothing) + target_lambda * self.lagrangian_smoothing
 
@@ -288,7 +286,7 @@ class FrozenConcrete:
 
                         logs[iteration] = self.metric_results()
                         
-                        bar.set_postfix_str(f"Loss: {logs[iteration]['loss']:.4e} | Expected {logs[iteration]['sparsity']:.3f}% | Gated {logs[iteration]['true_sparsity']:.3f}% | STD : {self.mm.get_buffer("MASK").std().item():.3f} | Lagrangian {self.lagrange_multiplier.item():.3e} | Last Target {self._output_target_lambda.item():.3e}",
+                        bar.set_postfix_str(f"Loss: {logs[iteration]['loss']:.4e} | Expected {logs[iteration]['sparsity']:.3f}% | Gated {logs[iteration]['true_sparsity']:.3f}% | STD : {self.mm.get_buffer("MASK").std().item():.3f} | Lagrangian {self.lagrange_multiplier.item():.3e}",
                                             refresh = False)
                         
                         bar.update(iteration - last_iter)
