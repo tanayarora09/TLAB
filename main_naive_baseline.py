@@ -81,7 +81,7 @@ if __name__ == "__main__":
 
     #main(normal.main, name, args)
     
-    from training import baseline
+    from training import naive_training
     """for sp in args:
         print("--------------------------------------------------------------")
         print("SPARSITY ", sp)
@@ -96,4 +96,4 @@ if __name__ == "__main__":
         print("--------------------------------------------------------------")
         print("EXPERIMENT NUMBER ", exp)
         print("--------------------------------------------------------------")      
-        main(baseline.main, name + f"_{exp}", args)
+        main(naive_training.main, name + f"_{exp}", args)
