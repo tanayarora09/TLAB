@@ -21,18 +21,14 @@ import gc
 EPOCHS = 160
 CARDINALITY = 98
 
+TYPES = [("SNIP", SNIP_Pruner), ("GraSP", GraSP_Pruner), ("SynFlow", SynFlow_Pruner)]
 
-def ddp_network(rank, world_size, is_vgg, depth = 16, bn_track = False):
 
-    if not is_vgg: depth = 20
+def ddp_network(rank, world_size, is_vgg, bn_track = False):
+
+    depth = 16 if is_vgg else 20
     
-    if is_vgg:
-        model = VGG(depth = depth, rank = rank, world_size = world_size, custom_init = True, bn_track = bn_track) 
-    else: 
-        model =  ResNet(depth = depth, rank = rank, world_size = world_size, custom_init = True, bn_track = bn_track)
-    
-    model = model.cuda()
-    #print(type(model))
+    model = (VGG if is_vgg else ResNet)(depth = depth, rank = rank, world_size = world_size, custom_init = True, bn_track = bn_track).cuda()
     
     if world_size > 1:
 
@@ -45,17 +41,14 @@ def ddp_network(rank, world_size, is_vgg, depth = 16, bn_track = False):
     
     return model
 
-def run_grasp(rank, world_size, name, old_name, is_grasp, is_vgg, spe, spr, transforms): #ONLY ON ROOT
+def run_salient(rank, world_size, name, old_name, type_of_salient, is_vgg, spe, spr, transforms): #ONLY ON ROOT
 
-    model = ddp_network(rank, world_size, is_vgg, 16, bn_track = True)
+    model = ddp_network(rank, world_size, is_vgg, bn_track = (type_of_salient == 2))
     state = model.state_dict()
     
     if rank == 0:
-        if is_grasp: pruner = GraSP_Pruner(0, 1, model.module if world_size > 1 else model)
-        else: pruner = SynFlow_Pruner(0, 1, model.module if world_size > 1 else model)
-        #else: pruner = SNIP_Pruner(0, 1, model)#.module)
-        #partial = get_partial_train_loader(rank, world_size, 10)
-        pruner.build(spr, transforms, input = None)#partial)
+        pruner = (TYPES[type_of_salient][1])(0, 1, model.module if world_size > 1 else model)
+        pruner.build(spr, transforms, input = None)
         ticket = pruner.grad_mask()
         pruner.finish()
 
@@ -70,16 +63,15 @@ def run_grasp(rank, world_size, name, old_name, is_grasp, is_vgg, spe, spr, tran
 
 def _make_trainer(rank, world_size, state, ticket, is_vgg):
 
-    model = ddp_network(rank, world_size, is_vgg, 16)
-    model.load_state_dict(state, strict = False)
-    if world_size > 1: model.module.set_ticket(ticket)
-    else: model.set_ticket(ticket)
+    model = ddp_network(rank, world_size, is_vgg)
+    model.load_state_dict(state, strict = False) # SynFlow requires finding tickets with running batchnorm.
+    model_to_inspect = model.module if world_size > 1 else model
+    model_to_inspect.set_ticket(ticket)
 
     if (rank == 0):
-        if world_size > 1: print(model.module.sparsity, "\n")
-        else: print(model.sparsity, "\n")
+        print(model_to_inspect.sparsity, "\n")
 
-    return VGG_CNN(model, rank, world_size) if is_vgg else ResNet_CNN(model, rank, world_size)
+    return (VGG_CNN if is_vgg else ResNet_CNN)(model, rank, world_size)
 
 def run_fit_and_export(rank, world_size, name, old_name, state, ticket, is_vgg, spe, spr, transforms,): #Transforms: DataAug, Resize, Normalize, Crop
 
@@ -120,9 +112,9 @@ def run_fit_and_export(rank, world_size, name, old_name, state, ticket, is_vgg, 
 
 def main(rank, world_size, name: str, sp_exp: list, **kwargs):
 
-    is_grasp = False #sp_exp.pop(-1) == 1
     is_vgg = sp_exp.pop(-1) == 1 # 1 is yes, 0 is no
-    print(f"GRASP: {is_grasp} | VGG: {is_vgg}")
+    type_of_salient = sp_exp.pop(-1) # SNIP, GraSP, SynFlow
+    print(f"TYPE: {TYPES[type_of_salient][0]} | VGG: {is_vgg}")
 
     DISTRIBUTED = world_size > 1
 
@@ -136,10 +128,9 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
     for spe in reversed(sp_exp):
 
         spr = 0.8**spe
-        if spe == 50: spr = 0.0022 
         name = old_name + f"_{spe:02d}"
 
-        state, ticket = run_grasp(rank, world_size, name, old_name, is_grasp, is_vgg, 
+        state, ticket = run_salient(rank, world_size, name, old_name, type_of_salient, is_vgg, 
                                   spe, spr, (resize, normalize, center_crop,))
 
         torch.cuda.empty_cache()

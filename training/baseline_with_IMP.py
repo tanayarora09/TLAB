@@ -19,8 +19,6 @@ import h5py
 
 def main(rank, world_size, name: str, sp_exp: list, **kwargs):
 
-    #sp = 0.8 ** sp_exp
-
     EPOCHS = 160
     CARDINALITY = 98
     PRUNE_ITERS = sp_exp[0] #should only be one argument
@@ -39,11 +37,8 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
     normalize = torch.jit.script(Normalize().to('cuda'))
     center_crop = torch.jit.script(CenterCrop().to('cuda'))
 
-    model = ResNet(rank = rank, world_size = world_size, depth = 20, custom_init = True).cuda() #VGG(depth = 16, rank = rank, world_size = world_size, custom_init = True).cuda()
-    
-    if is_vgg: model = VGG(rank = rank, world_size = world_size, depth = 16, custom_init = True).cuda()
-
-    #model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model) if world_size > 1 else model
+    depth = 16 if is_vgg else 20
+    model = (VGG if is_vgg else ResNet)(rank = rank, world_size = world_size, depth = depth, custom_init = True).cuda() 
 
     if world_size > 1:
         model = DDP(model, 
@@ -51,7 +46,7 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
                 output_device = rank, 
                 gradient_as_bucket_view = True)
 
-    T = VGG_IMP(model, rank, world_size) if is_vgg else ResNet_IMP(model, rank, world_size)
+    T = (VGG_IMP if is_vgg else ResNet_IMP)(model, rank, world_size)
 
     T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay' : 1e-3},
             loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),

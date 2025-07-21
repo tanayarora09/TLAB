@@ -15,7 +15,7 @@ import json
 def format_func(value: float, tick_number: float) -> str:
     #print(value, abs(value - round(value)) < 1e-9)
     if abs(value - round(value)) < 1e-9: return f"{int(value)}"
-    return f"{value:.2f}"
+    return f"{value:.3f}"
 
 UNPRUNED_MEAN = 92.11666782697041
 UNPRUNED_STD = 0.08178697160130831
@@ -24,23 +24,25 @@ COLORS = {"black": "#303030","grey": "#808080", "blue": "#4682B4", "orange": "#F
 
 if __name__ == '__main__':
 
-    FINAL_SP = 22
+    FINAL_SP = 32
 
-    names = ["rbt", "imp_resnet20", "loss_concrete_long_finetuned", "kld_concrete_short_finetuned", "snip", "grasp"]#, "mse_v1", "imp_resnet20"]#"postmg",]
+    names = ["rbt", "imp", "synflow", "snip", "grasp"]#, "mse_v1", "imp_resnet20"]#"postmg",]
     titles = {"rbt": "Random", "mbt": "Magnitude",
-              "imp_resnet20": "IMP (Frankle et al.)", 
+              "imp": "IMP (Frankle et al.)", 
               "grasp": "GraSP (Wang et al.)", 
               "grasp_improved": "GraSP Magnitude",
               "snip": "SNIP (Lee et al.)",
+              "synflow": "SynFlow (Tanaka et al.)",
               "loss_concrete_long_finetuned": "Long Concrete (Task Loss)",
               "kld_concrete_short_finetuned": "Short Concrete (Logit Loss)"}#"postmg": "Magnitude after Training"}
 
     colors = {"rbt": COLORS["red"], "mbt": COLORS["green"], 
-              "grasp": COLORS["purple"], 
-              "imp_resnet20": COLORS["orange"], 
+              "grasp": "limegreen",
+              "synflow": "darkgreen",
+              "imp": COLORS["orange"], 
               "kld_concrete_short_finetuned": COLORS["blue"], 
               "loss_concrete_long_finetuned": COLORS["grey"],
-              "snip": COLORS["green"]}
+              "snip": "yellowgreen"}
 
     results = dict()
 
@@ -83,11 +85,11 @@ if __name__ == '__main__':
     plt.xlabel("Sparsity (%)", **label_font, labelpad = 12)
 
 
-    ax.set_xticks(sparsity_plots[::2])
-    ax.set_xticklabels([f"{(100 - val):.1f}" for val in sparsities[::2]], fontsize = 11)
+    ax.set_xticks(sparsity_plots[::4])
+    ax.set_xticklabels([f"{(100 - val):.2f}" for val in sparsities[::4]], fontsize = 11)
 
-    ax.set_ylim(70, 93.5)
-    ax.set_yticks(np.arange(70,95,5))
+    ax.set_ylim(30, 93.5)
+    ax.set_yticks(np.arange(25,95,10))
     ax.tick_params(axis = 'y', labelsize = '11')
 
     handles, _ = plt.gca().get_legend_handles_labels()

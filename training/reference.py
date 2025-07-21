@@ -18,7 +18,7 @@ def main(rank, world_size, name: str, **kwargs):
     EPOCHS = 160
     CARDINALITY = 98
     PRUNE_ITERS = 26
-    REWIND_ITER = 13 * CARDINALITY
+    REWIND_ITER = (5) * CARDINALITY
 
     dataAug = torch.jit.script(DataAugmentation().to('cuda'))
     resize = torch.jit.script(Resize().to('cuda'))
@@ -57,7 +57,7 @@ def main(rank, world_size, name: str, **kwargs):
     
         for i in range(len(logs)):
             plot_logs(logs[i], EPOCHS, name + f"_{(sparsities_d[i] * 100):.3e}", 
-                      CARDINALITY, start = (0 if i == 0 else 13)) 
+                      CARDINALITY, start = (0 if i == 0 else 5)) 
             
         with open(f"./logs/PICKLES/{name}_best_fitnesses.json", "w", encoding = "utf-8") as f:
             json.dump({}, f, ensure_ascii = False, indent = 4)

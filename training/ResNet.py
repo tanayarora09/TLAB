@@ -6,7 +6,7 @@ import torch.distributed as dist
 from collections import defaultdict
 import time
 
-from training.base import CNN_DGTS, BaseIMP, BaseCNNTrainer
+from training.base import BaseIMP, BaseCNNTrainer
 
 from utils.serialization_utils import read_tensor, save_tensor
 
