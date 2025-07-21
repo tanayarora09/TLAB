@@ -515,7 +515,6 @@ class TrajectoryConcrete(FrozenConcrete):
     def __init__(self, rank: int, 
                  world_size: int, 
                  model: DDP,
-                 optimizer_state: dict,
                  concrete_temperature = 2./3.):
         
         """

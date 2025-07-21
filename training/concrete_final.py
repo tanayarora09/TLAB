@@ -68,8 +68,9 @@ def run_concrete(rank, world_size,
         for bname, block in model_to_inspect.named_children():
             for lname, layer in block.named_children():
                 if lname.endswith("relu"): captures.append(layer)
-                elif lname.endswith("fc"): fcaptures.append((layer, torch.softmax))
-    
+                elif lname.endswith("fc"): fcaptures.append((layer, lambda x: torch.softmax(x, dim = 1)))
+        inp_args.update({"capture_layers": captures, "fake_capture_layers": fcaptures})
+
     search = CONCRETE_EXPERIMENTS[type_of_concrete][1](**inp_args)
 
     search.build(spr, torch.optim.Adam, optimizer_kwargs = {'lr': 1e-1}, transforms = transforms, use_gradnorm_approach = True)
@@ -191,7 +192,7 @@ def main(rank, world_size, name: str, args: list, **kwargs):
     is_vgg = args.pop(-1) == 1 # 1 is yes, 0 is no
     is_short = args.pop(-1) == 1 # 1 is yes, 0 is no
     is_init = args.pop(-1) == 1 # 1 is yes, 0 is no
-    type_of_concrete = args.pop(-1) # 0-5
+    type_of_concrete = args.pop(-1) # 0-4
     if rank == 0: print(f"VGG: {is_vgg} | INIT: {is_init} | TYPE: {CONCRETE_EXPERIMENTS[type_of_concrete][0]}")
 
     sp_exp = list(range(2, 43 if is_vgg else 33, 2))
