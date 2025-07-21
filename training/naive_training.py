@@ -6,8 +6,8 @@ from data.cifar10 import *
 from utils.serialization_utils import logs_to_pickle, save_tensor
 from utils.training_utils import plot_logs
 
-#from training.VGG import VGG_CNN
-#from models.VGG import VGG
+from training.VGG import VGG_CNN
+from models.VGG import VGG
 from training.ResNet import ResNet_CNN
 from models.ResNet import ResNet
 from models.base import BaseModel
@@ -17,11 +17,10 @@ import pickle
 import gc
 import h5py
 
-#"2,4,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25"
-
 def main(rank, world_size, name: str, sp_exp: list, **kwargs):
 
-    #sp = 0.8 ** sp_exp
+    is_vgg = sp_exp.pop(-1) == 1 # VGG vs ResNet
+    is_rand = sp_exp.pop(-1) == 1 # Random Pruning vs Magnitude Pruning (pre init)
 
     EPOCHS = 160
     CARDINALITY = 98
@@ -30,35 +29,34 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
 
     if rank == 0: h5py.File(f"./logs/TICKETS/{old_name}.h5", "w").close()
 
-    for spe in reversed(sp_exp):
+    dt, dv = get_loaders(rank, world_size, batch_size = 512) 
 
-        if spe > 20: continue
+    for spe in reversed(sp_exp):
 
         name = old_name + f"_{spe:02d}"
 
         sp = 0.8 ** spe
-
-        print(rank, name)
 
         dataAug = torch.jit.script(DataAugmentation().to('cuda'))
         resize = torch.jit.script(Resize().to('cuda'))
         normalize = torch.jit.script(Normalize().to('cuda'))
         center_crop = torch.jit.script(CenterCrop().to('cuda'))
 
-        model = ResNet(rank, world_size, depth = 20, custom_init = True).cuda()
-        #VGG(depth = 16, rank = rank, world_size = world_size, custom_init = True).cuda()
+        depth = 16 if is_vgg else 20
+        model = (VGG if is_vgg else ResNet)(rank, world_size, depth = depth, custom_init = True).cuda()
+        
+        if world_size > 1:
 
-        #model.prune_random(sp, distributed = True)
+            model = DDP(model, 
+                    device_ids = [rank],
+                    output_device = rank, 
+                    gradient_as_bucket_view = True)
 
-        #model = DDP(model.to('cuda'), 
-        #            device_ids = [rank],
-        #            output_device = rank, 
-        #            gradient_as_bucket_view = True)
+        model_to_inspect = model.module if world_size > 1 else model
+        if is_rand: model_to_inspect.prune_random(sp, distributed = True)
+        else: model_to_inspect.prune_by_mg(sp, 1, root = 0)
 
-        T = ResNet_CNN(model = model, rank = rank, world_size = world_size)
-
-        #T.mm.prune_by_mg(sp, iteration = 1, root = 0)
-        T.mm.prune_random(sp, distributed = False)
+        T = (VGG_CNN if is_vgg else ResNet_CNN)(model = model, rank = rank, world_size = world_size)
 
         T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay' : 1e-3},
                 loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
@@ -66,23 +64,15 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
                 eval_transforms = (center_crop,), final_collective_transforms = tuple(),
                 scale_loss = True, gradient_clipnorm = 2.0)
 
-        del model
-
         torch.cuda.empty_cache()
         gc.collect()
-
-        dt, dv = get_loaders(rank, world_size, batch_size = 512) 
 
         logs = T.fit(dt, dv, EPOCHS, CARDINALITY, name, save = False, save_init = False, verbose = False, validate = False)
 
         if rank == 0: 
             logs_to_pickle(logs, name)
-            #plot_logs(logs, EPOCHS, name, steps = CARDINALITY)
-            
+           
         T.m.eval()
-
-        #T.mm.reset_ticket()
-        #T.mm.prune_by_mg(sp, iteration = 1, root = 0)
 
         T.evaluate(dt)
 
@@ -90,7 +80,7 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
             train_res = T.metric_results()
             print("Train Results: ", train_res)
 
-            T.mm.export_ticket(old_name, entry_name = f"{sp * 100:.3e}")
+            #T.mm.export_ticket(old_name, entry_name = f"{sp * 100:.3e}")
 
         T.evaluate(dv)
         
@@ -104,5 +94,3 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
                 json.dump(train_res, f, indent = 6)
         
         torch.distributed.barrier(device_ids = [rank])
-
-        #torch.distributed.barrier(device_ids = [rank])
