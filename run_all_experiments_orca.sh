@@ -18,6 +18,7 @@ mkdir -p "$LOG_DIR"
 
 # --- Define iteration parameters ---
 MODEL_ARCHS=(1 0)         # 1=VGG, 0=ResNet
+CONCRETE_METHODS =(1 0)         # 1=GradBalance, 0=Multiplier
 SEARCH_DURS=(1 0)         # 1=Short, 0=Long
 TRAIN_SCHEMES=(1 0)       # 1=Init, 0=Rewind
 PRUNE_METHODS=(0 1 2 3 4) # 5 different pruning criteria
@@ -27,32 +28,32 @@ RUN_TAGS=(f s t)          # 3 replicate runs for each configuration
 for method in "${PRUNE_METHODS[@]}"; do
   for scheme in "${TRAIN_SCHEMES[@]}"; do
     for duration in "${SEARCH_DURS[@]}"; do
-      for arch in "${MODEL_ARCHS[@]}"; do
-        for tag in "${RUN_TAGS[@]}"; do
+      for concrete in "${CONCRETE_METHODS[@]}"; do
+        for arch in "${MODEL_ARCHS[@]}"; do
+          for tag in "${RUN_TAGS[@]}"; do
+            # --- QUEUE MANAGEMENT ---
+            # This loop waits until there is a free slot in the queue.
+            while true; do
+              # Get the number of jobs currently running or pending for this user.
+              current_jobs=$(squeue -u "$USER" -h | wc -l)
+              if [[ "$current_jobs" -lt "$MAX_JOBS" ]]; then
+                echo "Queue has space ($current_jobs/$MAX_JOBS jobs active). Proceeding."
+                break # Exit the waiting loop
+              else
+                echo "Queue is full ($current_jobs/$MAX_JOBS jobs active). Waiting 60s..."
+                sleep 60 # Wait before checking again
+              fi
+            done
 
-          # --- QUEUE MANAGEMENT ---
-          # This loop waits until there is a free slot in the queue.
-          while true; do
-            # Get the number of jobs currently running or pending for this user.
-            current_jobs=$(squeue -u "$USER" -h | wc -l)
-            if [[ "$current_jobs" -lt "$MAX_JOBS" ]]; then
-              echo "Queue has space ($current_jobs/$MAX_JOBS jobs active). Proceeding."
-              break # Exit the waiting loop
-            else
-              echo "Queue is full ($current_jobs/$MAX_JOBS jobs active). Waiting 30s..."
-              sleep 30 # Wait before checking again
-            fi
-          done
+            # --- Construct job name and options string ---
+            options_str="$method,$scheme,$duration,$concrete,$arch"
+            job_name="concrete_evaluation_${tag}_${options_str//,/_}"
+            log_file="$LOG_DIR/${job_name}.log"
 
-          # --- Construct job name and options string ---
-          options_str="$method,$scheme,$duration,$arch"
-          job_name="concrete_evaluation_${tag}_${options_str//,/_}"
-          log_file="$LOG_DIR/${job_name}.log"
+            echo "--- Submitting job: $job_name ---"
 
-          echo "--- Submitting job: $job_name ---"
-
-          # --- Submit job ---
-          sbatch <<EOF
+            # --- Submit job ---
+            sbatch <<EOF
 #!/bin/bash
 #SBATCH --job-name=${job_name}
 #SBATCH --gres=gpu:4
@@ -82,6 +83,6 @@ EOF
 done
 
 echo "============================================================"
-echo "All 120 jobs have been submitted to the Slurm queue."
+echo "All 240 jobs have been submitted to the Slurm queue."
 echo "The script will now exit. Use 'squeue -u \$USER' to monitor progress."
 echo "============================================================"
