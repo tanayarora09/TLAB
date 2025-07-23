@@ -27,10 +27,11 @@ if __name__ == '__main__':
     FINAL_SP = 32
 
     concrete_prefix = "concrete_rewind/long/"
+    concrete_postfix = "/finetuned"
 
     concrete_types = list(reversed(["loss", "kldlogit", "gradmatch", ]))#"msefeature", ]))#"gradnorm"]))
     concrete_names = {"loss": "Task Loss", "gradnorm": "Gradient Norm", "kldlogit": "Parent Logit KLD", "msefeature": "Parent Feature MSE", "gradmatch": "Parent Gradient MSE"}
-    cname = lambda x: concrete_prefix + x + "/" + x
+    cname = lambda x: concrete_prefix + x + concrete_postfix
 
     names = ["rbt", "snip", "grasp", "synflow", "imp",]  
     names.extend(cname(ctype) for ctype in concrete_types)

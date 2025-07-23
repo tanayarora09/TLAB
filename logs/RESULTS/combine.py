@@ -1,3 +1,4 @@
+"""
 import json 
 import numpy as np
 
@@ -110,6 +111,7 @@ from pathlib import Path
 # --- Configuration and Mappings ---
 # These maps translate the integer codes from the submission script to directory/file names.
 ARCH_MAP = {1: 'vgg16', 0: 'resnet20'}
+CONCRETE_MAP = {1: 'gradbalance', 0: 'multiplier'}
 SCHEME_MAP = {1: 'init', 0: 'rewind'}
 DURATION_MAP = {1: 'short', 0: 'long'}
 # This map is based on the CONCRETE_EXPERIMENTS dictionary in concrete_final.py
@@ -125,105 +127,109 @@ INPUT_DIR = Path("./logs/RESULTS")
 
 # Define the experiment parameter space, matching the submission script
 ARCH_CODES = [1, 0]
+CONCRETE_CODES = [1, 0]
 SCHEME_CODES = [1, 0]
 DURATION_CODES = [1, 0]
 METHOD_CODES = [0, 1, 2, 3, 4]
 
 # --- Main Collation Loop ---
 for arch_code in ARCH_CODES:
-    for scheme_code in SCHEME_CODES:
-        for duration_code in DURATION_CODES:
-            for method_code in METHOD_CODES:
+    for concrete_code in CONCRETE_CODES:
+        for scheme_code in SCHEME_CODES:
+            for duration_code in DURATION_CODES:
+                for method_code in METHOD_CODES:
 
-                # --- 1. Construct Paths and Names ---
-                arch_name = ARCH_MAP[arch_code]
-                scheme_name = SCHEME_MAP[scheme_code]
-                duration_name = DURATION_MAP[duration_code]
-                method_name = METHOD_MAP[method_code]
+                    # --- 1. Construct Paths and Names ---
+                    arch_name = ARCH_MAP[arch_code]
+                    concrete_name = CONCRETE_MAP[concrete_code]
+                    scheme_name = SCHEME_MAP[scheme_code]
+                    duration_name = DURATION_MAP[duration_code]
+                    method_name = METHOD_MAP[method_code]
 
-                print(f"--- Processing: {arch_name}/{scheme_name}/{duration_name}/{method_name} ---")
+                    print(f"--- Processing: {arch_name}/{scheme_name}/{duration_name}/{concrete_code}/{method_name} ---")
 
-                # Define the final output directory and create it if it doesn't exist
-                output_dir = Path(f"./{arch_name}/{scheme_name}/{duration_name}/{method_name}")
-                output_dir.mkdir(parents=True, exist_ok=True)
-                
-                # Base name for the four output JSON files
-                output_file_base = output_dir / method_name
-
-                # --- 2. Initialize Data Dictionaries for this Configuration ---
-                output_val_acc = dict()
-                output_val_loss = dict()
-                output_train_acc = dict()
-                output_train_loss = dict()
-
-                # --- 3. Determine Sparsity Levels ---
-                # VGG has more layers, so it has a different sparsity range
-                sparsity_indexes = range(2, 43, 2) if arch_code == 1 else range(2, 33, 2)
-
-                # --- 4. Loop Through Each Sparsity Level ---
-                for spidx in sparsity_indexes:
-                    sparsity_percent = 0.8 ** spidx
-
-                    # Temp lists to hold results from the 3 replicates (f, s, t)
-                    tmp_val_acc, tmp_val_loss = [], []
-                    tmp_train_acc, tmp_train_loss = [], []
+                    # Define the final output directory and create it if it doesn't exist
+                    output_dir = Path(f"./{arch_name}/{scheme_name}/{duration_name}/{concrete_code}/{method_name}")
+                    output_dir.mkdir(parents=True, exist_ok=True)
                     
-                    # --- 5. Loop Through Replicates (f, s, t) ---
-                    for tag in RUN_TAGS:
-                        # Construct the expected input filename based on the logic in the experiment scripts
-                        prefix_name = f"{method_name}_{scheme_name}_{duration_name}_{arch_name}_concrete_evaluation_{tag}"
-                        input_filename = INPUT_DIR / f"{prefix_name}_{spidx:02d}.json"
+                    finetuned = ['original', 'finetuned']
 
-                        try:
-                            with open(input_filename, 'r') as f:
-                                # The original script had a minor nesting error in output. Correcting it here.
-                                # It should be `result = json.load(f)["finetuned"]` not `...["results"]["finetuned"]`
-                                result = json.load(f)["finetuned"]
+                    for finetune in finetuned:
+
+                        # Base name for the four output JSON files
+                        output_file_base = output_dir / finetune
+
+                        # --- 2. Initialize Data Dictionaries for this Configuration ---
+                        output_val_acc = dict()
+                        output_val_loss = dict()
+                        output_train_acc = dict()
+                        output_train_loss = dict()
+
+                        # --- 3. Determine Sparsity Levels ---
+                        # VGG has more layers, so it has a different sparsity range
+                        sparsity_indexes = range(2, 43, 2) if arch_code == 1 else range(2, 33, 2)
+
+                        # --- 4. Loop Through Each Sparsity Level ---
+                        for spidx in sparsity_indexes:
+                            sparsity_percent = 0.8 ** spidx
+
+                            # Temp lists to hold results from the 3 replicates (f, s, t)
+                            tmp_val_acc, tmp_val_loss = [], []
+                            tmp_train_acc, tmp_train_loss = [], []
                             
-                            # Append results from this replicate
-                            tmp_val_acc.append(result['val_accuracy'] * 100)
-                            tmp_val_loss.append(result['val_loss'])
-                            tmp_train_acc.append(result['accuracy'] * 100)
-                            tmp_train_loss.append(result['loss'])
+                            # --- 5. Loop Through Replicates (f, s, t) ---
+                            for tag in RUN_TAGS:
+                                # Construct the expected input filename based on the logic in the experiment scripts
+                                prefix_name = f"{method_name}_{scheme_name}_{duration_name}_{concrete_name}_{arch_name}_concrete_evaluation_{tag}"
+                                input_filename = INPUT_DIR / f"{prefix_name}_{spidx:02d}.json"
 
-                        except FileNotFoundError:
-                            print(f"  WARNING: File not found, skipping: {input_filename}")
-                        except KeyError:
-                            print(f"  WARNING: 'finetuned' key missing in {input_filename}")
+                                try:
+                                    with open(input_filename, 'r') as f:
+                                        result = json.load(f)[finetune]
+                                    
+                                    # Append results from this replicate
+                                    tmp_val_acc.append(result['val_accuracy'] * 100)
+                                    tmp_val_loss.append(result['val_loss'])
+                                    tmp_train_acc.append(result['accuracy'] * 100)
+                                    tmp_train_loss.append(result['loss'])
 
-                    # --- 6. Aggregate and Store Results ---
-                    # If no files were found for this sparsity level, continue
-                    if not tmp_val_acc:
-                        continue
-                    
-                    # Convert lists to numpy arrays for stats
-                    np_val_acc = np.asarray(tmp_val_acc)
-                    np_val_loss = np.asarray(tmp_val_loss)
-                    np_train_acc = np.asarray(tmp_train_acc)
-                    np_train_loss = np.asarray(tmp_train_loss)
-                    
-                    # Key for the output dictionary is the sparsity percentage
-                    key = f"{sparsity_percent * 100:.4f}"
+                                except FileNotFoundError:
+                                    print(f"  WARNING: File not found, skipping: {input_filename}")
+                                except KeyError:
+                                    print(f"  WARNING: 'finetuned' key missing in {input_filename}")
 
-                    output_val_acc[key] = {"mean": np_val_acc.mean(), "std": np_val_acc.std()}
-                    output_val_loss[key] = {"mean": np_val_loss.mean(), "std": np_val_loss.std()}
-                    output_train_acc[key] = {"mean": np_train_acc.mean(), "std": np_train_acc.std()}
-                    output_train_loss[key] = {"mean": np_train_loss.mean(), "std": np_train_loss.std()}
-                
-                # --- 7. Save the Collated JSON Files for this Configuration ---
-                with open(f"{output_file_base}_acc_train.json", 'w') as f:
-                    json.dump(output_train_acc, f, indent=4)
-                
-                with open(f"{output_file_base}_acc_val.json", 'w') as f:
-                    json.dump(output_val_acc, f, indent=4)
+                            # --- 6. Aggregate and Store Results ---
+                            # If no files were found for this sparsity level, continue
+                            if not tmp_val_acc:
+                                continue
+                            
+                            # Convert lists to numpy arrays for stats
+                            np_val_acc = np.asarray(tmp_val_acc)
+                            np_val_loss = np.asarray(tmp_val_loss)
+                            np_train_acc = np.asarray(tmp_train_acc)
+                            np_train_loss = np.asarray(tmp_train_loss)
+                            
+                            # Key for the output dictionary is the sparsity percentage
+                            key = f"{sparsity_percent * 100:.4f}"
 
-                with open(f"{output_file_base}_loss_train.json", 'w') as f:
-                    json.dump(output_train_loss, f, indent=4)
+                            output_val_acc[key] = {"mean": np_val_acc.mean(), "std": np_val_acc.std()}
+                            output_val_loss[key] = {"mean": np_val_loss.mean(), "std": np_val_loss.std()}
+                            output_train_acc[key] = {"mean": np_train_acc.mean(), "std": np_train_acc.std()}
+                            output_train_loss[key] = {"mean": np_train_loss.mean(), "std": np_train_loss.std()}
+                        
+                        # --- 7. Save the Collated JSON Files for this Configuration ---
+                        with open(f"{output_file_base}_acc_train.json", 'w') as f:
+                            json.dump(output_train_acc, f, indent=4)
+                        
+                        with open(f"{output_file_base}_acc_val.json", 'w') as f:
+                            json.dump(output_val_acc, f, indent=4)
 
-                with open(f"{output_file_base}_loss_val.json", 'w') as f:
-                    json.dump(output_val_loss, f, indent=4)
+                        with open(f"{output_file_base}_loss_train.json", 'w') as f:
+                            json.dump(output_train_loss, f, indent=4)
 
-                print(f"  Successfully saved 4 collated files to {output_dir}\n")
+                        with open(f"{output_file_base}_loss_val.json", 'w') as f:
+                            json.dump(output_val_loss, f, indent=4)
+
+                        print(f"  Successfully saved 4 collated files to {output_dir}\n")
 
 print("--- All configurations processed. ---")
-"""
