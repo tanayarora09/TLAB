@@ -18,7 +18,7 @@ mkdir -p "$LOG_DIR"
 
 # --- Define iteration parameters ---
 MODEL_ARCHS=(1 0)         # 1=VGG, 0=ResNet
-CONCRETE_METHODS =(1 0)         # 1=GradBalance, 0=Multiplier
+CONCRETE_METHODS=(1 0)  # 1=GradBalance, 0=Multiplier
 SEARCH_DURS=(1 0)         # 1=Short, 0=Long
 TRAIN_SCHEMES=(1 0)       # 1=Init, 0=Rewind
 PRUNE_METHODS=(0 1 2 3 4) # 5 different pruning criteria
