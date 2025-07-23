@@ -29,6 +29,12 @@ class BaseModel(nn.Module):
 
     """
 
+    def force_init(self, rank, world_size):
+        super().__init__()
+        self.RANK = rank
+        self.WORLD_SIZE = world_size
+        self.DISTRIBUTED = world_size > 1
+
     def init_base(self, rank: int, world_size: int):
 
         """

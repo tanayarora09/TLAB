@@ -1,4 +1,4 @@
-"""import json 
+import json 
 import numpy as np
 
 output_valA = dict()
@@ -6,13 +6,13 @@ output_valL = dict()
 output_A = dict()
 output_L = dict()
 
-out_name = "vgg16/..."
-prefix_name = "..."
+out_name = "resnet20/snip"
+prefix_name = "snip_resnet20"
 
-sparsity_indexes = list(range(2,33,2)) # RESNET
-sparsity_indexes = list(range(2,43,2)) # VGG
+sparsity_indexes = [24, 26, 28, 30, 32] #list(range(2,33,2)) # RESNET
+#sparsity_indexes = [26, 28, 30, 34, 38, 42] #list(range(2,43,2)) # VGG
 
-is_adding = False
+is_adding = True
 
 #sparsity_indexes = list(range(26))
 
@@ -28,11 +28,18 @@ for spidx in sparsity_indexes:
     tmpL = list()
 
     for rep in range(reps):
-        name = f"{prefix_name}_{rep}_{spidx}.json"
+        postfix = "f"
+        
+        if rep == reps-1:
+            postfix = "s"
+            rep = 0
+
+        name = f"{prefix_name}_{postfix}_{rep}_{spidx}.json"
+        
         with open(name, 'r') as f:
             print(f"Opened {name}")
         #with open(f"imp_vgg16_{rep}_{spidx}.json", 'r') as f:
-            result = json.load(f)["results"]["finetuned"]
+            result = json.load(f)
 
         tmpvalA.append(result['val_accuracy'] * 100)
         tmpvalL.append(result['val_loss'] )
@@ -93,8 +100,8 @@ if is_adding:
 
     with open(f"{out_name}_loss_val.json", 'w') as f:
         json.dump(output_valL, f, indent = 6 ) 
-"""
 
+"""
 import json
 import numpy as np
 import os
@@ -219,3 +226,4 @@ for arch_code in ARCH_CODES:
                 print(f"  Successfully saved 4 collated files to {output_dir}\n")
 
 print("--- All configurations processed. ---")
+"""

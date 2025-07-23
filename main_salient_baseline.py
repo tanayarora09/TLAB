@@ -81,7 +81,7 @@ if __name__ == "__main__":
 
     #main(normal.main, name, args)
     
-    from training import saliency_methods
+    from training import saliency_training
     """for sp in args:
         print("--------------------------------------------------------------")
         print("SPARSITY ", sp)
@@ -97,4 +97,4 @@ if __name__ == "__main__":
         print("--------------------------------------------------------------")
         print("EXPERIMENT NUMBER ", exp)
         print("--------------------------------------------------------------")      
-        main(saliency_methods.main, name + f"_{exp}", args)
+        main(saliency_training.main, name + f"_{exp}", args)

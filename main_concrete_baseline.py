@@ -72,10 +72,10 @@ if __name__ == "__main__":
     print("NO SEED: ", SEED)
     print("--------------------------------------------------------------")
     
-    from training import concrete_final
+    from training import concrete_training
     
     for exp in range(num_exp):
         print("--------------------------------------------------------------")
         print("EXPERIMENT NUMBER ", exp)
         print("--------------------------------------------------------------")      
-        main(concrete_final.main, name + f"_{exp}", args)
+        main(concrete_training.main, name + f"_{exp}", args)

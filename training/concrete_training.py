@@ -50,7 +50,8 @@ def ddp_network(rank,
 
 def run_concrete(rank, world_size, 
                  name, is_vgg,  
-                 type_of_concrete, 
+                 type_of_concrete,
+                 is_gradnorm, 
                  concrete_epochs,
                  state, spe, spr, 
                  dt, transforms,):
@@ -73,7 +74,7 @@ def run_concrete(rank, world_size,
 
     search = CONCRETE_EXPERIMENTS[type_of_concrete][1](**inp_args)
 
-    search.build(spr, torch.optim.Adam, optimizer_kwargs = {'lr': 1e-1}, transforms = transforms, use_gradnorm_approach = True)
+    search.build(spr, torch.optim.Adam, optimizer_kwargs = {'lr': 1e-1}, transforms = transforms, use_gradnorm_approach = is_gradnorm)
 
     logs, ticket = search.optimize_mask(dt, concrete_epochs, CARDINALITY, dynamic_epochs = False, reduce_epochs = [120])
 
@@ -185,19 +186,18 @@ def run_fit_and_export(rank, world_size,
         plot_logs(logs, EPOCHS, name, CARDINALITY, start = start_epochs)
 
 
-
-
 def main(rank, world_size, name: str, args: list, **kwargs):
 
     is_vgg = args.pop(-1) == 1 # 1 is yes, 0 is no
+    is_gradnorm = args.pop(-1) == 1 # 1 is yes, 0 is no
     is_short = args.pop(-1) == 1 # 1 is yes, 0 is no
     is_init = args.pop(-1) == 1 # 1 is yes, 0 is no
     type_of_concrete = args.pop(-1) # 0-4
-    if rank == 0: print(f"VGG: {is_vgg} | INIT: {is_init} | TYPE: {CONCRETE_EXPERIMENTS[type_of_concrete][0]}")
+    if rank == 0: print(f"VGG: {is_vgg} | GradBalance: {is_gradnorm} | INIT: {is_init} | TYPE: {CONCRETE_EXPERIMENTS[type_of_concrete][0]}")
 
     sp_exp = list(range(2, 43 if is_vgg else 33, 2))
 
-    name = f"{CONCRETE_EXPERIMENTS[type_of_concrete][0].lower()}_{'init' if is_init else 'rewind'}_{'short' if is_short else 'long'}_{'vgg16' if is_vgg else 'resnet20'}_{name}" 
+    name = f"{CONCRETE_EXPERIMENTS[type_of_concrete][0].lower()}_{'gradbalance' if is_gradnorm else 'multiplier'}_{'init' if is_init else 'rewind'}_{'short' if is_short else 'long'}_{'vgg16' if is_vgg else 'resnet20'}_{name}" 
 
     start_epochs = 0 if is_init else (5 if is_vgg else 3)
     concrete_epochs = 20 if is_short else 160
@@ -213,7 +213,7 @@ def main(rank, world_size, name: str, args: list, **kwargs):
 
     dt, dv = get_loaders(rank, world_size, batch_size = 512)
 
-    if is_init: 
+    if not is_init: 
         ostate, _ = run_start_train(rank = rank, world_size = world_size, 
                                             name = name, is_vgg = is_vgg, start_epochs = start_epochs,
                                             dt = dt, dv = dv, transforms = (dataAug, resize, normalize, center_crop,))
@@ -227,7 +227,7 @@ def main(rank, world_size, name: str, args: list, **kwargs):
 
         state, ticket = run_concrete(rank = rank, world_size = world_size, name = name, 
                                      is_vgg = is_vgg, type_of_concrete = type_of_concrete, 
-                                     concrete_epochs = concrete_epochs, state = ostate, 
+                                     is_gradnorm = is_gradnorm, concrete_epochs = concrete_epochs, state = ostate, 
                                      spe = spe, spr = spr, dt = dt, transforms = (resize, normalize, dataAug,),)
 
         torch.cuda.empty_cache()

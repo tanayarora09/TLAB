@@ -28,21 +28,24 @@ import h5py
 EPOCHS = 160
 CARDINALITY = 98
 
-def ddp_network(rank, world_size, is_vgg, depth = 16):
 
-    if not is_vgg: depth = 20
-    
-    if is_vgg:
-        model = VGG(depth = depth, rank = rank, world_size = world_size, custom_init = True) 
-    else: 
-        model =  ResNet(depth = depth, rank = rank, world_size = world_size, custom_init = True)
-    
-    model = model.cuda()
+CONCRETE_EXPERIMENTS = {0: ("Loss", SNIPConcrete, SNIP_Pruner, LossSearch),
+                        1: ("Gradnorm", GraSPConcrete, GraSP_Pruner, GradientNormSearch),
+                        2: ("KldLogit", KldLogit, KldLogit_Pruner, KldLogit_Pruner),
+                        3: ("MseFeature", NormalizedMseFeatures, MSE_Pruner, NormalizedMSESearch),
+                        4: ("GradMatch", StepAlignmentConcrete, GradMatch_Pruner, GradMatchSearch)}
 
-    model = DDP(model, 
-        device_ids = [rank],
-        output_device = rank, 
-        gradient_as_bucket_view = True)
+def ddp_network(rank, world_size, is_vgg):
+
+    depth = 16 if is_vgg else 20
+    
+    model = (VGG if is_vgg else ResNet)(depth = depth, rank = rank, world_size = world_size, custom_init = True).cuda()
+    
+    if world_size > 1:
+        model = DDP(model, 
+            device_ids = [rank],
+            output_device = rank, 
+            gradient_as_bucket_view = True)
 
     return model
 
@@ -51,62 +54,71 @@ def _get_train(rank, world_size):
     dt, _ = get_loaders(rank, world_size, batch_size = 512, validation = False)
     return dt
 
-def get_salient_ticket(rank, world_size, state, is_vgg, transforms, spr):
+def get_salient_ticket(rank, world_size, steps, state, type_of_concrete, is_vgg, transforms, spr):
 
     model = ddp_network(rank, world_size, is_vgg, depth = 16)
     model.load_state_dict(state)
 
     if rank == 0:
-        pruner = GraSP_Pruner(0, 1, model, )
+
+        model_to_inspect = model.module if world_size > 1 else model
+
+        inp_args = {'rank': 0, 'world_size': 1, 'model': model_to_inspect}
+
+        if type_of_concrete == 4: 
+            captures = []
+            fcaptures = []
+            for bname, block in model_to_inspect.named_children():
+                for lname, layer in block.named_children():
+                    if lname.endswith("relu"): captures.append(layer)
+                    elif lname.endswith("fc"): fcaptures.append((layer, lambda x: torch.softmax(x, dim = 1)))
+            inp_args.update({"capture_layers": captures, "fake_capture_layers": fcaptures})
+
+        pruner = CONCRETE_EXPERIMENTS[type_of_concrete][2](**inp_args)
         pruner.build(spr, transforms, input = None)
-        ticket, improved = pruner.grad_mask(improved = "2")
+        ticket = pruner.grad_mask(steps = steps)
         pruner.finish()
 
 
     else:
         ticket = torch.zeros(model.module.num_prunable, dtype = torch.bool, device = 'cuda')
-        improved = torch.zeros(model.module.num_prunable, dtype = torch.bool, device = 'cuda')
 
-    torch.distributed.barrier(device_ids = [rank])
-    torch.distributed.broadcast(ticket, src = 0)
-    torch.distributed.barrier(device_ids = [rank])
-    torch.distributed.broadcast(improved, src = 0)
+    if world_size > 1:
+        torch.distributed.barrier(device_ids = [rank])
+        torch.distributed.broadcast(ticket, src = 0)
 
-    return state, (ticket, improved)
+    return state, ticket
 
 
-def get_concrete_ticket_and_imp(rank, world_size, state, is_vgg, dt, transforms, spr, name, imp_name):
+def get_concrete_ticket_and_imp(rank, world_size, state, type_of_concrete, is_gradnorm, is_vgg, dt, transforms, spr, name, imp_name):
 
     model = ddp_network(rank, world_size, is_vgg, depth = 16)
     model.load_state_dict(state)
 
-    imp_ticket = model.module.load_ticket(imp_name, root = 0, entry_name = f"{spr*100:.3f}")
+    model_to_inspect = model.module if world_size > 1 else model
 
-    search = GraSPConcrete(rank, world_size, model, )# capture_layers = captures, fake_capture_layers = fcaptures)
+    inp_args = {'rank': 0, 'world_size': 1, 'model': model_to_inspect}
+
+    if type_of_concrete == 4: 
+        captures = []
+        fcaptures = []
+        for bname, block in model_to_inspect.named_children():
+            for lname, layer in block.named_children():
+                if lname.endswith("relu"): captures.append(layer)
+                elif lname.endswith("fc"): fcaptures.append((layer, lambda x: torch.softmax(x, dim = 1)))
+        inp_args.update({"capture_layers": captures, "fake_capture_layers": fcaptures})
+
+    search = CONCRETE_EXPERIMENTS[type_of_concrete][1](**inp_args)
     
-    search.build(spr, torch.optim.Adam, optimizer_kwargs = {'lr': 1e-1}, transforms = transforms)
+    search.build(spr, torch.optim.Adam, optimizer_kwargs = {'lr': 1e-1}, transforms = transforms, use_gradnorm_approach = is_gradnorm)
 
     logs, ticket = search.optimize_mask(dt, 15, CARDINALITY, dynamic_epochs = False)
 
     search.finish()
 
-    if rank == 0: plot_logs_concrete(logs, name = name + f"_{100 * spr:.3f}")
+    if rank == 0: plot_logs_concrete(logs, name = name + f"_{100 * spr:.3e}")
 
-    #print(f"Searched Ticket Sparsity: {100 * (ticket.sum()/ticket.numel()):.2f}")
-
-    return state, (ticket, imp_ticket)
-
-
-def _make_trainer(rank, world_size, state, is_vgg, ticket):
-
-    model = ddp_network(rank, world_size, is_vgg, depth = 16)
-    model.load_state_dict(state)
-    model.module.set_ticket(ticket)
-    
-    if (rank == 0):
-        print(model.module.sparsity, "\n")
-
-    return VGG_CNN(model, rank, world_size)
+    return state, ticket
 
 def _print_collect_return_fitness(rank, name, fitness):
     print(f"[rank {rank}] {name.capitalize()} Fitness: ", fitness)
@@ -115,17 +127,28 @@ def _print_collect_return_fitness(rank, name, fitness):
     dist.barrier(device_ids = [rank])
     return fitness.item()
 
-def run_check_and_export(rank, world_size, state, spr, concrete_ticket,
-                         salient_tickets, imp_ticket, is_vgg, dt, transforms):
+def run_check_and_export(rank, world_size, state, spr, type_of_search, is_vgg, dt, transforms):
 
 
     model = ddp_network(rank, world_size, is_vgg, depth = 16)
     model.load_state_dict(state)
 
-    
-    search = GradientNormSearch(rank, world_size, 
-                                model.module, dt, 
-                                spr, transforms,)
+    model_to_inspect = model.module if world_size > 1 else model
+
+    inp_args = {'rank': 0, 'world_size': 1, 'model': model_to_inspect, 'input': dt, 
+                'sparsity_rate': spr, 'transforms': transforms}
+
+    if type_of_search == 4: 
+        captures = []
+        fcaptures = []
+        for bname, block in model_to_inspect.named_children():
+            for lname, layer in block.named_children():
+                if lname.endswith("relu"): captures.append(layer)
+                elif lname.endswith("fc"): fcaptures.append((layer, lambda x: torch.softmax(x, dim = 1)))
+        inp_args.update({"capture_layers": captures, "fake_capture_layers": fcaptures})
+
+
+    search = CONCRETE_EXPERIMENTS[type_of_search][3](**inp_args)
 
     output = dict()
 
@@ -149,8 +172,11 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
 
     #is_grasp = sp_exp.pop(-1) == 1
     is_vgg = sp_exp.pop(-1) == 1
+    type_of_concrete = sp_exp.pop(-1)
 
-    imp_name = f"imp_{"vgg16" if is_vgg else "resnet20"}_{name[-1]}"
+    if rank == 0: print(f"Running IMP Comparison for: {CONCRETE_EXPERIMENTS[type_of_concrete][0]} on {'VGG-16' if is_vgg else 'ResNet-20'}")
+
+    imp_name = f"imp_{"vgg16" if is_vgg else "resnet20"}_2"#{name[-1]}"
 
     dataAug = torch.jit.script(DataAugmentation().to('cuda'))
     resize = torch.jit.script(Resize().to('cuda'))
@@ -167,26 +193,37 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
 
         spr = 0.8**spe
 
+        _ = BaseModel()
+        _ = _.force_init(rank, world_size)
+        imp_ticket = _.load_ticket(imp_name, root = 0, entry_name = f"{spr*100:.3e}")
+
         init_name = "init_" + name
 
-        ckpt = torch.load(f"./logs/WEIGHTS/init_{imp_name}_100.00.pt", map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}, 
+        ckpt = torch.load(f"./logs/WEIGHTS/init_{imp_name}_{100.0:.3e}.pt", map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}, 
                           weights_only = True)['model']
 
-        _, salient_tickets = get_salient_ticket(rank, world_size, ckpt, is_vgg, (resize, normalize, center_crop,), spr)
+        _, salient_ticket = get_salient_ticket(rank, world_size, 1, ckpt, type_of_concrete, is_vgg, (resize, normalize, center_crop,), spr)
 
-        _, (concrete_ticket, imp_ticket) = get_concrete_ticket_and_imp(rank, world_size, ckpt, is_vgg, dt, (resize, normalize, center_crop,), spr, init_name, imp_name)
+        _, iterative_ticket = get_salient_ticket(rank, world_size, 100, ckpt, type_of_concrete, is_vgg, (resize, normalize, center_crop,), spr)
+
+        _, (concrete_ticket) = get_concrete_ticket_and_imp(rank, world_size, ckpt, type_of_concrete, True, is_vgg, dt, 
+                                                           (resize, normalize, center_crop,), spr, init_name, imp_name)
+
+        _, (lmcrete_ticket) = get_concrete_ticket_and_imp(rank, world_size, ckpt, type_of_concrete, False, is_vgg, dt, 
+                                                          (resize, normalize, center_crop,), spr, init_name, imp_name)
+
 
         log = run_check_and_export(rank, world_size, ckpt, spr, concrete_ticket, salient_tickets, 
                                    imp_ticket, is_vgg, partial, (resize, normalize, center_crop,))
 
-        if rank == 0: print(f"SPARSITY: {spr * 100 :.2f} || INIT || {log.items()}")
+        if rank == 0: print(f"SPARSITY: {spr * 100 :.3e} || INIT || {log.items()}")
 
         logs[spe]['init'] = log
         
         
         rewind_name = "rewind_" + name
 
-        ckpt = torch.load(f"./logs/WEIGHTS/rewind_{imp_name}_100.00.pt", map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}, 
+        ckpt = torch.load(f"./logs/WEIGHTS/rewind_{imp_name}_{100.0:.3e}.pt", map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}, 
                           weights_only = True)['model']
 
         _, salient_ticket = get_salient_ticket(rank, world_size, ckpt, is_vgg, (resize, normalize, center_crop,), spr)
@@ -196,7 +233,7 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
         log = run_check_and_export(rank, world_size, ckpt, spr, concrete_ticket, salient_ticket, 
                                    imp_ticket, is_vgg, partial, (resize, normalize, center_crop,))
 
-        if rank == 0: print(f"SPARSITY: {spr * 100 :.2f} || REWIND || {log.items()}")
+        if rank == 0: print(f"SPARSITY: {spr * 100 :.3e} || REWIND || {log.items()}")
 
         logs[spe]['rewind'] = log
         

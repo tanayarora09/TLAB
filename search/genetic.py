@@ -20,7 +20,7 @@ import time
 from typing import Callable, List, Tuple
 from tqdm import tqdm 
 
-__all__ = ["GradientNormSearch", "NormalizedMSESearch", "KldLogitSearch", "OldKldSearch", "LossSearch"]
+__all__ = ["GradientNormSearch", "NormalizedMSESearch", "KldLogitSearch", "OldKldSearch", "LossSearch", "GradMatchSearch"]
  
 
 class BaseGeneticSearch:
@@ -303,7 +303,6 @@ class KldLogitSearch(BaseGeneticSearch):
 
         if not self.running:
             logits = self.mm(self.inp)
-            logits.div_(logits.sum(dim = 1, keepdim = True))
             self.full_activations = logits.log_softmax(1)
             return
         
@@ -314,7 +313,6 @@ class KldLogitSearch(BaseGeneticSearch):
             for T in self.transforms: x = T(x)
             
             logits = self.mm(x)
-            logits.div_(logits.sum(dim = 1, keepdim = True))
             activation_mask = (logits).log_softmax(1)
 
             self.full_activations.append(activation_mask)
@@ -333,7 +331,6 @@ class KldLogitSearch(BaseGeneticSearch):
                 torch.cuda.empty_cache()
 
                 logits = self.mm(self.inp)
-                logits.div_(logits.sum(dim = 1, keepdim = True))
                 curr_activations = logits.log_softmax(1)
 
                 return F.kl_div(curr_activations, self.full_activations, reduction = "batchmean", log_target = True).item()
@@ -353,6 +350,71 @@ class KldLogitSearch(BaseGeneticSearch):
                 curr_activations = logits.log_softmax(1)
 
                 kl_tr += F.kl_div(curr_activations, self.full_activations[idx], reduction = "batchmean", log_target = True)
+                cnt += 1
+            
+            return kl_tr.div_(cnt.float()).item()
+
+class GradMatchSearch(BaseGeneticSearch):
+
+    def __init__(self, rank: int, world_size: int, model: BaseModel,
+                 input: torch.Tensor | DataLoader, sparsity_rate: float,
+                 transforms: Tuple[Callable] = tuple(),
+                 input_sampler_offset: int = None,
+                 reverse_fitness_scores: bool = False,):
+        
+        super().__init__(rank, world_size, model, input, sparsity_rate, transforms, 
+                         input_sampler_offset, reverse_fitness_scores)
+        
+        self.full_grads = None
+
+    def _prepare_for_fitness_calculation(self):
+        self.make_full_grads()
+
+    def make_full_grads(self):
+
+        if self.full_grads is not None: return
+
+        self.full_grads = list()
+
+        for x, y, *_ in self.inp:
+            x = x.cuda()
+            for T in self.transforms: x = T(x)
+            
+            loss = F.cross_entropy(self.mm(x), y)
+            grad_mask =  [grad.detach() for grad in torch.autograd.grad(loss, [layer.weight for layer in self.mm.lottery_layers])]
+            grad_mask = [grad.sub(grad.mean()).div(grad.std()).view(-1) for grad in grad_mask]
+
+            self.full_grads.append(grad_mask)
+
+    def _calculate_fitness(self, ticket):
+
+        self.mm.eval()
+        self.mm.set_ticket(ticket)
+
+        with torch.no_grad():
+
+            kl_tr = torch.as_tensor(0.0, dtype = torch.float64, device = 'cuda')
+            cnt = torch.as_tensor(0, dtype = torch.int64, device = 'cuda')
+
+            for idx, (x, y, *_) in enumerate(self.inp):
+                
+                torch.cuda.empty_cache()
+
+                x = x.cuda()
+                for T in self.transforms: x = T(x)
+
+                loss = F.cross_entropy(self.mm(x), y)
+                grad_mask = [grad.detach() for grad in torch.autograd.grad(loss, [layer.weight for layer in self.mm.lottery_layers])]
+                grad_mask = [grad.sub(grad.mean()).div(grad.std()).view(-1) for grad in grad_mask]
+
+                step_loss =  torch.as_tensor(0.0, dtype = torch.float32, device = 'cuda')
+                layer_cnt = 0
+                
+                for sparse, dense in zip(grad_mask, self.full_grads[idx]):
+                    step_loss += F.mse_loss(sparse, dense, reduction = 'mean')
+                    layer_cnt += 1
+                
+                kl_tr += step_loss / layer_cnt
                 cnt += 1
             
             return kl_tr.div_(cnt.float()).item()
@@ -500,7 +562,7 @@ class NormalizedMSESearch(BaseGeneticSearch):
         self.act_w.append(output.detach().to(torch.float64).view(output.shape[0], -1))
 
     def _fhook(self, func, module, input: torch.Tensor, output: torch.Tensor):
-        return#self.act_w.append(func(output.detach().to(torch.float64)).mean(dim = 0).view(-1))
+        return self.act_w.append(func(output.detach().to(torch.float64)).view(output.shape[0], -1))
 
     def clear_capture(self):
         self.act_w.clear()
@@ -522,9 +584,11 @@ class NormalizedMSESearch(BaseGeneticSearch):
 
                 loss = torch.as_tensor(0.0, device = 'cuda', dtype = torch.float32)
 
-                for act_idx, act in enumerate(self.act_w): 
-                    loss += F.mse_loss(act, self.full_activations[act_idx], reduction = 'mean')
-                    
+                for act_idx, act in enumerate(self.act_w):
+                    std, mean = torch.std_mean(self.full_activations[act_idx], dim = 1 , keepdim = True)
+                    loss += F.mse_loss(act.sub(act.mean(dim = 1, keepdim = True)).div(act.std(dim = 1, keepdim = True)), 
+                               self.full_activations[act_idx].sub(mean).div(std), reduction = "mean")
+                     
                 self.clear_capture()
                 
                 return loss
@@ -542,7 +606,9 @@ class NormalizedMSESearch(BaseGeneticSearch):
                 self.mm(x)
                 loss = torch.as_tensor(0.0, device = 'cuda', dtype = torch.float32)
                 for act_idx, act in enumerate(self.act_w):
-                    loss += F.mse_loss(act, self.full_activations[idx][act_idx], reduction = 'mean')
+                    std, mean = torch.std_mean(self.full_activations[idx][act_idx], dim = 1 , keepdim = True)
+                    loss += F.mse_loss(act.sub(act.mean(dim = 1, keepdim = True)).div(act.std(dim = 1, keepdim = True)), 
+                               self.full_activations[idx][act_idx].sub(mean).div(std), reduction = "mean")
 
                 self.clear_capture()
 
@@ -675,3 +741,4 @@ class OldKldSearch(BaseGeneticSearch):
                 cnt += 1
             
             return kl_tr.div_(cnt.float()).item()
+

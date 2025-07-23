@@ -26,23 +26,36 @@ if __name__ == '__main__':
 
     FINAL_SP = 32
 
-    names = ["rbt", "imp", "synflow", "snip", "grasp"]#, "mse_v1", "imp_resnet20"]#"postmg",]
+    concrete_prefix = "concrete_rewind/long/"
+
+    concrete_types = list(reversed(["loss", "kldlogit", "gradmatch", ]))#"msefeature", ]))#"gradnorm"]))
+    concrete_names = {"loss": "Task Loss", "gradnorm": "Gradient Norm", "kldlogit": "Parent Logit KLD", "msefeature": "Parent Feature MSE", "gradmatch": "Parent Gradient MSE"}
+    cname = lambda x: concrete_prefix + x + "/" + x
+
+    names = ["rbt", "snip", "grasp", "synflow", "imp",]  
+    names.extend(cname(ctype) for ctype in concrete_types)
+    print(names)
+
     titles = {"rbt": "Random", "mbt": "Magnitude",
               "imp": "IMP (Frankle et al.)", 
               "grasp": "GraSP (Wang et al.)", 
               "grasp_improved": "GraSP Magnitude",
               "snip": "SNIP (Lee et al.)",
               "synflow": "SynFlow (Tanaka et al.)",
-              "loss_concrete_long_finetuned": "Long Concrete (Task Loss)",
-              "kld_concrete_short_finetuned": "Short Concrete (Logit Loss)"}#"postmg": "Magnitude after Training"}
+              }
+    titles.update({cname(ctype): f"CTS | {concrete_names[ctype]}" for ctype in concrete_types})
+    print(titles)
 
-    colors = {"rbt": COLORS["red"], "mbt": COLORS["green"], 
+    colors = {"rbt": COLORS["grey"], "mbt": COLORS["green"], 
               "grasp": "limegreen",
-              "synflow": "darkgreen",
+              "synflow": "lime",
               "imp": COLORS["orange"], 
-              "kld_concrete_short_finetuned": COLORS["blue"], 
-              "loss_concrete_long_finetuned": COLORS["grey"],
-              "snip": "yellowgreen"}
+              "snip": "green",
+              cname("loss"): COLORS["red"], 
+              cname("gradnorm"): "darkmagenta",
+              cname("kldlogit"): COLORS["blue"],
+              cname("msefeature"): "cyan",
+              cname("gradmatch"): "magenta"}
 
     results = dict()
 
@@ -72,7 +85,10 @@ if __name__ == '__main__':
         spes = list()
         spes = [val for val in sparsity_plots if any([abs(100 * 0.8**val - sps) < 1e-2 for sps in sp])]
         print(spes, sp, sparsity_plots)
-        plt.plot(spes, acc, '.-', color = colors[name], label = titles[name], alpha = 0.7)
+        marker = '.-'
+        if name in [cname(ctype) for ctype in concrete_types]: marker = 'X-'
+        elif name == "imp": marker = 'v-'
+        plt.plot(spes, acc, marker, color = colors[name], label = titles[name], alpha = 0.7)
         plt.fill_between(spes, [a + s for a, s in zip(acc, std)], [a - s for a, s in zip(acc, std)], alpha = 0.2, color = colors[name])
 
     title_font = {'fontname':'DejaVu Serif', 'fontsize':14, 'fontweight':'normal'} 
@@ -88,8 +104,8 @@ if __name__ == '__main__':
     ax.set_xticks(sparsity_plots[::4])
     ax.set_xticklabels([f"{(100 - val):.2f}" for val in sparsities[::4]], fontsize = 11)
 
-    ax.set_ylim(30, 93.5)
-    ax.set_yticks(np.arange(25,95,10))
+    ax.set_ylim(0, 93.5)
+    ax.set_yticks(np.arange(15,96,20))
     ax.tick_params(axis = 'y', labelsize = '11')
 
     handles, _ = plt.gca().get_legend_handles_labels()
@@ -111,7 +127,7 @@ if __name__ == '__main__':
 
     legend = ax.legend(loc='lower center',         # Anchors the top-center of the legend box
                     bbox_to_anchor=(0.5, 0.02), # (x, y) relative to the figure. 0.5 is center, -0.2 pushes it down.
-                    ncol=5,                     # Number of columns for legend entries (adjust to your number of lines)
+                    ncol=3,                     # Number of columns for legend entries (adjust to your number of lines)
                     prop = legend_font,                # Adjust font size if needed
                     frameon=False,              # Removes the box around the legend
                     bbox_transform=fig.transFigure) # Crucial: place relative to the entire figure
