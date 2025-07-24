@@ -322,8 +322,6 @@ class KldLogitSearch(BaseGeneticSearch):
         self.mm.eval()
         self.mm.set_ticket(ticket)
 
-        if self.RANK == 0: print(type(self.full_activations))
-
         with torch.no_grad():
 
             if not self.running:
@@ -346,7 +344,6 @@ class KldLogitSearch(BaseGeneticSearch):
                 for T in self.transforms: x = T(x)
 
                 logits = self.mm(x)
-                logits.div_(logits.sum(dim = 1, keepdim = True))
                 curr_activations = logits.log_softmax(1)
 
                 kl_tr += F.kl_div(curr_activations, self.full_activations[idx], reduction = "batchmean", log_target = True)
@@ -377,12 +374,11 @@ class GradMatchSearch(BaseGeneticSearch):
         self.full_grads = list()
 
         for x, y, *_ in self.inp:
-            x = x.cuda()
+            x, y = x.cuda(), y.cuda()
             for T in self.transforms: x = T(x)
-            
             loss = F.cross_entropy(self.mm(x), y)
             grad_mask =  [grad.detach() for grad in torch.autograd.grad(loss, [layer.weight for layer in self.mm.lottery_layers])]
-            grad_mask = [grad.sub(grad.mean()).div(grad.std()).view(-1) for grad in grad_mask]
+            grad_mask = [grad.sub(grad.mean()).div(grad.std() + 1e-12).view(-1) for grad in grad_mask]
 
             self.full_grads.append(grad_mask)
 
@@ -391,21 +387,22 @@ class GradMatchSearch(BaseGeneticSearch):
         self.mm.eval()
         self.mm.set_ticket(ticket)
 
-        with torch.no_grad():
+        kl_tr = torch.as_tensor(0.0, dtype = torch.float64, device = 'cuda')
+        cnt = torch.as_tensor(0, dtype = torch.int64, device = 'cuda')
 
-            kl_tr = torch.as_tensor(0.0, dtype = torch.float64, device = 'cuda')
-            cnt = torch.as_tensor(0, dtype = torch.int64, device = 'cuda')
+        for idx, (x, y, *_) in enumerate(self.inp):
+            
+            torch.cuda.empty_cache()
+            
+            x, y = x.cuda(), y.cuda()
+            for T in self.transforms: x = T(x)
 
-            for idx, (x, y, *_) in enumerate(self.inp):
-                
-                torch.cuda.empty_cache()
-
-                x = x.cuda()
-                for T in self.transforms: x = T(x)
-
-                loss = F.cross_entropy(self.mm(x), y)
-                grad_mask = [grad.detach() for grad in torch.autograd.grad(loss, [layer.weight for layer in self.mm.lottery_layers])]
-                grad_mask = [grad.sub(grad.mean()).div(grad.std()).view(-1) for grad in grad_mask]
+            loss = F.cross_entropy(self.mm(x), y)
+            grad_mask = [grad.detach() for grad in torch.autograd.grad(loss, [layer.weight for layer in self.mm.lottery_layers])]
+            
+            with torch.no_grad():
+            
+                grad_mask = [grad.sub(grad.mean()).div(grad.std() + 1e-12).view(-1) for grad in grad_mask]
 
                 step_loss =  torch.as_tensor(0.0, dtype = torch.float32, device = 'cuda')
                 layer_cnt = 0
@@ -417,7 +414,7 @@ class GradMatchSearch(BaseGeneticSearch):
                 kl_tr += step_loss / layer_cnt
                 cnt += 1
             
-            return kl_tr.div_(cnt.float()).item()
+        return kl_tr.div_(cnt.float()).item()
 
 
 class LossSearch(BaseGeneticSearch):
@@ -586,8 +583,8 @@ class NormalizedMSESearch(BaseGeneticSearch):
 
                 for act_idx, act in enumerate(self.act_w):
                     std, mean = torch.std_mean(self.full_activations[act_idx], dim = 1 , keepdim = True)
-                    loss += F.mse_loss(act.sub(act.mean(dim = 1, keepdim = True)).div(act.std(dim = 1, keepdim = True)), 
-                               self.full_activations[act_idx].sub(mean).div(std), reduction = "mean")
+                    loss += F.mse_loss(act.sub(act.mean(dim = 1, keepdim = True)).div(act.std(dim = 1, keepdim = True) + 1e-12), 
+                               self.full_activations[act_idx].sub(mean).div(std + 1e-12), reduction = "mean")
                      
                 self.clear_capture()
                 
@@ -607,8 +604,8 @@ class NormalizedMSESearch(BaseGeneticSearch):
                 loss = torch.as_tensor(0.0, device = 'cuda', dtype = torch.float32)
                 for act_idx, act in enumerate(self.act_w):
                     std, mean = torch.std_mean(self.full_activations[idx][act_idx], dim = 1 , keepdim = True)
-                    loss += F.mse_loss(act.sub(act.mean(dim = 1, keepdim = True)).div(act.std(dim = 1, keepdim = True)), 
-                               self.full_activations[idx][act_idx].sub(mean).div(std), reduction = "mean")
+                    loss += F.mse_loss(act.sub(act.mean(dim = 1, keepdim = True)).div(act.std(dim = 1, keepdim = True) + 1e-12), 
+                               self.full_activations[idx][act_idx].sub(mean).div(std + 1e-12), reduction = "mean")
 
                 self.clear_capture()
 

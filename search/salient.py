@@ -121,7 +121,7 @@ class GraSP_Pruner(SaliencyPruning):
         self._accumulate_saliency(x, y, weights, temperature)
         grads = [-w.data * w.grad for w in weights]
         scores = torch.cat([g.view(-1) for g in grads]).to(torch.float64)
-        num_to_keep = int((self.spr) * scores.numel())
+        num_to_keep = int((curr_sp) * scores.numel())
         
         if improved == "0":
             threshold = torch.kthvalue(scores, num_to_keep).values
@@ -235,7 +235,7 @@ class SNIP_Pruner(SaliencyPruning):
         self._accumulate_saliency(x, y, weights, grad_w)
         grads = [(w.data * g).abs() for w, g in zip(weights, grad_w)]
         scores = torch.cat([g.view(-1) for g in grads]).to(torch.float64)
-        num_to_keep = int((self.spr) * scores.numel())
+        num_to_keep = int((curr_sp) * scores.numel())
         
         threshold = torch.kthvalue(scores, scores.numel() - num_to_keep).values
         ticket = scores.ge(threshold)
@@ -396,8 +396,8 @@ class GradMatch_Pruner(SaliencyPruning):
         task = F.cross_entropy(self.mm(x), y)
         grad_s = torch.autograd.grad(task, weights, create_graph = True)
 
-        grad_s = [grad.sub(grad.mean()).div(grad.std()).view(-1)  for grad in grad_s]
-        grad_d = [grad.detach().sub(grad.mean()).div(grad.std()).view(-1) for grad in grad_d]
+        grad_s = [grad.sub(grad.mean()).div(grad.std() + 1e-12).view(-1)  for grad in grad_s]
+        grad_d = [grad.detach().sub(grad.mean()).div(grad.std() + 1e-12).view(-1) for grad in grad_d]
         
         mse_loss = torch.as_tensor(0.0, dtype = torch.float32, device = 'cuda')
         for sparse, dense in zip(grad_s, grad_d):
@@ -456,9 +456,7 @@ class GradMatch_Pruner(SaliencyPruning):
         weights = [layer.weight for layer in self.mm.lottery_layers]
         for param in self.mm.parameters():
             param.requires_grad_(any(param is p for p in weights)) 
-
-        print(all(weight.requires_grad for weight in weights))
-        
+            
         grad_w = list()
 
         if not self.running:
@@ -659,8 +657,8 @@ class MSE_Pruner(ActivationSaliencyPruning):
         mse_loss = torch.as_tensor(0.0, dtype = torch.float32, device = 'cuda')
         for act_idx, act in enumerate(self.act_w):
             std, mean = torch.std_mean(full_activations[act_idx], dim = 1, keepdim = True)
-            mse_loss += F.mse_loss(act.sub(act.mean(dim = 1, keepdim = True)).div(act.std(dim = 1, keepdim = True)), 
-                               full_activations[act_idx].sub(mean).div(std), reduction = "mean")
+            mse_loss += F.mse_loss(act.sub(act.mean(dim = 1, keepdim = True)).div(act.std(dim = 1, keepdim = True) + 1e-12), 
+                               full_activations[act_idx].sub(mean).div(std + 1e-12), reduction = "mean")
             
         self.clear_capture()
         return torch.autograd.grad(mse_loss, overlay)[0]

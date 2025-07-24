@@ -18,7 +18,7 @@ from models.base import BaseModel
 from data.cifar10 import get_loaders, custom_fetch_data
 
 
-__all__ = ["SNIPConcrete", "GraSPConcrete", "NormalizedMseFeatures", "KldLogit", "OldKld", "StepAlignmentConcrete"]
+__all__ = ["SNIPConcrete", "GraSPConcrete", "NormalizedMseFeatures", "KldLogit", "OldKld", "StepAlignmentConcrete", "LossChangeConcrete"]
 
 
 class FrozenConcrete:
@@ -363,6 +363,26 @@ class SNIPConcrete(FrozenConcrete):
         loss = F.cross_entropy(self.mm(x), y)
         return loss.abs()
 
+class LossChangeConcrete(FrozenConcrete):
+    
+    def build(self, desired_sparsity: float, optimizer, 
+              optimizer_kwargs: dict, 
+              transforms: Tuple[Callable],
+              use_gradnorm_approach = False):
+        
+        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, use_gradnorm_approach)
+        #self._sparsity_scaler_constant *= 100
+        self._loss_scaler_constant *= 100
+
+    def _compute_loss(self, x, y):
+        
+        with torch.no_grad():
+            self.mm.deactivate_mask()
+            lossD = F.cross_entropy(self.mm(x), y)
+            self.mm.activate_mask()
+
+        loss = F.cross_entropy(self.mm(x), y)
+        return (loss/lossD - 1).abs()
 
 class ActivationConcrete(FrozenConcrete):
 

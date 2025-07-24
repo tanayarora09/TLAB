@@ -30,7 +30,8 @@ CONCRETE_EXPERIMENTS = {0: ("Loss", SNIPConcrete),
                         1: ("Gradnorm", GraSPConcrete),
                         2: ("KldLogit", KldLogit),
                         3: ("MseFeature", NormalizedMseFeatures),
-                        4: ("GradMatch", StepAlignmentConcrete)}
+                        4: ("GradMatch", StepAlignmentConcrete),
+                        5: ("DeltaLoss", LossChangeConcrete)}
 
 def ddp_network(rank, 
                 world_size, 
@@ -185,7 +186,6 @@ def run_fit_and_export(rank, world_size,
 
         plot_logs(logs, EPOCHS, name, CARDINALITY, start = start_epochs)
 
-
 def main(rank, world_size, name: str, args: list, **kwargs):
 
     is_vgg = args.pop(-1) == 1 # 1 is yes, 0 is no
@@ -195,11 +195,12 @@ def main(rank, world_size, name: str, args: list, **kwargs):
     type_of_concrete = args.pop(-1) # 0-4
     if rank == 0: print(f"VGG: {is_vgg} | GradBalance: {is_gradnorm} | INIT: {is_init} | TYPE: {CONCRETE_EXPERIMENTS[type_of_concrete][0]}")
 
-    sp_exp = list(range(2, 43 if is_vgg else 33, 2))
+    sp_exp = list(range(2, 43 if is_vgg else 33, 2)) 
 
     name = f"{CONCRETE_EXPERIMENTS[type_of_concrete][0].lower()}_{'gradbalance' if is_gradnorm else 'multiplier'}_{'init' if is_init else 'rewind'}_{'short' if is_short else 'long'}_{'vgg16' if is_vgg else 'resnet20'}_{name}" 
 
     start_epochs = 0 if is_init else (5 if is_vgg else 3)
+    start_epochs *= 3
     concrete_epochs = 20 if is_short else 160
 
     DISTRIBUTED = world_size > 1
@@ -228,7 +229,7 @@ def main(rank, world_size, name: str, args: list, **kwargs):
         state, ticket = run_concrete(rank = rank, world_size = world_size, name = name, 
                                      is_vgg = is_vgg, type_of_concrete = type_of_concrete, 
                                      is_gradnorm = is_gradnorm, concrete_epochs = concrete_epochs, state = ostate, 
-                                     spe = spe, spr = spr, dt = dt, transforms = (resize, normalize, dataAug,),)
+                                     spe = spe, spr = spr, dt = dt, transforms = (resize, normalize, center_crop,),)
 
         torch.cuda.empty_cache()
         gc.collect()

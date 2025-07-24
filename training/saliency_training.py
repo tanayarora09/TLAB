@@ -155,7 +155,7 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
     is_init = sp_exp.pop(-1) == 1 
     type_of_salient = sp_exp.pop(-1) # SNIP, GraSP, SynFlow, KldLogit, MseFeature, GradMatch
     steps_of_salient = sp_exp.pop(-1) # 1, 100 are common
-    print(f"TYPE: {TYPES[type_of_salient][0]} | VGG: {is_vgg}")
+    print(f"TYPE: {TYPES[type_of_salient][0]} | INIT {is_init} | VGG: {is_vgg}")
 
     DISTRIBUTED = world_size > 1
 

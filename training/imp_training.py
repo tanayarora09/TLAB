@@ -25,6 +25,7 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
     is_vgg = sp_exp.pop(-1) == 1
 
     REWIND_EPOCH = 5 if is_vgg else 3
+    REWIND_EPOCH *= 3
 
     if len(sp_exp) != 1: raise ValueError()
 

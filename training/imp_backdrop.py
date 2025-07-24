@@ -31,7 +31,7 @@ CARDINALITY = 98
 
 CONCRETE_EXPERIMENTS = {0: ("Loss", SNIPConcrete, SNIP_Pruner, LossSearch),
                         1: ("Gradnorm", GraSPConcrete, GraSP_Pruner, GradientNormSearch),
-                        2: ("KldLogit", KldLogit, KldLogit_Pruner, KldLogit_Pruner),
+                        2: ("KldLogit", KldLogit, KldLogit_Pruner, KldLogitSearch),
                         3: ("MseFeature", NormalizedMseFeatures, MSE_Pruner, NormalizedMSESearch),
                         4: ("GradMatch", StepAlignmentConcrete, GradMatch_Pruner, GradMatchSearch)}
 
@@ -54,9 +54,9 @@ def _get_train(rank, world_size):
     dt, _ = get_loaders(rank, world_size, batch_size = 512, validation = False)
     return dt
 
-def get_salient_ticket(rank, world_size, steps, state, type_of_concrete, is_vgg, transforms, spr):
+def get_salient_ticket(rank, world_size, steps, state, type_of_salient, is_vgg, transforms, spr):
 
-    model = ddp_network(rank, world_size, is_vgg, depth = 16)
+    model = ddp_network(rank, world_size, is_vgg)
     model.load_state_dict(state)
 
     if rank == 0:
@@ -65,7 +65,7 @@ def get_salient_ticket(rank, world_size, steps, state, type_of_concrete, is_vgg,
 
         inp_args = {'rank': 0, 'world_size': 1, 'model': model_to_inspect}
 
-        if type_of_concrete == 4: 
+        if type_of_salient == 3: 
             captures = []
             fcaptures = []
             for bname, block in model_to_inspect.named_children():
@@ -74,7 +74,7 @@ def get_salient_ticket(rank, world_size, steps, state, type_of_concrete, is_vgg,
                     elif lname.endswith("fc"): fcaptures.append((layer, lambda x: torch.softmax(x, dim = 1)))
             inp_args.update({"capture_layers": captures, "fake_capture_layers": fcaptures})
 
-        pruner = CONCRETE_EXPERIMENTS[type_of_concrete][2](**inp_args)
+        pruner = CONCRETE_EXPERIMENTS[type_of_salient][2](**inp_args)
         pruner.build(spr, transforms, input = None)
         ticket = pruner.grad_mask(steps = steps)
         pruner.finish()
@@ -90,16 +90,16 @@ def get_salient_ticket(rank, world_size, steps, state, type_of_concrete, is_vgg,
     return state, ticket
 
 
-def get_concrete_ticket_and_imp(rank, world_size, state, type_of_concrete, is_gradnorm, is_vgg, dt, transforms, spr, name, imp_name):
+def get_concrete_ticket_and_imp(rank, world_size, state, type_of_concrete, is_gradnorm, is_vgg, dt, transforms, spr, name):
 
-    model = ddp_network(rank, world_size, is_vgg, depth = 16)
+    model = ddp_network(rank, world_size, is_vgg)
     model.load_state_dict(state)
 
     model_to_inspect = model.module if world_size > 1 else model
 
-    inp_args = {'rank': 0, 'world_size': 1, 'model': model_to_inspect}
+    inp_args = {'rank': rank, 'world_size': world_size, 'model': model_to_inspect}
 
-    if type_of_concrete == 4: 
+    if type_of_concrete == 3: 
         captures = []
         fcaptures = []
         for bname, block in model_to_inspect.named_children():
@@ -112,7 +112,7 @@ def get_concrete_ticket_and_imp(rank, world_size, state, type_of_concrete, is_gr
     
     search.build(spr, torch.optim.Adam, optimizer_kwargs = {'lr': 1e-1}, transforms = transforms, use_gradnorm_approach = is_gradnorm)
 
-    logs, ticket = search.optimize_mask(dt, 15, CARDINALITY, dynamic_epochs = False)
+    logs, ticket = search.optimize_mask(dt, 20, CARDINALITY, dynamic_epochs = False)
 
     search.finish()
 
@@ -121,24 +121,24 @@ def get_concrete_ticket_and_imp(rank, world_size, state, type_of_concrete, is_gr
     return state, ticket
 
 def _print_collect_return_fitness(rank, name, fitness):
-    print(f"[rank {rank}] {name.capitalize()} Fitness: ", fitness)
     fitness = torch.as_tensor(fitness, dtype = torch.float64, device = 'cuda')
     dist.all_reduce(fitness, op = dist.ReduceOp.AVG)
     dist.barrier(device_ids = [rank])
+    if rank == 0: print(f"{name.capitalize()} Fitness: {fitness}")
     return fitness.item()
 
-def run_check_and_export(rank, world_size, state, spr, type_of_search, is_vgg, dt, transforms):
+def run_check_and_export(rank, world_size, state, spr, type_of_search, is_vgg, dt, transforms, tickets):
 
 
-    model = ddp_network(rank, world_size, is_vgg, depth = 16)
+    model = ddp_network(rank, world_size, is_vgg)
     model.load_state_dict(state)
 
     model_to_inspect = model.module if world_size > 1 else model
 
-    inp_args = {'rank': 0, 'world_size': 1, 'model': model_to_inspect, 'input': dt, 
+    inp_args = {'rank': rank, 'world_size': world_size, 'model': model_to_inspect, 'input': dt, 
                 'sparsity_rate': spr, 'transforms': transforms}
 
-    if type_of_search == 4: 
+    if type_of_search == 3: 
         captures = []
         fcaptures = []
         for bname, block in model_to_inspect.named_children():
@@ -152,15 +152,10 @@ def run_check_and_export(rank, world_size, state, spr, type_of_search, is_vgg, d
 
     output = dict()
 
-    output["imp"] = _print_collect_return_fitness(rank, "imp", search.calculate_fitness_given(imp_ticket))
+    for tname, ticket in tickets:
+        output[tname] = _print_collect_return_fitness(rank, tname, search.calculate_fitness_given(ticket))
 
-    output["concrete"] = _print_collect_return_fitness(rank, "concrete", search.calculate_fitness_given(concrete_ticket))
-
-    output["grasp"] = _print_collect_return_fitness(rank, "grasp", search.calculate_fitness_given(salient_tickets[0]))
-
-    output["grasp_improved"] = _print_collect_return_fitness(rank, "grasp_improved", search.calculate_fitness_given(salient_tickets[1]))
-
-    output["dense"] = _print_collect_return_fitness(rank, "dense", search.calculate_fitness_given(torch.ones_like(concrete_ticket)))
+    output["dense"] = _print_collect_return_fitness(rank, "dense", search.calculate_fitness_given(torch.ones(model_to_inspect.num_prunable, dtype = torch.bool)))
 
     output["magnitude"] = _print_collect_return_fitness(rank, "magnitude", search.calculate_fitness_magnitude())
 
@@ -168,11 +163,12 @@ def run_check_and_export(rank, world_size, state, spr, type_of_search, is_vgg, d
     
     return output
 
-def main(rank, world_size, name: str, sp_exp: list, **kwargs):
+def main(rank, world_size, name: str, args: list, **kwargs):
 
-    #is_grasp = sp_exp.pop(-1) == 1
-    is_vgg = sp_exp.pop(-1) == 1
-    type_of_concrete = sp_exp.pop(-1)
+    is_vgg = args.pop(-1) == 1
+    type_of_concrete = args.pop(-1)
+
+    sp_exp = list(range(2, 43 if is_vgg else 33))
 
     if rank == 0: print(f"Running IMP Comparison for: {CONCRETE_EXPERIMENTS[type_of_concrete][0]} on {'VGG-16' if is_vgg else 'ResNet-20'}")
 
@@ -193,8 +189,7 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
 
         spr = 0.8**spe
 
-        _ = BaseModel()
-        _ = _.force_init(rank, world_size)
+        _ = (VGG if is_vgg else ResNet)(rank, world_size, depth = 16 if is_vgg else 20)
         imp_ticket = _.load_ticket(imp_name, root = 0, entry_name = f"{spr*100:.3e}")
 
         init_name = "init_" + name
@@ -206,15 +201,16 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
 
         _, iterative_ticket = get_salient_ticket(rank, world_size, 100, ckpt, type_of_concrete, is_vgg, (resize, normalize, center_crop,), spr)
 
-        _, (concrete_ticket) = get_concrete_ticket_and_imp(rank, world_size, ckpt, type_of_concrete, True, is_vgg, dt, 
-                                                           (resize, normalize, center_crop,), spr, init_name, imp_name)
+        _, gradbalance_ticket = get_concrete_ticket_and_imp(rank, world_size, ckpt, type_of_concrete, True, is_vgg, dt, 
+                                                           (resize, normalize, center_crop,), spr, init_name)
 
-        _, (lmcrete_ticket) = get_concrete_ticket_and_imp(rank, world_size, ckpt, type_of_concrete, False, is_vgg, dt, 
-                                                          (resize, normalize, center_crop,), spr, init_name, imp_name)
+        _, multiplier_ticket = get_concrete_ticket_and_imp(rank, world_size, ckpt, type_of_concrete, False, is_vgg, dt, 
+                                                          (resize, normalize, center_crop,), spr, init_name)
 
+        tickets = [('imp', imp_ticket), ('salient', salient_ticket), ('iterative', iterative_ticket), 
+                   ('gradbalance', gradbalance_ticket), ('multiplier', multiplier_ticket)]
 
-        log = run_check_and_export(rank, world_size, ckpt, spr, concrete_ticket, salient_tickets, 
-                                   imp_ticket, is_vgg, partial, (resize, normalize, center_crop,))
+        log = run_check_and_export(rank, world_size, ckpt, spr, type_of_concrete, is_vgg, partial, (resize, normalize, center_crop,), tickets)
 
         if rank == 0: print(f"SPARSITY: {spr * 100 :.3e} || INIT || {log.items()}")
 
@@ -226,18 +222,26 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
         ckpt = torch.load(f"./logs/WEIGHTS/rewind_{imp_name}_{100.0:.3e}.pt", map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}, 
                           weights_only = True)['model']
 
-        _, salient_ticket = get_salient_ticket(rank, world_size, ckpt, is_vgg, (resize, normalize, center_crop,), spr)
+        _, salient_ticket = get_salient_ticket(rank, world_size, 1, ckpt, type_of_concrete, is_vgg, (resize, normalize, center_crop,), spr)
 
-        _, (concrete_ticket, imp_ticket) = get_concrete_ticket_and_imp(rank, world_size, ckpt, is_vgg, dt, (resize, normalize, center_crop,), spr, rewind_name, imp_name)
+        _, iterative_ticket = get_salient_ticket(rank, world_size, 100, ckpt, type_of_concrete, is_vgg, (resize, normalize, center_crop,), spr)
 
-        log = run_check_and_export(rank, world_size, ckpt, spr, concrete_ticket, salient_ticket, 
-                                   imp_ticket, is_vgg, partial, (resize, normalize, center_crop,))
+        _, gradbalance_ticket = get_concrete_ticket_and_imp(rank, world_size, ckpt, type_of_concrete, True, is_vgg, dt, 
+                                                           (resize, normalize, center_crop,), spr, rewind_name)
+
+        _, multiplier_ticket = get_concrete_ticket_and_imp(rank, world_size, ckpt, type_of_concrete, False, is_vgg, dt, 
+                                                          (resize, normalize, center_crop,), spr, rewind_name)
+
+        tickets = [('imp', imp_ticket), ('salient', salient_ticket), ('iterative', iterative_ticket), 
+                   ('gradbalance', gradbalance_ticket), ('multiplier', multiplier_ticket)]
+
+        log = run_check_and_export(rank, world_size, ckpt, spr, type_of_concrete, is_vgg, partial, (resize, normalize, center_crop,), tickets)
 
         if rank == 0: print(f"SPARSITY: {spr * 100 :.3e} || REWIND || {log.items()}")
 
         logs[spe]['rewind'] = log
         
 
-
-    with open(f"./logs/PICKLES/{name}_comparison.json", "w") as f:
-        json.dump(logs, f, indent = 6)
+    if rank == 0:
+        with open(f"./logs/PICKLES/{name}_comparison.json", "w") as f:
+            json.dump(logs, f, indent = 6)
