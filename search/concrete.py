@@ -372,7 +372,7 @@ class LossChangeConcrete(FrozenConcrete):
         
         super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, use_gradnorm_approach)
         #self._sparsity_scaler_constant *= 100
-        self._loss_scaler_constant *= 100
+        self._loss_scaler_constant *= 10000
 
     def _compute_loss(self, x, y):
         

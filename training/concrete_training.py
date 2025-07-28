@@ -195,7 +195,7 @@ def main(rank, world_size, name: str, args: list, **kwargs):
     type_of_concrete = args.pop(-1) # 0-4
     if rank == 0: print(f"VGG: {is_vgg} | GradBalance: {is_gradnorm} | INIT: {is_init} | TYPE: {CONCRETE_EXPERIMENTS[type_of_concrete][0]}")
 
-    sp_exp = list(range(2, 43 if is_vgg else 33, 2)) 
+    sp_exp = list(range(2, 43 if is_vgg else 33, 2)) if len(args) == 0 else args
 
     name = f"{CONCRETE_EXPERIMENTS[type_of_concrete][0].lower()}_{'gradbalance' if is_gradnorm else 'multiplier'}_{'init' if is_init else 'rewind'}_{'short' if is_short else 'long'}_{'vgg16' if is_vgg else 'resnet20'}_{name}" 
 

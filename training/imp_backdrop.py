@@ -33,7 +33,8 @@ CONCRETE_EXPERIMENTS = {0: ("Loss", SNIPConcrete, SNIP_Pruner, LossSearch),
                         1: ("Gradnorm", GraSPConcrete, GraSP_Pruner, GradientNormSearch),
                         2: ("KldLogit", KldLogit, KldLogit_Pruner, KldLogitSearch),
                         3: ("MseFeature", NormalizedMseFeatures, MSE_Pruner, NormalizedMSESearch),
-                        4: ("GradMatch", StepAlignmentConcrete, GradMatch_Pruner, GradMatchSearch)}
+                        4: ("GradMatch", StepAlignmentConcrete, GradMatch_Pruner, GradMatchSearch),
+                        5: ("DeltaLoss", LossChangeConcrete, SNIP_Pruner, DeltaLossSearch)}
 
 def ddp_network(rank, world_size, is_vgg):
 
@@ -168,11 +169,11 @@ def main(rank, world_size, name: str, args: list, **kwargs):
     is_vgg = args.pop(-1) == 1
     type_of_concrete = args.pop(-1)
 
-    sp_exp = list(range(2, 43 if is_vgg else 33))
+    sp_exp = [19]#list(range(2, 43 if is_vgg else 33))
 
     if rank == 0: print(f"Running IMP Comparison for: {CONCRETE_EXPERIMENTS[type_of_concrete][0]} on {'VGG-16' if is_vgg else 'ResNet-20'}")
 
-    imp_name = f"imp_{"vgg16" if is_vgg else "resnet20"}_2"#{name[-1]}"
+    imp_name = f"late_rewind_imp_{"vgg16" if is_vgg else "resnet20"}_{name[-1]}"
 
     dataAug = torch.jit.script(DataAugmentation().to('cuda'))
     resize = torch.jit.script(Resize().to('cuda'))

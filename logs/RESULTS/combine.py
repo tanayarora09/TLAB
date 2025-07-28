@@ -1,4 +1,4 @@
-"""
+
 import json 
 import numpy as np
 
@@ -7,13 +7,13 @@ output_valL = dict()
 output_A = dict()
 output_L = dict()
 
-out_name = "resnet20/snip"
-prefix_name = "snip_resnet20"
+out_name = "vgg16/rewind_grasp"
+prefix_name = "rewind_grasp_vgg16"
 
-sparsity_indexes = [24, 26, 28, 30, 32] #list(range(2,33,2)) # RESNET
+sparsity_indexes = list(range(2,43,2)) # RESNET
 #sparsity_indexes = [26, 28, 30, 34, 38, 42] #list(range(2,43,2)) # VGG
 
-is_adding = True
+is_adding = False
 
 #sparsity_indexes = list(range(26))
 
@@ -33,9 +33,9 @@ for spidx in sparsity_indexes:
         
         if rep == reps-1:
             postfix = "s"
-            rep = 0
+            #rep = 0
 
-        name = f"{prefix_name}_{postfix}_{rep}_{spidx}.json"
+        name = f"{prefix_name}_{rep}_{spidx}.json"
         
         with open(name, 'r') as f:
             print(f"Opened {name}")
@@ -233,3 +233,4 @@ for arch_code in ARCH_CODES:
                         print(f"  Successfully saved 4 collated files to {output_dir}\n")
 
 print("--- All configurations processed. ---")
+"""

@@ -19,7 +19,7 @@ def format_func(value: float) -> str:
 UNPRUNED_MEAN = 93.83500069379807
 UNPRUNED_STD = 0.11715378860254261
 
-COLORS = {"black": "#303030","grey": "#808080", "blue": "#4682B4", "orange": "#FF8C00", "green": "#32CD32", "red": "#DC143C", "purple": "#8A2BE2", "brown": "#A52A2A"}
+COLORS = {"black": "#303030","grey": "#808080", "blue": "#4682B4", "orange": "#FF8C00", "darkorange": "#DB5B00", "green": "#32CD32", "red": "#DC143C", "purple": "#8A2BE2", "brown": "#A52A2A"}
 
 if __name__ == '__main__':
 
@@ -27,16 +27,17 @@ if __name__ == '__main__':
 
     concrete_prefix = "concrete_rewind/long/"
 
-    concrete_types = list(reversed(["loss", "kldlogit", "gradmatch", ]))#"msefeature", ]))#"gradnorm"]))
+    concrete_types = []#list(reversed(["loss", "kldlogit", "gradmatch", ]))#"msefeature", ]))#"gradnorm"]))
     concrete_names = {"loss": "Task Loss", "gradnorm": "Gradient Norm", "kldlogit": "Parent Logit KLD", "msefeature": "Parent Feature MSE", "gradmatch": "Parent Gradient MSE"}
     cname = lambda x: concrete_prefix + x + "/" + x
 
-    names = ["rbt", "snip", "grasp", "synflow", "imp"]  
+    names = ["rbt", "snip", "grasp", "synflow", "imp", "late_imp"]  
     names.extend(cname(ctype) for ctype in concrete_types)
     print(names)
 
     titles = {"rbt": "Random", "mbt": "Magnitude",
               "imp": "IMP (Frankle et al.)", 
+              "late_imp": "LTR [Late]", 
               "grasp": "GraSP (Wang et al.)", 
               "grasp_improved": "GraSP Magnitude",
               "snip": "SNIP (Lee et al.)",
@@ -49,6 +50,7 @@ if __name__ == '__main__':
               "grasp": "limegreen",
               "synflow": "lime",
               "imp": COLORS["orange"], 
+              "late_imp": COLORS["darkorange"], 
               "snip": "green",
               cname("loss"): COLORS["red"], 
               cname("gradnorm"): "darkmagenta",
@@ -90,7 +92,7 @@ if __name__ == '__main__':
         print(spes, sp, sparsity_plots)
         marker = '.-'
         if name in [cname(ctype) for ctype in concrete_types]: marker = 'X-'
-        elif name == "imp": marker = 'v-'
+        elif "imp" in name: marker = 'v-'
         plt.plot(spes, acc, marker, color = colors[name], label = titles[name], alpha = 0.7)
         plt.fill_between(spes, [a + s for a, s in zip(acc, std)], [a - s for a, s in zip(acc, std)], alpha = 0.2, color = colors[name])
 

@@ -20,7 +20,7 @@ import time
 from typing import Callable, List, Tuple
 from tqdm import tqdm 
 
-__all__ = ["GradientNormSearch", "NormalizedMSESearch", "KldLogitSearch", "OldKldSearch", "LossSearch", "GradMatchSearch"]
+__all__ = ["GradientNormSearch", "NormalizedMSESearch", "KldLogitSearch", "OldKldSearch", "LossSearch", "GradMatchSearch", "DeltaLossSearch"]
  
 
 class BaseGeneticSearch:
@@ -436,6 +436,37 @@ class LossSearch(BaseGeneticSearch):
             loss = F.cross_entropy(self.mm(x), y)
             
             loss_tr += loss
+            cnt += 1
+        
+        if cnt == 0: return float('inf') # Return a high value if no batches were processed
+        return loss_tr.div(cnt.float()).item()
+    
+class DeltaLossSearch(BaseGeneticSearch):
+        
+    @torch.no_grad()
+    def _calculate_fitness(self, ticket):
+        
+        self.mm.eval()
+        #self.mm.set_ticket(ticket)
+
+        loss_tr = torch.as_tensor(0.0, dtype=torch.float64, device='cuda')
+        cnt = torch.as_tensor(0, dtype=torch.int64, device='cuda')
+
+        for x, y, *_ in self.inp:
+            torch.cuda.empty_cache()
+
+            x, y = x.cuda(), y.cuda()
+            for T in self.transforms: x = T(x)
+
+            self.mm.reset_ticket()
+
+            lossD = F.cross_entropy(self.mm(x), y)
+
+            self.mm.set_ticket(ticket)
+
+            loss = F.cross_entropy(self.mm(x), y)
+            
+            loss_tr += (loss/lossD - 1).abs()
             cnt += 1
         
         if cnt == 0: return float('inf') # Return a high value if no batches were processed
