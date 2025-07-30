@@ -173,6 +173,8 @@ def main(rank, world_size, name: str, args: list, **kwargs):
 
     if rank == 0: print(f"Running IMP Comparison for: {CONCRETE_EXPERIMENTS[type_of_concrete][0]} on {'VGG-16' if is_vgg else 'ResNet-20'}")
 
+    name = CONCRETE_EXPERIMENTS[type_of_concrete][0].lower() + "_" + name
+
     imp_name = f"late_rewind_imp_{"vgg16" if is_vgg else "resnet20"}_{name[-1]}"
 
     dataAug = torch.jit.script(DataAugmentation().to('cuda'))

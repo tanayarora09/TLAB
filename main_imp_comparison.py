@@ -92,6 +92,10 @@ if __name__ == "__main__":
             print("--------------------------------------------------------------")
             main(baseline.main, name + f"_{sp}_{exp}", sp)"""
     
+    if args == [0,0]:
+        print("Skipping Loss on ResNet20 (Already Computed). Exiting ...")
+        exit()
+    
     for exp in range(num_exp ):
         print("--------------------------------------------------------------")
         print("EXPERIMENT NUMBER ", exp)
