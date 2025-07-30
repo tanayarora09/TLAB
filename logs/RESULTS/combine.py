@@ -7,8 +7,8 @@ output_valL = dict()
 output_A = dict()
 output_L = dict()
 
-out_name = "vgg16/rewind_grasp"
-prefix_name = "rewind_grasp_vgg16"
+out_name = "vgg16/rewind_synflow"
+prefix_name = "rewind_synflow_vgg16"
 
 sparsity_indexes = list(range(2,43,2)) # RESNET
 #sparsity_indexes = [26, 28, 30, 34, 38, 42] #list(range(2,43,2)) # VGG
@@ -123,7 +123,7 @@ METHOD_MAP = {
     4: 'gradmatch'
 }
 RUN_TAGS = ['f', 's', 't']
-INPUT_DIR = Path("./logs/RESULTS")
+INPUT_DIR = Path("./")
 
 # Define the experiment parameter space, matching the submission script
 ARCH_CODES = [1, 0]

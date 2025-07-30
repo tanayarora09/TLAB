@@ -169,7 +169,7 @@ def main(rank, world_size, name: str, args: list, **kwargs):
     is_vgg = args.pop(-1) == 1
     type_of_concrete = args.pop(-1)
 
-    sp_exp = [19]#list(range(2, 43 if is_vgg else 33))
+    sp_exp = list(range(2, 43 if is_vgg else 33))
 
     if rank == 0: print(f"Running IMP Comparison for: {CONCRETE_EXPERIMENTS[type_of_concrete][0]} on {'VGG-16' if is_vgg else 'ResNet-20'}")
 
@@ -197,6 +197,8 @@ def main(rank, world_size, name: str, args: list, **kwargs):
 
         ckpt = torch.load(f"./logs/WEIGHTS/init_{imp_name}_{100.0:.3e}.pt", map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}, 
                           weights_only = True)['model']
+        
+        if world_size == 1: ckpt = {k[7:]:v for k,v in ckpt.items()}
 
         _, salient_ticket = get_salient_ticket(rank, world_size, 1, ckpt, type_of_concrete, is_vgg, (resize, normalize, center_crop,), spr)
 
@@ -223,6 +225,8 @@ def main(rank, world_size, name: str, args: list, **kwargs):
         ckpt = torch.load(f"./logs/WEIGHTS/rewind_{imp_name}_{100.0:.3e}.pt", map_location = {'cuda:%d' % 0: 'cuda:%d' % rank}, 
                           weights_only = True)['model']
 
+        if world_size == 1: ckpt = {k[7:]:v for k,v in ckpt.items()}
+
         _, salient_ticket = get_salient_ticket(rank, world_size, 1, ckpt, type_of_concrete, is_vgg, (resize, normalize, center_crop,), spr)
 
         _, iterative_ticket = get_salient_ticket(rank, world_size, 100, ckpt, type_of_concrete, is_vgg, (resize, normalize, center_crop,), spr)
@@ -244,5 +248,5 @@ def main(rank, world_size, name: str, args: list, **kwargs):
         
 
     if rank == 0:
-        with open(f"./logs/PICKLES/{name}_comparison.json", "w") as f:
+        with open(f"./logs/RESULTS/{name}_comparison.json", "w") as f:
             json.dump(logs, f, indent = 6)

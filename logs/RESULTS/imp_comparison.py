@@ -9,32 +9,62 @@ import os
 def sparsity_to_density(level):
     return 100 * 0.8 ** int(level)
 
+is_vgg = False
+ctype = "loss"
+
+model = "vgg16" if is_vgg else "resnet20"
+
+
+def get_salient_name(ctype, iterative: bool):
+    map = {"loss": "SNIP (Lee et al.)", "gradnorm": "GraSP (Wang et al.)"}
+    out = "Saliency (One-Shot)"
+    if iterative: out = "Saliency (Iter. 100)"
+    if ctype in map.keys(): 
+        out = map[ctype]
+        if iterative:
+            out = out[:out.rindex('(')] + "(Iter. 100)"
+
+    return out
+
+FullTitles = {
+
+    "loss": "Task Loss", 
+    "deltaloss": "Δ Loss", 
+    "gradnorm": "Gradient Norm", 
+    "kldlogit": "Parent Logit KLD", 
+    "msefeature": "Parent Feature MSE", 
+    "gradmatch": "Parent Gradient MSE"
+
+}
+
 # --- Config ---
 COLORS = {
     #"magnitude": "#32CD32",
     #"random": "#DC143C",
     "imp": "#FF8C00",
-    "concrete": "#4682B4",
-    "grasp_improved": "#8A2BE2",
-    "grasp": "#A52A2A",
+    "gradbalance": "#4682B4",
+    "multiplier": "blue",
+    "salient": "#DC143C",
+    "iterative": "darkmagenta",
     "dense": "#808080",
 }
 TITLES = {
-    "imp": "IMP (Frankle et al.)",
-    "concrete": "Concrete (Ours)",
-    "grasp": "GraSP (Wang et al.)",
-    "grasp_improved": "GraSP Magnitude",
+    "imp": "LTR (Frankle et al.)",
+    "gradbalance": "CTS | GradBalance",
+    "multiplier": "CTS | Multiplier",
+    "salient": get_salient_name(ctype, iterative = False),
+    "iterative": get_salient_name(ctype, iterative = True),
     "dense": "Unpruned Network",
     "magnitude": "Magnitude",
     "random": "Random",
 }
 
 # --- Load JSON ---
-with open("vgg16/gradnorm_concrete_comparison.json", "r") as f:
+with open(f"{model}/comparisons/{ctype}.json", "r") as f:
     raw_data = json.load(f)
 
 # --- Determine Sparsity Levels ---
-sparsity_levels = sorted([int(k) for k in raw_data.keys()])[2:]
+sparsity_levels = sorted([int(k) for k in raw_data.keys()])
 
 # --- Plot each phase separately ---
 for phase in ["init", "rewind"]:
@@ -62,11 +92,19 @@ for phase in ["init", "rewind"]:
         x = results[method]["x"]
         y = results[method]["mean"]
         yerr = results[method]["std"]
+
+        marker = '.'
+        if method in ["gradbalance", "multiplier"]: marker = 'X'
+        elif "imp" in method: marker = 'v'
+
+        additional = {}
+        if marker != '.': additional['markersize'] = 8
+
         ax.errorbar(
             x, y, #yerr=yerr, 
-            fmt='.', capsize=3,
+            fmt=marker, capsize=3,
             elinewidth=1, label=TITLES[method],
-            color=COLORS[method], alpha=0.8
+            color=COLORS[method], alpha=0.8, **additional
         )
 
     # Plot dense baseline
@@ -81,13 +119,13 @@ for phase in ["init", "rewind"]:
     label_font = {'fontname': 'DejaVu Serif', 'fontsize': 12}
     legend_font = {'family': 'DejaVu Serif', 'size': 9}
 
-    ax.set_title(f"VGG-16 ({phase.upper()})", **label_font, pad=20)
-    ax.set_ylabel("Gradient Norm", **label_font, labelpad=4)
+    ax.set_title(f"{"VGG-16" if is_vgg else "ResNet-20"} ({phase.upper()})", **label_font, pad=20)
+    ax.set_ylabel(FullTitles[ctype], **label_font, labelpad=4)
     ax.set_xlabel("Sparsity (%)", **label_font, labelpad=12)
 
-    ax.set_xticks(sparsity_levels[::2])
+    ax.set_xticks(sparsity_levels[4::6] if is_vgg else sparsity_levels[::4])
     ax.set_xticklabels(
-        [f"{100 - sparsity_to_density(lvl):.1f}" for lvl in sparsity_levels][::2],
+        [f"{100 - sparsity_to_density(lvl):.3f}" for lvl in (sparsity_levels[4::6] if is_vgg else sparsity_levels[::4])],
         fontsize=11
     )
 
@@ -114,6 +152,6 @@ for phase in ["init", "rewind"]:
     ax.grid(True, which='minor', linestyle=':', linewidth=0.5, color='lightgray', axis='y')
 
     # --- Save ---
-    os.makedirs("plots", exist_ok=True)
-    plt.savefig(f"plots/vgg16_gradnorm_concrete_comparison_{phase}.png")
+    os.makedirs(f"plots/{model}/comparisons/{ctype}/", exist_ok=True)
+    plt.savefig(f"plots/{model}/comparisons/{ctype}/{phase}.png", )
     plt.close()

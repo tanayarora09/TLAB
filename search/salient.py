@@ -456,7 +456,7 @@ class GradMatch_Pruner(SaliencyPruning):
         weights = [layer.weight for layer in self.mm.lottery_layers]
         for param in self.mm.parameters():
             param.requires_grad_(any(param is p for p in weights)) 
-            
+
         grad_w = list()
 
         if not self.running:
@@ -499,7 +499,7 @@ class SynFlow_Pruner(SaliencyPruning):
         
         return ticket * self.mm.get_buffer("MASK")
 
-    def grad_mask(self):
+    def grad_mask(self, steps: int = 100):
 
         if self.spr == 1.: return torch.ones_like(self.mm.get_buffer("MASK"))
 
@@ -524,8 +524,8 @@ class SynFlow_Pruner(SaliencyPruning):
                         
         signs = linearize(self.mm)
 
-        for n in range(100):
-            curr_sp = self.spr ** ((n + 1) / 100)
+        for n in range(steps):
+            curr_sp = self.spr ** ((n + 1) / steps)
             out = self._single_shot_grad_mask(weights, curr_sp)
             self.mm.set_ticket(out)
 
