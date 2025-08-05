@@ -13,7 +13,7 @@ mkdir -p "$LOG_DIR"
 MODEL_ARCHS=(1 0)         # 1=VGG, 0=ResNet
 SEARCH_DURS=(1 0)         # 1=Short, 0=Long
 TRAIN_SCHEMES=(1 0)       # 1=Init, 0=Rewind
-SANITY_SCHEMES=(1 0)      # 1 = Invert, 0 = Shuffle
+SANITY_SCHEMES=(2 1 0)      # 2 = Reinit, 1 = Invert, 0 = Shuffle
 RUN_TAGS=(f s t)          # 3 replicate runs
 
 # --- Main loop for generating all 240 jobs ---
@@ -63,6 +63,6 @@ for sanity in "${SANITY_SCHEMES[@]}"; do
 done
 
 echo "============================================================"
-echo "All 48 jobs have been submitted to the Slurm queue."
+echo "All 72 jobs have been submitted to the Slurm queue."
 echo "Use 'squeue -u \$USER' to monitor job progress."
 echo "============================================================"

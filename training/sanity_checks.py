@@ -59,6 +59,7 @@ def run_concrete(rank, world_size,
                  dt, transforms,):
 
     model = ddp_network(rank, world_size, is_vgg)
+    model_to_inspect = model.module if world_size > 1 else model
     if state is not None: model.load_state_dict(state)
     state = model.state_dict()
 
@@ -67,7 +68,6 @@ def run_concrete(rank, world_size,
     if type_of_concrete == 3:
         captures = []
         fcaptures = []
-        model_to_inspect = model.module if world_size > 1 else model
         for bname, block in model_to_inspect.named_children():
             for lname, layer in block.named_children():
                 if lname.endswith("relu"): captures.append(layer)
@@ -83,11 +83,9 @@ def run_concrete(rank, world_size,
     search.finish()
 
     if type_of_sanity == 0:
-        model_to_inspect = model.module if world_size > 1 else model
         model_to_inspect.set_ticket(ticket)
         model_to_inspect.prune_random_given_layerwise(model_to_inspect.export_layerwise_sparsities(), distributed = True)
         ticket = model_to_inspect.export_ticket_cpu()
-
 
     if rank == 0: plot_logs_concrete(logs, name = name)
 
@@ -144,10 +142,10 @@ def run_fit_and_export(rank, world_size,
                        name, old_name, 
                        state, ticket, 
                        is_vgg, start_epochs,
-                       spe, spr, 
+                       spe, spr, type_of_sanity,
                        dt, dv, transforms,): #Transforms: DataAug, Resize, Normalize, Crop
 
-    T = _make_trainer(rank, world_size, is_vgg, state, ticket)
+    T = _make_trainer(rank, world_size, is_vgg, None if type_of_sanity == 2 else state, ticket)
 
     T.mm.export_ticket(old_name, entry_name = f"{spr * 100:.3e}", root = 0)
 
@@ -200,13 +198,18 @@ def main(rank, world_size, name: str, args: list, **kwargs):
     is_gradnorm = True # 1 is yes, 0 is no
     is_short = args.pop(-1) == 1 # 1 is yes, 0 is no
     is_init = args.pop(-1) == 1 # 1 is yes, 0 is no
-    type_of_concrete = "loss" if is_init else "kldlogit"
-    type_of_sanity = args.pop(-1) # 0-1, Shuffle Layerwise, Invert Score
-    if rank == 0: print(f"VGG: {is_vgg} | GradBalance: {is_gradnorm} | INIT: {is_init} | TYPE: {CONCRETE_EXPERIMENTS[type_of_concrete][0]}")
+    type_of_concrete = 0 if is_init else 2
+    type_of_sanity = args.pop(-1) #0-2, Shuffle Layerwise, Invert Score, Reinit Weights
+    sanity_name = ("Shuffled" if type_of_sanity == 0 else ("Inverted" if type_of_sanity == 1 else "Reinit"))
+    if rank == 0: print(f"VGG: {is_vgg} | GradBalance: {is_gradnorm} | INIT: {is_init} | TYPE: {CONCRETE_EXPERIMENTS[type_of_concrete][0]} | SANITY: {sanity_name}")
+
+    if type_of_sanity == 2 and not is_init:
+        print("Reinit not compatible with rewind. Exiting.")
+        exit()
 
     sp_exp = list(range(2, 43 if is_vgg else 33, 2)) if len(args) == 0 else args
 
-    name = f"{CONCRETE_EXPERIMENTS[type_of_concrete][0].lower()}_{("shuffled" if type_of_sanity == 0 else "inverted")}_{'gradbalance' if is_gradnorm else 'multiplier'}_{'init' if is_init else 'rewind'}_{'short' if is_short else 'long'}_{'vgg16' if is_vgg else 'resnet20'}_{name}" 
+    name = f"{CONCRETE_EXPERIMENTS[type_of_concrete][0].lower()}_{sanity_name.lower()}_{'gradbalance' if is_gradnorm else 'multiplier'}_{'init' if is_init else 'rewind'}_{'short' if is_short else 'long'}_{'vgg16' if is_vgg else 'resnet20'}_{name}" 
 
     start_epochs = 0 if is_init else (5 if is_vgg else 3)
     start_epochs *= 3
@@ -245,7 +248,8 @@ def main(rank, world_size, name: str, args: list, **kwargs):
         
         run_fit_and_export(rank = rank, world_size = world_size, name = name, old_name = old_name, 
                            state = state, ticket = ticket, is_vgg = is_vgg, start_epochs = start_epochs,
-                           spe = spe, spr = spr, dt = dt, dv = dv, transforms = (dataAug, resize, normalize, center_crop,))
+                           spe = spe, spr = spr, type_of_sanity = type_of_sanity, dt = dt, dv = dv, 
+                           transforms = (dataAug, resize, normalize, center_crop,))
         
         torch.cuda.empty_cache()
         gc.collect()
