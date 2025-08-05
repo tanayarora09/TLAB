@@ -10,7 +10,7 @@ def sparsity_to_density(level):
     return 100 * 0.8 ** int(level)
 
 is_vgg = False
-ctype = "loss"
+ctype = "oldkld"
 
 model = "vgg16" if is_vgg else "resnet20"
 
@@ -30,16 +30,17 @@ FullTitles = {
 
     "loss": "Task Loss", 
     "deltaloss": "Δ Loss", 
-    "gradnorm": "Gradient Norm", 
+    "gradnorm": "Gradient Norm (LOG)", 
     "kldlogit": "Parent Logit KLD", 
     "msefeature": "Parent Feature MSE", 
-    "gradmatch": "Parent Gradient MSE"
+    "gradmatch": "Parent Gradient MSE",
+    "oldkld": "Custom Smoothened KLD"
 
 }
 
 # --- Config ---
 COLORS = {
-    #"magnitude": "#32CD32",
+    "magnitude": "#32CD32",
     #"random": "#DC143C",
     "imp": "#FF8C00",
     "gradbalance": "#4682B4",
@@ -96,14 +97,21 @@ for phase in ["init", "rewind"]:
         marker = '.'
         if method in ["gradbalance", "multiplier"]: marker = 'X'
         elif "imp" in method: marker = 'v'
+        elif "magnitude" in method: marker = 'H'
 
         additional = {}
         if marker != '.': additional['markersize'] = 8
 
+        """
+        if ctype == 'gradnorm':
+            y = [1/v for v in y]
+            yerr = [1/v for v in yerr]  
+        """
+
         ax.errorbar(
-            x, y, #yerr=yerr, 
-            fmt=marker, capsize=3,
-            elinewidth=1, label=TITLES[method],
+            x, y, yerr=yerr, 
+            fmt=marker, capsize=2,
+            elinewidth=0.35, label=TITLES[method],
             color=COLORS[method], alpha=0.8, **additional
         )
 
@@ -117,7 +125,7 @@ for phase in ["init", "rewind"]:
     # --- Formatting ---
     title_font = {'fontname': 'DejaVu Serif', 'fontsize': 14}
     label_font = {'fontname': 'DejaVu Serif', 'fontsize': 12}
-    legend_font = {'family': 'DejaVu Serif', 'size': 9}
+    legend_font = {'family': 'DejaVu Serif', 'size': 8}
 
     ax.set_title(f"{"VGG-16" if is_vgg else "ResNet-20"} ({phase.upper()})", **label_font, pad=20)
     ax.set_ylabel(FullTitles[ctype], **label_font, labelpad=4)
@@ -130,12 +138,12 @@ for phase in ["init", "rewind"]:
     )
 
     ax.tick_params(axis='y', labelsize=10)
-    #plt.yscale('log')
+    if ctype == "gradnorm": plt.yscale('log')
 
     ax.legend(
         loc='lower center',
         bbox_to_anchor=(0.5, 0.02),
-        ncol=3,
+        ncol=4,
         prop=legend_font,
         frameon=False,
         bbox_transform=fig.transFigure
@@ -153,5 +161,6 @@ for phase in ["init", "rewind"]:
 
     # --- Save ---
     os.makedirs(f"plots/{model}/comparisons/{ctype}/", exist_ok=True)
+    print(f"Saving to plots/{model}/comparisons/{ctype}/{phase}.png")
     plt.savefig(f"plots/{model}/comparisons/{ctype}/{phase}.png", )
     plt.close()

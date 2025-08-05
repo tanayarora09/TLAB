@@ -23,12 +23,13 @@ if __name__ == '__main__':
     # Set to True for VGG-16 configuration, False for ResNet-20 configuration
     is_vgg = False 
 
-    OUT_NAME = "rewind_short_others"
-    CONCRETE_PREFIX = "concrete/gradbalance/rewind/short/"
+    OUT_NAME = "rewind_long_lateimp"
+    CONCRETE_PREFIX = "concrete/gradbalance/rewind/long/"
 
     CONCRETE_POSTFIX = "/finetuned"
     CONCRETE_TYPES = list(reversed(["loss", "kldlogit", "deltaloss", "gradmatch", "msefeature", "gradnorm"]))
 
+    names = ["rbt", "late_imp", "snip", "grasp", "synflow", ]
 
 
     # Model-specific configurations
@@ -55,7 +56,6 @@ if __name__ == '__main__':
     CONCRETE_NAMES = {"loss": "Task Loss", "deltaloss": "Δ Loss", "gradnorm": "Gradient Norm", "kldlogit": "Parent Logit KLD", "msefeature": "Parent Feature MSE", "gradmatch": "Parent Gradient MSE"}
     cname = lambda x: CONCRETE_PREFIX + x + CONCRETE_POSTFIX
 
-    names = ["rbt", "imp", "snip", "grasp", "synflow", ]
     names.extend(cname(ctype) for ctype in CONCRETE_TYPES)
     print("Methods included:", names)
 
@@ -84,7 +84,7 @@ if __name__ == '__main__':
               cname("gradmatch"): COLORS["grey"],}
 
     marker_map = {'synflow': '*', 'grasp': 'o', 'snip': 'D',
-                  'imp': 'v',
+                  'imp': 'v', 'late_imp': 'v',
                   cname("loss"): 'X', cname('deltaloss'): 'X', cname('gradnorm'): 's', 
                   cname("kldlogit"): 'X', cname('msefeature'): 'o', cname('gradmatch'): 'D',}
 

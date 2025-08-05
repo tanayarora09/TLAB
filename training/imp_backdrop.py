@@ -34,7 +34,9 @@ CONCRETE_EXPERIMENTS = {0: ("Loss", SNIPConcrete, SNIP_Pruner, LossSearch),
                         2: ("KldLogit", KldLogit, KldLogit_Pruner, KldLogitSearch),
                         3: ("MseFeature", NormalizedMseFeatures, MSE_Pruner, NormalizedMSESearch),
                         4: ("GradMatch", StepAlignmentConcrete, GradMatch_Pruner, GradMatchSearch),
-                        5: ("DeltaLoss", LossChangeConcrete, SNIP_Pruner, DeltaLossSearch)}
+                        5: ("DeltaLoss", LossChangeConcrete, SNIP_Pruner, DeltaLossSearch), 
+                        6: ("OldKld", OldKld, OldKld_Pruner, OldKldSearch),
+                        }
 
 def ddp_network(rank, world_size, is_vgg):
 
@@ -66,7 +68,7 @@ def get_salient_ticket(rank, world_size, steps, state, type_of_salient, is_vgg, 
 
         inp_args = {'rank': 0, 'world_size': 1, 'model': model_to_inspect}
 
-        if type_of_salient == 3: 
+        if type_of_salient == 3 or type_of_salient == 6: 
             captures = []
             fcaptures = []
             for bname, block in model_to_inspect.named_children():
@@ -100,7 +102,7 @@ def get_concrete_ticket_and_imp(rank, world_size, state, type_of_concrete, is_gr
 
     inp_args = {'rank': rank, 'world_size': world_size, 'model': model_to_inspect}
 
-    if type_of_concrete == 3: 
+    if type_of_concrete == 3 or type_of_concrete == 6: 
         captures = []
         fcaptures = []
         for bname, block in model_to_inspect.named_children():
@@ -139,7 +141,7 @@ def run_check_and_export(rank, world_size, state, spr, type_of_search, is_vgg, d
     inp_args = {'rank': rank, 'world_size': world_size, 'model': model_to_inspect, 'input': dt, 
                 'sparsity_rate': spr, 'transforms': transforms}
 
-    if type_of_search == 3: 
+    if type_of_search == 3 or type_of_search == 6: 
         captures = []
         fcaptures = []
         for bname, block in model_to_inspect.named_children():
@@ -173,7 +175,7 @@ def main(rank, world_size, name: str, args: list, **kwargs):
 
     if rank == 0: print(f"Running IMP Comparison for: {CONCRETE_EXPERIMENTS[type_of_concrete][0]} on {'VGG-16' if is_vgg else 'ResNet-20'}")
 
-    name = CONCRETE_EXPERIMENTS[type_of_concrete][0].lower() + "_" + name
+    name = CONCRETE_EXPERIMENTS[type_of_concrete][0].lower() + "_" + ("vgg16" if is_vgg else "resnet20") + "_" +  name
 
     imp_name = f"late_rewind_imp_{"vgg16" if is_vgg else "resnet20"}_{name[-1]}"
 

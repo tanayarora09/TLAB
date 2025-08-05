@@ -597,7 +597,7 @@ class OldKld_Pruner(ActivationSaliencyPruning):
             #    act.div_(act.sum(dim=1, keepdim=True) + 1e-8)
             act_mask = torch.cat([act.log_softmax(1) for act in self.act_w], dim = 1)
             #act_mask.div_(act_mask.sum(dim=1, keepdim=True))
-            self.full_activations.append((act_mask))
+            self.full_activations.append(act_mask)
             self.clear_capture()
 
     def _accumulate_saliency(self, x, full_activations, overlay):
@@ -609,21 +609,21 @@ class OldKld_Pruner(ActivationSaliencyPruning):
         self.clear_capture()
         return torch.autograd.grad(kl_loss, overlay)[0]
 
-    def _get_ticket(self, magnitudes):
+    def _get_ticket(self, magnitudes, spr):
         ticket = torch.zeros_like(magnitudes, dtype=torch.bool)
         if self.IsRoot:
-            num_to_keep = int(self.spr * magnitudes.numel())
+            num_to_keep = int(spr * magnitudes.numel())
             threshold = torch.kthvalue(magnitudes, magnitudes.numel() - num_to_keep).values
             ticket = magnitudes.ge(threshold)
         if self.DISTRIBUTED: dist.broadcast(ticket, src=0)
         return ticket
 
-    def _single_shot_grad_mask(self):
+    def _single_shot_grad_mask(self, curr_sp):
         overlay = torch.ones(self.mm.num_prunable, device=f'cuda:{self.RANK}', requires_grad=True)
         self._apply_overlay(overlay, torch.randn_like(overlay) * 6e-2, (0.8, 1.2))
         magnitudes = self._accumulate_saliency(self.inp[0], self.full_activations[0], overlay).detach().to(torch.float64)
         self._remove_overlay(overlay, torch.randn_like(overlay) * 6e-2, (0.8, 1.2))
-        return self._get_ticket(magnitudes)
+        return self._get_ticket(magnitudes, curr_sp)
 
     def _running_grad_mask(self):
         overlay = torch.ones(self.mm.num_prunable, device=f'cuda:{self.RANK}', requires_grad=True)

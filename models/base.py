@@ -96,14 +96,19 @@ class BaseModel(nn.Module):
         return (self.get_buffer("MASK") > 0.).sum()
 
     @torch.no_grad()
-    def get_continuous_ticket(self, sparsity_d: float = None):
+    def get_continuous_ticket(self, sparsity_d: float = None, invert: bool = False):
 
         if self.RANK == 0: 
             if sparsity_d is None: ticket = self.get_buffer("MASK") > 0.
             else: 
                 num_keep = int(sparsity_d * self.get_buffer("MASK").numel())
-                thresh = torch.kthvalue(self.get_buffer("MASK"), self.get_buffer("MASK").numel() - num_keep).values
-                ticket = self.get_buffer("MASK").detach().ge(thresh)
+                if invert:
+                    thresh = torch.kthvalue(self.get_buffer("MASK"), num_keep).values
+                    ticket = self.get_buffer("MASK").detach().le(thresh)
+                else:
+                    thresh = torch.kthvalue(self.get_buffer("MASK"), self.get_buffer("MASK").numel() - num_keep).values
+                    ticket = self.get_buffer("MASK").detach().ge(thresh)
+                
         
         elif self.DISTRIBUTED:
             ticket = torch.zeros(self.num_prunable, device = "cuda", dtype = torch.bool) 
