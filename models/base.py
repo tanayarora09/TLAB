@@ -127,6 +127,18 @@ class BaseModel(nn.Module):
     def set_concrete_temperature(self, x):
         self.concrete_temperature.fill_(x)
 
+    def custom_continuous_to_mg(self, sparsity_d: float):
+        with torch.no_grad():
+            for layer in self.lottery_layers:
+                if self.IsRoot: getattr(layer, layer.MASKED_NAME).mul_(getattr(layer, layer.MASK_NAME))
+                torch.distributed.broadcast(getattr(layer, layer.MASKED_NAME), src = 0)
+                torch.distributed.barrier(device_ids = [self.RANK])
+            self.revert_to_binary_mask(ticket = torch.ones(self.num_prunable, dtype = torch.bool, device = 'cuda'))
+            self.prune_by_mg(rate = sparsity_d, iteration = 1, root = 0)
+            ticket = self.export_ticket_cpu()
+        return ticket
+
+
     def revert_to_binary_mask(self, ticket: torch.Tensor):
         self.concrete_temperature = None
         self.is_continuous = False
@@ -141,19 +153,11 @@ class BaseModel(nn.Module):
 
             self.get_buffer("MASK").copy_(mask)
 
-            #if realzo:
-            #    for layer in self.lottery_layers:
-            #        getattr(layer, 'weight').data *= getattr(layer, "weight_mask")
-
             if False: #zero_out:
                 for name, module in self.named_modules():
                     if isinstance(module, nn.BatchNorm2d): 
                         module.reset_parameters()
                         module.reset_running_stats()
-
-            if False: # zero_out: 
-                for layer in self.lottery_layers: 
-                    getattr(layer, "weight").mil_(getattr(layer, "weight_mask"))
 
 #    def reset_batchnorm(self):
 #        self.apply(lambda module: if isinstance(module, nn.BatchNorm2d): module.reset_parameters())
@@ -185,14 +189,14 @@ class BaseModel(nn.Module):
         for bname, block in self.named_children():
             for name, layer in block.named_children():
                 if isinstance(layer, Lottery):
-                    mask = getattr(layer, "weight_mask")
+                    mask = getattr(layer, layer.MASK_NAME)
                     print(f"{bname} | {mask.sum()/mask.numel() * 100} | {mask.numel()}")
 
     @torch.no_grad()
     def export_layerwise_sparsities(self):
         out = dict()
         for i, layer in enumerate(self.lottery_layers):
-            mask = getattr(layer, "weight_mask")
+            mask = getattr(layer, layer.MASK_NAME)
             out[i] = (mask.sum()/mask.numel()).item()
         return out
 
@@ -202,7 +206,7 @@ class BaseModel(nn.Module):
         for bname, block in self.named_children():
             for name, layer in block.named_children():
                 if isinstance(layer, Lottery):
-                    weight = getattr(layer, "weight_mask") * getattr(layer, "weight")
+                    weight = getattr(layer, layer.MASK_NAME) * getattr(layer, "weight")
                     nonzero = (weight.abs().sum(dim=(1, 2, 3)) > 0).sum()
                     print(f"{bname} | {nonzero} | {weight.shape[0]}")
 
@@ -365,7 +369,7 @@ class BaseModel(nn.Module):
                 ticket = list()
                 self.reset_ticket()
                 for i, layer in enumerate(self.lottery_layers):
-                    mask = getattr(layer, "weight_mask").view(-1).clone()#.contiguous()
+                    mask = getattr(layer, layer.MASK_NAME).view(-1).clone()#.contiguous()
                     N = mask.numel()
                     prune_indices = torch.randperm(N)[: int((1.0 - layerwise_sparsities[i]) * N)]
                     mask[prune_indices] = False
@@ -411,7 +415,7 @@ class BaseModel(nn.Module):
         with torch.no_grad():
             not_collapse = True
             for layer in self.lottery_layers:
-                not_collapse &= getattr(layer, "weight_mask").any().item()
+                not_collapse &= getattr(layer, layer.MASK_NAME).any().item()
         return not not_collapse
 
         

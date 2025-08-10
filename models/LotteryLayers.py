@@ -35,6 +35,7 @@ class LotteryDense(nn.Linear, Lottery):
         self.MASK_SHAPE = (out_features, in_features)
         self.MASK_NUMEL = in_features * out_features
         self.MASKED_NAME = "weight"
+        self.MASK_NAME = "weight_mask"
         self.weight_mask = torch.empty(*self.MASK_SHAPE, dtype = torch.bool, device = "cuda")
         self.mask_is_active = True
         self.is_continuous = False
@@ -82,6 +83,7 @@ class LotteryConv2D(nn.Conv2d, Lottery):
         self.MASK_SHAPE = (out_channels, in_channels, kernel_size, kernel_size)
         self.MASK_NUMEL = in_channels * out_channels * kernel_size * kernel_size
         self.MASKED_NAME = "weight"
+        self.MASK_NAME = "weight_mask"
         self.weight_mask = torch.empty(*self.MASK_SHAPE, dtype = torch.bool, device = "cuda")
         self.is_continuous = False
         self.mask_is_active = True

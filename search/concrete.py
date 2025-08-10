@@ -250,7 +250,7 @@ class FrozenConcrete:
 
     def optimize_mask(self, train_data: DataLoader, epochs: int, train_cardinality: int, 
                       sampler_offset: int = 0, dynamic_epochs = False, reduce_epochs: List[int] = [], 
-                      invert_mask = False):
+                      invert_mask = False, custom_continuous_to_mg: bool = False):
 
         """
         If Dynamic Epochs is True, Epochs argument will be ignored
@@ -310,7 +310,9 @@ class FrozenConcrete:
             print(f"True On-Gate Sparsity: {100 * (self.mm.get_true_active()/self.mm.num_prunable).item()}")
             print(f"Clipped Sparsity: {(100 * self.spr)}")
 
-        ticket = self.mm.get_continuous_ticket(sparsity_d = None if dynamic_epochs else self.spr, invert = invert_mask)
+        if not custom_continuous_to_mg: ticket = self.mm.get_continuous_ticket(sparsity_d = None if dynamic_epochs else self.spr, invert = invert_mask)
+
+        else: ticket = self.mm.custom_continuous_to_mg(sparsity_d = self.spr)
 
         return logs, ticket
     

@@ -23,8 +23,9 @@ import pickle
 import gc
 
 EPOCHS = 160
-CARDINALITY = 98 
+CARDINALITY = 98
 
+USE_CUSTOM_CONTINUOUS_TO_MG = True
 
 CONCRETE_EXPERIMENTS = {0: ("Loss", SNIPConcrete),
                         1: ("Gradnorm", GraSPConcrete),
@@ -77,7 +78,9 @@ def run_concrete(rank, world_size,
 
     search.build(spr, torch.optim.Adam, optimizer_kwargs = {'lr': 1e-1}, transforms = transforms, use_gradnorm_approach = is_gradnorm)
 
-    logs, ticket = search.optimize_mask(dt, concrete_epochs, CARDINALITY, dynamic_epochs = False, reduce_epochs = [120])
+    logs, ticket = search.optimize_mask(dt, concrete_epochs, CARDINALITY, dynamic_epochs = False, reduce_epochs = [120], custom_continuous_to_mg = USE_CUSTOM_CONTINUOUS_TO_MG)
+    
+    if USE_CUSTOM_CONTINUOUS_TO_MG: state = search.m.state_dict()
 
     search.finish()
 
