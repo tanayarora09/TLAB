@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 from typing import Callable, List, Tuple
 
 from models.base import BaseModel
-from data.cifar10 import get_loaders, custom_fetch_data
+from data.cifar10 import get_loaders, custom_fetch_data, get_partial_train_loader
 
 
 __all__ = ["SNIP_Pruner", "SynFlow_Pruner", "GraSP_Pruner", "OldKld_Pruner", "MSE_Pruner", "KldLogit_Pruner", "GradMatch_Pruner"]
@@ -64,6 +64,9 @@ class SaliencyPruning:
         for param in self.mm.parameters():
             param.requires_grad_(True)
         self.remove_handles()
+
+    def get_multishot_data(self, batch_count):
+        return get_partial_train_loader(self.RANK, self.WORLD_SIZE, batch_count = batch_count, batch_size = 512)
 
     def get_single_shot_data(self, is_last = True) -> Tuple[torch.Tensor, torch.Tensor]:
         if self.cached_loader != None: loader = self.cached_loader

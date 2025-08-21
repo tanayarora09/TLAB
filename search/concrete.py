@@ -427,6 +427,11 @@ class ActivationConcrete(FrozenConcrete):
 
 class KldLogit(ActivationConcrete):
 
+    def __init__(self, *args, reverse = False, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.reverse_kld = reverse
+        print(self.reverse_kld)
+
     def build(self, desired_sparsity: float, optimizer, 
               optimizer_kwargs: dict, 
               transforms: Tuple[Callable],
@@ -449,7 +454,10 @@ class KldLogit(ActivationConcrete):
         #sparse.div_(sparse.sum(dim = 1, keepdim = True))
         sparse = sparse.log_softmax(1)
 
-        return F.kl_div(sparse, dense, reduction = 'batchmean', log_target = True)        
+        if not self.reverse_kld: out = F.kl_div(sparse, dense, reduction = 'batchmean', log_target = True)
+        else: out = F.kl_div(dense, sparse, reduction = 'batchmean', log_target = True)
+
+        return out
 
     def _hook(self, _, __, output): return #self.act_w.append(output.view(output.shape[0], -1))
     def _fhook(self, func, _, __, output): return #self.act_w.append(func(output).view(output.shape[0], -1))

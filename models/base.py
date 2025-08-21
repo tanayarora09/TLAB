@@ -127,14 +127,14 @@ class BaseModel(nn.Module):
     def set_concrete_temperature(self, x):
         self.concrete_temperature.fill_(x)
 
-    def custom_continuous_to_mg(self, sparsity_d: float):
+    def custom_continuous_to_mg(self, sparsity_d: float, root = 0):
         with torch.no_grad():
             for layer in self.lottery_layers:
-                if self.IsRoot: getattr(layer, layer.MASKED_NAME).mul_(getattr(layer, layer.MASK_NAME))
-                torch.distributed.broadcast(getattr(layer, layer.MASKED_NAME), src = 0)
+                if self.RANK == root: getattr(layer, layer.MASKED_NAME).mul_(torch.sigmoid(getattr(layer, layer.MASK_NAME) / self.concrete_temperature))
+                torch.distributed.broadcast(getattr(layer, layer.MASKED_NAME), src = root)
                 torch.distributed.barrier(device_ids = [self.RANK])
             self.revert_to_binary_mask(ticket = torch.ones(self.num_prunable, dtype = torch.bool, device = 'cuda'))
-            self.prune_by_mg(rate = sparsity_d, iteration = 1, root = 0)
+            self.prune_by_mg(rate = sparsity_d, iteration = 1, root = root)
             ticket = self.export_ticket_cpu()
         return ticket
 

@@ -25,7 +25,7 @@ import gc
 EPOCHS = 160
 CARDINALITY = 98
 
-USE_CUSTOM_CONTINUOUS_TO_MG = True
+USE_CUSTOM_CONTINUOUS_TO_MG = False
 
 CONCRETE_EXPERIMENTS = {0: ("Loss", SNIPConcrete),
                         1: ("Gradnorm", GraSPConcrete),
@@ -73,6 +73,8 @@ def run_concrete(rank, world_size,
                 if lname.endswith("relu"): captures.append(layer)
                 elif lname.endswith("fc"): fcaptures.append((layer, lambda x: torch.softmax(x, dim = 1)))
         inp_args.update({"capture_layers": captures, "fake_capture_layers": fcaptures})
+
+    if type_of_concrete == 2: inp_args.update({"reverse": True})
 
     search = CONCRETE_EXPERIMENTS[type_of_concrete][1](**inp_args)
 
@@ -146,7 +148,7 @@ def run_fit_and_export(rank, world_size,
 
     T.mm.export_ticket(old_name, entry_name = f"{spr * 100:.3e}", root = 0)
 
-    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay': 1e-3},
+    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay': 1e-4},
             loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
             collective_transforms = (transforms[1], transforms[2]), train_transforms = (transforms[0],),
             eval_transforms = (transforms[3],), final_collective_transforms = tuple(),
@@ -227,6 +229,7 @@ def main(rank, world_size, name: str, args: list, **kwargs):
     for spe in sp_exp:
 
         spr = 0.8**spe
+        if spe == 1000: spr = 0.0166
         name = old_name + f"_{spe:02d}"
 
         state, ticket = run_concrete(rank = rank, world_size = world_size, name = name, 
