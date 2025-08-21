@@ -298,8 +298,9 @@ class SNIP_Pruner(SaliencyPruning):
 
 
 class KldLogit_Pruner(SaliencyPruning):
-    def __init__(self, rank: int, world_size: int, model: Module | DDP):
+    def __init__(self, rank: int, world_size: int, model: Module | DDP, reverse = True):
         super().__init__(rank, world_size, model)
+        self.reversekld = reverse
 
     def _accumulate_saliency(self, x, y, weights, grad_w):
         
@@ -311,8 +312,9 @@ class KldLogit_Pruner(SaliencyPruning):
         sparse = self.mm(x).log_softmax(1)
 
 
-        loss = F.kl_div(sparse, dense, reduction = 'batchmean', log_target = True)   
-        
+        if not self.reversekld: loss = F.kl_div(sparse, dense, reduction = 'batchmean', log_target = True)   
+        else: loss = F.kl_div(dense, sparse, reduction = 'batchmean', log_target = True)   
+
         if len(grad_w) == 0:
             grad_w.extend((grad.abs() for grad in torch.autograd.grad(loss, weights)))
         else:

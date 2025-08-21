@@ -427,7 +427,7 @@ class ActivationConcrete(FrozenConcrete):
 
 class KldLogit(ActivationConcrete):
 
-    def __init__(self, *args, reverse = False, **kwargs):
+    def __init__(self, *args, reverse = True, **kwargs):
         super().__init__(*args, **kwargs)
         self.reverse_kld = reverse
         print(self.reverse_kld)

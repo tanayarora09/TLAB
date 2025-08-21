@@ -286,12 +286,14 @@ class KldLogitSearch(BaseGeneticSearch):
                  input: torch.Tensor | DataLoader, sparsity_rate: float,
                  transforms: Tuple[Callable] = tuple(),
                  input_sampler_offset: int = None,
-                 reverse_fitness_scores: bool = False,):
+                 reverse_fitness_scores: bool = False,
+                 reverse: bool = True):
         
         super().__init__(rank, world_size, model, input, sparsity_rate, transforms, 
                          input_sampler_offset, reverse_fitness_scores)
         
         self.full_activations = None
+        self.reversekld = reverse
 
     def _prepare_for_fitness_calculation(self):
         self.make_full_acts()
@@ -331,8 +333,9 @@ class KldLogitSearch(BaseGeneticSearch):
                 logits = self.mm(self.inp)
                 curr_activations = logits.log_softmax(1)
 
-                return F.kl_div(curr_activations, self.full_activations, reduction = "batchmean", log_target = True).item()
-            
+                if not self.reversekld: return F.kl_div(curr_activations, self.full_activations, reduction = "batchmean", log_target = True).item()
+                else: return F.kl_div(self.full_activations, curr_activations, reduction = "batchmean", log_target = True).item()
+
             kl_tr = torch.as_tensor(0.0, dtype = torch.float64, device = 'cuda')
             cnt = torch.as_tensor(0, dtype = torch.int64, device = 'cuda')
 
@@ -346,7 +349,8 @@ class KldLogitSearch(BaseGeneticSearch):
                 logits = self.mm(x)
                 curr_activations = logits.log_softmax(1)
 
-                kl_tr += F.kl_div(curr_activations, self.full_activations[idx], reduction = "batchmean", log_target = True)
+                if not self.reversekld: kl_tr += F.kl_div(curr_activations, self.full_activations[idx], reduction = "batchmean", log_target = True)
+                else: kl_tr += F.kl_div(self.full_activations[idx], curr_activations, reduction = "batchmean", log_target = True)
                 cnt += 1
             
             return kl_tr.div_(cnt.float()).item()
