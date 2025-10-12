@@ -10,6 +10,7 @@ import random
 import os
 import shutil
 import subprocess
+import tempfile
 from filelock import FileLock
 
 from typing import List, Tuple
@@ -319,17 +320,38 @@ def _use_scratch_orca():
     source_dir = "/scratch/tarora_pdx-imagenet/imagenet"
     target_dir = "/tmp/imagenet"
     lock_path = "/tmp/imagenet.lock"
+    num_workers = 8  # Tune based on disk speed and CPU count
 
     def is_non_empty_dir(path):
         return os.path.isdir(path) and len(os.listdir(path)) > 0
 
     with FileLock(lock_path):
         if not is_non_empty_dir(target_dir):
-            print(f"[{os.getpid()}] Copying Imagenet dataset with rsync...")
-            if os.path.exists(target_dir):
-                shutil.rmtree(target_dir)
+            print(f"[{os.getpid()}] Copying Imagenet dataset in parallel...")
             os.makedirs(target_dir, exist_ok=True)
-            subprocess.run(["rsync", "-a", f"{source_dir}/", target_dir], check=True)
+
+            with tempfile.TemporaryDirectory() as tmpdir:
+                all_files = os.path.join(tmpdir, "all_files.txt")
+                subprocess.run(["find", source_dir, "-type", "f"], stdout=open(all_files, "w"), check=True)
+
+                # Split file list into roughly equal chunks
+                subprocess.run(["split", "-n", f"l/{num_workers}", all_files, os.path.join(tmpdir, "chunk_")], check=True)
+
+                # Launch parallel rsync workers
+                procs = []
+                for f in os.listdir(tmpdir):
+                    if f.startswith("chunk_"):
+                        p = subprocess.Popen([
+                            "rsync", "-a",
+                            f"--files-from={os.path.join(tmpdir, f)}",
+                            source_dir + "/", target_dir + "/"
+                        ])
+                        procs.append(p)
+
+                # Wait for all to complete
+                for p in procs:
+                    p.wait()
+
             print(f"[{os.getpid()}] Copy complete.")
         else:
             print(f"[{os.getpid()}] Dataset already available.")
