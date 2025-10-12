@@ -244,15 +244,15 @@ class BaseCNNTrainer:
 
                 if accum:
                     
-                    if (step + 1) % 13 == 0 or (step + 1 == train_cardinality): # Synchronize and Log.
+                    if (step + 1) % (train_cardinality//30) == 0 or (step + 1 == train_cardinality): # Synchronize and Log.
                         
                         self.transfer_metrics()
                         
                         if self.IsRoot: logs[iter] = self.metric_results()
                         
-                        if (step + 1) % 52 == 0 and self.IsRoot and verbose:
+                        if (step + 1) % 2*(train_cardinality//30) == 0 and self.IsRoot and verbose:
                             
-                            self.print(f"----  Status at {math.ceil((step + 1) / 52):.0f}/8: ----     Accuracy: {logs[iter]['accuracy']:.4f}   --  Loss: {logs[iter]['loss']:.5f} --", 'white')
+                            self.print(f"----  Status at {math.ceil((step + 1) / 2*(train_cardinality//30)):.0f}/8: ----     Accuracy: {logs[iter]['accuracy']:.4f}   --  Loss: {logs[iter]['loss']:.5f} --", 'white')
             
             if _break: break
 
