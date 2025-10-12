@@ -15,6 +15,19 @@ import os
 import sys
 import gc
 
+class ResNet50_CNN(BaseCNNTrainer):
+    def post_epoch_hook(self, epoch, EPOCHS):
+        if (epoch + 1) == 29 or (epoch + 1) == 59 or (epoch + 1) == 79: # Epochs 80, 120
+            self.reduce_learning_rate(10)
+        return 
+    
+class ResNet50_CNN(BaseIMP):
+    def post_epoch_hook(self, epoch, EPOCHS):
+        if (epoch + 1) == 29 or (epoch + 1) == 59 or (epoch + 1) == 79: # Epochs 80, 120
+            self.reduce_learning_rate(10)
+        return 
+
+
 class ResNet_CNN(BaseCNNTrainer):
     def post_epoch_hook(self, epoch, EPOCHS):
         if (epoch + 1) == 79 or (epoch + 1) == 119: # Epochs 80, 120

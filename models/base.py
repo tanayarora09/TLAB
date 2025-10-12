@@ -7,6 +7,7 @@ import h5py
 
 from models.LotteryLayers import Lottery
 
+import torchinfo
 
 class BaseModel(nn.Module):
 
@@ -89,7 +90,7 @@ class BaseModel(nn.Module):
 
     #@torch.no_grad()
     def get_expected_active(self):
-        return torch.sigmoid(self.get_buffer("MASK") / self.concrete_temperature).sum()
+        return torch.sigmoid(self.get_buffer("MASK")).sum() # / self.concrete_temperature
     
     #@torch.no_grad()
     def get_true_active(self):
@@ -130,7 +131,7 @@ class BaseModel(nn.Module):
     def custom_continuous_to_mg(self, sparsity_d: float, root = 0):
         with torch.no_grad():
             for layer in self.lottery_layers:
-                if self.RANK == root: getattr(layer, layer.MASKED_NAME).mul_(torch.sigmoid(getattr(layer, layer.MASK_NAME) / self.concrete_temperature))
+                if self.RANK == root: getattr(layer, layer.MASKED_NAME).mul_(torch.sigmoid(getattr(layer, layer.MASK_NAME))) # / self.concrete_temperature
                 torch.distributed.broadcast(getattr(layer, layer.MASKED_NAME), src = root)
                 torch.distributed.barrier(device_ids = [self.RANK])
             self.revert_to_binary_mask(ticket = torch.ones(self.num_prunable, dtype = torch.bool, device = 'cuda'))
@@ -190,14 +191,16 @@ class BaseModel(nn.Module):
             for name, layer in block.named_children():
                 if isinstance(layer, Lottery):
                     mask = getattr(layer, layer.MASK_NAME)
-                    print(f"{bname} | {mask.sum()/mask.numel() * 100} | {mask.numel()}")
+                    print(f"{bname}.{name} | {mask.sum()/mask.numel() * 100} | {mask.numel()}")
 
     @torch.no_grad()
     def export_layerwise_sparsities(self):
         out = dict()
-        for i, layer in enumerate(self.lottery_layers):
-            mask = getattr(layer, layer.MASK_NAME)
-            out[i] = (mask.sum()/mask.numel()).item()
+        for bname, block in self.named_children():
+            for name, layer in block.named_children():   
+                if isinstance(layer, Lottery):
+                    mask = getattr(layer, layer.MASK_NAME)
+                    out[bname + "." + name] = ((mask.sum()/mask.numel()).item(), mask.numel())
         return out
 
     @torch.no_grad()
@@ -212,6 +215,7 @@ class BaseModel(nn.Module):
 
 
     pls = print_layerwise_sparsities
+    els = export_layerwise_sparsities
     cc = count_channels
 
     @torch._dynamo.disable
@@ -267,6 +271,13 @@ class BaseModel(nn.Module):
         dist.broadcast(data, src=root)
 
         self.set_ticket(data)
+
+    def summary(self, batch_size, image_size):
+        """
+        Prints torchinfo summary of model.
+        """
+        #if not (self.RANK == 0): return
+        torchinfo.summary(self, (batch_size, 3, image_size, image_size))
 
     ### --------------------------------------- PRUNING ----------------------------
 

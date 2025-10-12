@@ -64,7 +64,7 @@ class LotteryDense(nn.Linear, Lottery):
                 u = torch.rand_like(self.weight_mask, requires_grad = False)
                 u = torch.clamp(u, 1e-10, 1.-1e-10)
                 l = torch.log(u) - torch.log(1 - u)
-                mask = F.sigmoid((l + self.weight_mask)/self.concrete_temperature)
+                mask = F.sigmoid((l + self.weight_mask * self.concrete_temperature)/self.concrete_temperature)
                 kernel = self.weight * mask
 
             return F.linear(inputs, kernel, self.bias)
@@ -109,7 +109,7 @@ class LotteryConv2D(nn.Conv2d, Lottery):
                 u = torch.rand_like(self.weight_mask, requires_grad = False)
                 u = torch.clamp(u, 1e-10, 1.-1e-10)
                 l = torch.log(u) - torch.log(1 - u)
-                mask = F.sigmoid((l + self.weight_mask)/self.concrete_temperature)
+                mask = F.sigmoid((l + self.weight_mask * self.concrete_temperature)/self.concrete_temperature)  # * self.concrete_temperature
                 kernel = self.weight * mask
                 
             return self._conv_forward(inputs, kernel, self.bias)

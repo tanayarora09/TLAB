@@ -9,7 +9,6 @@ import torch.multiprocessing as mp
 import numpy as np
 import copy
 
-import torchinfo
 from tqdm import tqdm
 
 from typing import Callable, Tuple
@@ -309,7 +308,7 @@ class BaseCNNTrainer:
 
     #@torch.compile
     def train_step(self, x: torch.Tensor, y: torch.Tensor, accum: bool = True, accum_steps: int = 1, id: str = None):
-        
+
         with torch.autocast('cuda', dtype = torch.float16, enabled = self.AMP):
 
             output = self.m(x)
@@ -370,6 +369,7 @@ class BaseCNNTrainer:
         Evaluate model on dataloader.
         To retrieve results, call metric_results()
         """
+        
         with torch.no_grad():
 
             self.m.eval()
@@ -391,7 +391,7 @@ class BaseCNNTrainer:
 
     #@torch.compile
     def test_step(self, x: torch.Tensor, y: torch.Tensor) -> None:
-        
+
         with torch.no_grad():
 
             output = self.m(x)
@@ -472,13 +472,6 @@ class BaseCNNTrainer:
     
     def fromNamePrefix(self, name: str, prefix: str):
         return f"{prefix}_{name}" if prefix else name
-
-    def summary(self, batch_size):
-        """
-        Prints torchinfo summary of model.
-        """
-        if not self.IsRoot: return
-        torchinfo.summary(self.mm, (batch_size, 3, 224, 224))
 
     ### Training
 

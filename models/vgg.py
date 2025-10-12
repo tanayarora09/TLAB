@@ -69,7 +69,7 @@ class VGG(BaseModel):
         
     class OutBlock(nn.Module):
 
-        def __init__(self, in_features: int, custom_init = False):
+        def __init__(self, in_features: int, output_features: int, custom_init = False):
 
             super(VGG.OutBlock, self).__init__()
 
@@ -78,7 +78,7 @@ class VGG(BaseModel):
             #self.register_module("norm", nn.BatchNorm1d(in_features))
             #self.register_module("relu", FakeHReLU())
 
-            fc_obj = nn.Linear(in_features, 10)
+            fc_obj = nn.Linear(in_features, output_features)
 
             if custom_init: 
                 fc_obj.reset_parameters = types.MethodType(conv_fc_init, fc_obj)
@@ -96,7 +96,7 @@ class VGG(BaseModel):
             x = self.get_submodule("fc")(x)
             return x
 
-    def __init__(self, rank: int, world_size: int, depth: int = 19, input_channels: int = 3, custom_init = True, conv_bias = False, bn_track = False):
+    def __init__(self, rank: int, world_size: int, depth: int = 16, outfeatures: int = 10, inchannels: int = 3, custom_init = True, conv_bias = False, bn_track = False):
         super(VGG, self).__init__()
 
         if depth not in valid:
@@ -115,16 +115,14 @@ class VGG(BaseModel):
                 curr_num = 1
 
             else:
-                self.register_module(f"block{curr_block}{curr_num}", self.ConvBN(input_channels, value, custom_init = custom_init, bias = conv_bias, bn_track = bn_track))
+                self.register_module(f"block{curr_block}{curr_num}", self.ConvBN(inchannels, value, custom_init = custom_init, bias = conv_bias, bn_track = bn_track))
                 self.layers.append(f"block{curr_block}{curr_num}")
                 curr_num += 1
-                input_channels = value
+                inchannels = value
 
-        self.out = self.OutBlock(512, custom_init = custom_init)
+        self.out = self.OutBlock(512, outfeatures, custom_init = custom_init)
 
         self.init_base(rank, world_size)
-
-
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         
@@ -134,3 +132,6 @@ class VGG(BaseModel):
         x = self.out(x)
 
         return x
+    
+def vgg(rank: int, world_size: int, depth: int = 16, outfeatures: int = 10, inchannels: int = 3, custom_init = True, conv_bias = False, bn_track = False):
+    return VGG(rank, world_size, depth, outfeatures, inchannels, custom_init, conv_bias, bn_track)

@@ -7,10 +7,10 @@ from utils.serialization_utils import logs_to_pickle, save_tensor
 from utils.training_utils import plot_logs
 
 from training.VGG import VGG_CNN
-from models.VGG import VGG
+from models.vgg import VGG
 
 from training.ResNet import ResNet_CNN
-from models.ResNet import ResNet
+from models.resnet import ResNet
 
 from search.salient import *
 
@@ -29,6 +29,8 @@ def ddp_network(rank, world_size, is_vgg, bn_track = False):
 
     depth = 16 if is_vgg else 20
     
+    print("bn:", bn_track)
+
     model = (VGG if is_vgg else ResNet)(depth = depth, rank = rank, world_size = world_size, custom_init = True, bn_track = bn_track).cuda()
     
     if world_size > 1:
@@ -44,7 +46,7 @@ def ddp_network(rank, world_size, is_vgg, bn_track = False):
 
 def run_salient(rank, world_size, name, old_name, type_of_salient, steps_of_salient, is_vgg, spe, spr, transforms, state = None): #ONLY ON ROOT
 
-    model = ddp_network(rank, world_size, is_vgg, bn_track = (type_of_salient == 2 and type_of_salient == 5))
+    model = ddp_network(rank, world_size, is_vgg, bn_track = (type_of_salient == 2 or type_of_salient == 5))
     if state is not None: model.load_state_dict(state)
     state = model.state_dict()
     

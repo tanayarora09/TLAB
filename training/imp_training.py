@@ -1,7 +1,7 @@
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from data.cifar10 import *
+from data import cifar10, cifar100
 
 from utils.serialization_utils import logs_to_pickle, save_tensor
 from utils.training_utils import plot_logs
@@ -22,10 +22,13 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
     EPOCHS = 160
     CARDINALITY = 98
     PRUNE_ITERS = sp_exp[0] #should only be one argument
+    is_cifar100 = sp_exp.pop(-1) == 1
     is_vgg = sp_exp.pop(-1) == 1
 
-    REWIND_EPOCH = 5 if is_vgg else 3
-    #REWIND_EPOCH *= 3
+    data_path = cifar100 if is_cifar100 else cifar10
+    outfeatures = 100 if is_cifar100 else 10
+
+    REWIND_EPOCH = 15 if is_vgg else 9
 
     if len(sp_exp) != 1: raise ValueError()
 
@@ -33,13 +36,13 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
 
     if rank == 0: h5py.File(f"./logs/TICKETS/{old_name}.h5", "w").close()
 
-    dataAug = torch.jit.script(DataAugmentation().to('cuda'))
-    resize = torch.jit.script(Resize().to('cuda'))
-    normalize = torch.jit.script(Normalize().to('cuda'))
-    center_crop = torch.jit.script(CenterCrop().to('cuda'))
+    dataAug = torch.jit.script(data_path.DataAugmentation().to('cuda'))
+    resize = torch.jit.script(data_path.Resize().to('cuda'))
+    normalize = torch.jit.script(data_path.Normalize().to('cuda'))
+    center_crop = torch.jit.script(data_path.CenterCrop().to('cuda'))
 
     depth = 16 if is_vgg else 20
-    model = (VGG if is_vgg else ResNet)(rank = rank, world_size = world_size, depth = depth, custom_init = True).cuda() 
+    model = (VGG if is_vgg else ResNet)(rank = rank, world_size = world_size, depth = depth, output_channels = outfeatures, custom_init = True).cuda() 
 
     if world_size > 1:
         model = DDP(model, 
@@ -60,7 +63,7 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
     torch.cuda.empty_cache()
     gc.collect()
 
-    dt, dv = get_loaders(rank, world_size, batch_size = 512)
+    dt, dv = data_path.get_loaders(rank, world_size, batch_size = 512)
 
     (logs, results), sparsities_d = T.TicketIMP(dt, dv, EPOCHS, CARDINALITY, old_name, 0.8, PRUNE_ITERS, rewind_iter = REWIND_EPOCH*CARDINALITY, validate = False)
 

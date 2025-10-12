@@ -5,9 +5,9 @@ import torch.distributed as dist
 
 import os
 import sys
+import argparse
 
 import random
-
 
 import matplotlib
 matplotlib.use('Agg') 
@@ -20,13 +20,13 @@ def setup_distribute(rank, world_size):
 def cleanup_distribute():
     dist.destroy_process_group()
 
-def dist_wrapper(rank, world_size, func, name: str, sp):
+def dist_wrapper(rank, world_size, func, name: str, args):
     setup_distribute(rank, world_size)
     torch.cuda.set_device(rank)
     set_dynamo_cfg()
     set_non_deterministic()
     try:
-        func(rank, world_size, name, sp)
+        func(rank, world_size, name, args)
     finally:
         cleanup_distribute()
 
@@ -46,36 +46,55 @@ def reset_deterministic(SEED):
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
-def main(func, name: str, sp):
+def main(func, name: str, args):
     world_size = torch.cuda.device_count()
-    mp.spawn(dist_wrapper, args=(world_size, func, name, sp), nprocs=world_size, join=True)
+    mp.spawn(dist_wrapper, args=(world_size, func, name, args), nprocs=world_size, join=True)
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run a concrete sparsification experiment.")
+
+    parser.add_argument('name', type=str, help='The base name for the experiment logs and files.')
+
+    parser.add_argument('--model', type=str, default='resnet20', choices=['resnet20', 'vgg16', 'resnet50'],
+                        help='Model architecture to use (default: resnet20).')
+    parser.add_argument('--dataset', type=str, default='cifar10', choices=['cifar10', 'cifar100', 'imagenet'],
+                        help='Dataset to use (default: cifar10).')
+    parser.add_argument('--criteria', type=str, default='kldlogit', 
+                        choices=['loss', 'deltaloss', 'gradnorm', 'kldlogit', 'msefeature', 'gradmatch'],
+                        help='Sparsification criteria (default: kldlogit).')
+    parser.add_argument('--time', type=str, default='rewind', choices=['init', 'rewind'],
+                        help='Sparsity time strategy (init or rewind) (default: rewind).')
+    parser.add_argument('--gradstep', type=str, default='gradbalance', choices=['gradbalance', 'lagrange'],
+                        help='Gradient approach (default: gradbalance).')
+    parser.add_argument('--duration', type=str, default='long', choices=['short', 'long'],
+                        help='Length of concrete optimization (default: long).')
+    
+    parser.add_argument('--num', type=int, default=1,
+                        help='Number of independent experiments to run (default: 1).')
+    parser.add_argument('--sparsities', nargs='*', type=float, default=None,
+                        help='Optional list of density percentages. If not provided, a default range is used.')
+
+    args = parser.parse_args()
+
+    args.sparsities = [sp/100 for sp in args.sparsities]
+    
+    main_kwargs = args
+    exp_name = main_kwargs.name
+    num_exp = main_kwargs.num
+    
+    del main_kwargs.name
+    del main_kwargs.num
+
+    return exp_name, num_exp, main_kwargs
 
 if __name__ == "__main__":
 
-    if len(sys.argv) != 2 and len(sys.argv) != 4:
-        raise ValueError("Must pass exactly one name. Usage should be python main.py $NAME $\"EPS,ITS,SIZE,PLAT,SPARSITY\" $NUM_EXPERIMENTS")
-
-    name = sys.argv[1]
-
-    try: 
-
-        args = [int(item) for item in sys.argv[2].split(",")]
-        num_exp = int(sys.argv[3])
-
-    except IndexError:
-        print("Wrong number of arguments. Using default arguments.")
-        args = [1,2,3]
-        num_exp = 1
-
-    SEED: int = random.randint(0, 2**31)
-    print("--------------------------------------------------------------")
-    print("NO SEED: ", SEED)
-    print("--------------------------------------------------------------")
-    
     from training import concrete_training
     
+    exp_name, num_exp, main_kwargs = parse_args()
+
     for exp in range(num_exp):
         print("--------------------------------------------------------------")
         print("EXPERIMENT NUMBER ", exp)
-        print("--------------------------------------------------------------")      
-        main(concrete_training.main, name + f"_{exp}", args)
+        print("--------------------------------------------------------------") 
+        main(concrete_training.main, exp_name + f"_{exp}", main_kwargs)

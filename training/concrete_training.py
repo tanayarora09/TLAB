@@ -1,7 +1,7 @@
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from data.cifar10 import *
+from data import cifar10, cifar100, imagenet
 
 from utils.serialization_utils import logs_to_pickle, save_tensor
 from utils.training_utils import plot_logs
@@ -9,10 +9,10 @@ from utils.search_utils import plot_logs_concrete
 
 
 from training.VGG import VGG_CNN
-from models.VGG import VGG
+from models.vgg import vgg
 
-from training.ResNet import ResNet_CNN
-from models.ResNet import ResNet
+from training.ResNet import ResNet_CNN, ResNet50_CNN
+from models.resnet import resnet
 
 from search.salient import *
 from search.concrete import * 
@@ -21,228 +21,243 @@ from search.genetic import *
 import json
 import pickle
 import gc
+import math
+import time
 
-EPOCHS = 160
-CARDINALITY = 98
+CONCRETE_EXPERIMENTS = {"loss": SNIPConcrete,
+                        "gradnorm": GraSPConcrete,
+                        "kldlogit": KldLogit,
+                        "msefeature": NormalizedMseFeatures,
+                        "gradmatch": StepAlignmentConcrete,
+                        "deltaloss": LossChangeConcrete}
 
-USE_CUSTOM_CONTINUOUS_TO_MG = False
+def total_epochs(args):
+    return {"resnet20": 160, "vgg16": 160, "resnet50": 90}[args.model]
 
-CONCRETE_EXPERIMENTS = {0: ("Loss", SNIPConcrete),
-                        1: ("Gradnorm", GraSPConcrete),
-                        2: ("KldLogit", KldLogit),
-                        3: ("MseFeature", NormalizedMseFeatures),
-                        4: ("GradMatch", StepAlignmentConcrete),
-                        5: ("DeltaLoss", LossChangeConcrete)}
+def batchsize(args):
+    return 1024 if args.dataset == "imagenet" else 512
 
-def ddp_network(rank, 
-                world_size, 
-                is_vgg):
+def datasize(args):
+    return 1281167 if args.dataset == "imagenet" else 50000
 
-    depth = 16 if is_vgg else 20
+def cardinality(args):
+    return math.ceil(datasize(args)/batchsize(args))
+
+def learning_rate(args):
+    return {"resnet20": 1e-1, "vgg16": 1e-1, "resnet50": 4e-1}[args.model]
+
+def start_epochs(args):
+    start_epochs = {"resnet20": 9, "vgg16": 15, "resnet50": 18}[args.model]
+    if args.time == "init": start_epochs = 0
+    return start_epochs
+
+def concrete_epochs(args):
+    concrete_epoch_ratio = 0.125 if args.duration == "short" else 1.0
+    return int(concrete_epoch_ratio * total_epochs(args))
+
+def ddp_network(args):
     
-    model = (VGG if is_vgg else ResNet)(depth = depth, rank = rank, world_size = world_size, custom_init = True).cuda()
+    classes = {"cifar10": 10,
+               "cifar100": 100,
+               "imagenet": 1000}[args.dataset]
+    
+    kwargs = {"outfeatures": classes,
+              "rank": args.rank,
+              "world_size": args.world_size,
+              "custom_init": True}
 
-    if world_size > 1:
+    model = None
+    if args.model == "vgg16": model = vgg(depth = 16, **kwargs)
+    if args.model == "resnet20": model = resnet(depth = 20, **kwargs)
+    if args.model == "resnet50": model = resnet(depth = 50, **kwargs)
+
+    model = model.cuda()
+
+    if args.world_size > 1:
         model = DDP(model, 
-            device_ids = [rank],
-            output_device = rank, 
+            device_ids = [args.rank],
+            output_device = args.rank, 
             gradient_as_bucket_view = True)
 
     return model
 
-def run_concrete(rank, world_size, 
-                 name, is_vgg,  
-                 type_of_concrete,
-                 is_gradnorm, 
-                 concrete_epochs,
-                 state, spe, spr, 
+def run_concrete(name, args,
+                 state, spr, 
                  dt, transforms,):
+    
+    if spr == 1.0: return None, None
 
-    model = ddp_network(rank, world_size, is_vgg)
+    model = ddp_network(args)
     if state is not None: model.load_state_dict(state)
     state = model.state_dict()
 
-    inp_args = {"rank": rank, "world_size": world_size, "model": model,}
+    inp_args = {"rank": args.rank, "world_size": args.world_size, "model": model,}
 
-    if type_of_concrete == 3:
+    if args.criteria == "msefeature":
         captures = []
         fcaptures = []
-        model_to_inspect = model.module if world_size > 1 else model
+        model_to_inspect = model.module if args.world_size > 1 else model
         for bname, block in model_to_inspect.named_children():
             for lname, layer in block.named_children():
                 if lname.endswith("relu"): captures.append(layer)
                 elif lname.endswith("fc"): fcaptures.append((layer, lambda x: torch.softmax(x, dim = 1)))
         inp_args.update({"capture_layers": captures, "fake_capture_layers": fcaptures})
 
-    if type_of_concrete == 2: inp_args.update({"reverse": True})
+    search = CONCRETE_EXPERIMENTS[args.criteria](**inp_args)
 
-    search = CONCRETE_EXPERIMENTS[type_of_concrete][1](**inp_args)
+    search.build(spr, torch.optim.Adam, optimizer_kwargs = {'lr': learning_rate(args)}, transforms = transforms, gradbalance = (args.gradstep != "lagrange"))
 
-    search.build(spr, torch.optim.Adam, optimizer_kwargs = {'lr': 1e-1}, transforms = transforms, use_gradnorm_approach = is_gradnorm)
-
-    logs, ticket = search.optimize_mask(dt, concrete_epochs, CARDINALITY, dynamic_epochs = False, reduce_epochs = [120], custom_continuous_to_mg = USE_CUSTOM_CONTINUOUS_TO_MG)
+    logs, ticket = search.optimize_mask(dt, concrete_epochs(args), cardinality(args), dynamic_epochs = False, reduce_epochs = [60 if args.model == "resnet50" else 120])
     
-    if USE_CUSTOM_CONTINUOUS_TO_MG: state = search.m.state_dict()
-
     search.finish()
 
-    if rank == 0: plot_logs_concrete(logs, name = name)
+    if args.rank == 0: plot_logs_concrete(logs, name = name)
 
     return state, ticket
 
 
-def _make_trainer(rank, world_size, is_vgg, state = None, ticket = None):
+def _make_trainer(args, state = None, ticket = None):
 
-    model = ddp_network(rank, world_size, is_vgg)
+    model = ddp_network(args)
+
     if state is not None: model.load_state_dict(state)
-    model_to_inspect = model.module if world_size > 1 else model
+    model_to_inspect = model.module if args.world_size > 1 else model
     if ticket is not None: model_to_inspect.set_ticket(ticket)
 
-    if (rank == 0):
-        if world_size == 1: print(f"Training with sparsity {(model.sparsity.item()):.3e}% \n")
-        else: print(f"Training with sparsity {(model.module.sparsity.item()):.3e}% \n")
+    if (args.rank == 0):
+        print(f"Training with sparsity {(model_to_inspect.sparsity.item()):.3e}% \n")
 
-    return (VGG_CNN if is_vgg else ResNet_CNN)(model, rank, world_size)
-
+    return {"vgg16": VGG_CNN, "resnet20": ResNet_CNN, "resnet50": ResNet50_CNN}[args.model](model, args.rank, args.world_size)
 
 
-def run_start_train(rank, world_size, 
-                    name, is_vgg, start_epochs, 
+
+def run_start_train(name, args, 
                     dt, dv, transforms,): 
 
-    T = _make_trainer(rank, world_size, is_vgg)
+    T = _make_trainer(args)
 
-    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay': 1e-3},
+    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': learning_rate(args), 'momentum': 0.9, 'weight_decay': 1e-3},
             loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
-            collective_transforms = (transforms[1], transforms[2]), train_transforms = (transforms[0],),
-            eval_transforms = (transforms[3],), final_collective_transforms = tuple(),
+            collective_transforms = tuple(), train_transforms = (transforms[0],),
+            eval_transforms = (transforms[1],), final_collective_transforms = (transforms[2], ),
             scale_loss = True, gradient_clipnorm = 2.0)
 
-    T.fit(dt, dv, start_epochs, CARDINALITY, name + "_pretrain", save = False, save_init = False, validate = False)
+    T.fit(dt, dv, start_epochs(args), cardinality(args), name + "_pretrain", save = False, save_init = False, validate = False)
 
     T.evaluate(dt)
 
-    if (rank == 0): 
+    if (args.rank == 0): 
         train_res = T.metric_results()
         print("Train Results: ", train_res)
 
     T.evaluate(dv)
     
-    if (rank == 0):
+    if (args.rank == 0):
         val_res =  T.metric_results()
         print("Validation Results: ", val_res) 
 
     return T.m.state_dict(), T.optim.state_dict()
 
 
+def run_fit_and_export(name, old_name,
+                       args, state, ticket, 
+                       spr, dt, dv, transforms,): #Transforms: DataAug, CenterCrop, Normalize
 
-
-def run_fit_and_export(rank, world_size, 
-                       name, old_name, 
-                       state, ticket, 
-                       is_vgg, start_epochs,
-                       spe, spr, 
-                       dt, dv, transforms,): #Transforms: DataAug, Resize, Normalize, Crop
-
-    T = _make_trainer(rank, world_size, is_vgg, state, ticket)
+    T = _make_trainer(args, state, ticket)
 
     T.mm.export_ticket(old_name, entry_name = f"{spr * 100:.3e}", root = 0)
 
-    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay': 1e-4},
+    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': learning_rate(args), 'momentum': 0.9, 'weight_decay': 1e-3},
             loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
-            collective_transforms = (transforms[1], transforms[2]), train_transforms = (transforms[0],),
-            eval_transforms = (transforms[3],), final_collective_transforms = tuple(),
+            collective_transforms = tuple(), train_transforms = (transforms[0],),
+            eval_transforms = (transforms[1],), final_collective_transforms = (transforms[2], ),
             scale_loss = True, gradient_clipnorm = 2.0)
 
     T.evaluate(dt)
 
-    if (rank == 0): 
+    if (args.rank == 0): 
         orig_train_res = T.metric_results()
         print("Train Results: ", orig_train_res)
 
     T.evaluate(dv)
     
-    if (rank == 0):
+    if (args.rank == 0):
         orig_val_res =  T.metric_results()
         print("Validation Results: ", orig_val_res)
         print("Sparsity: ", T.mm.sparsity)
         orig_train_res.update({('val_' + k): v for k, v in orig_val_res.items()})
 
-    logs = T.fit(dt, dv, EPOCHS, CARDINALITY, name, validate = True, save = False, save_init = False, start = start_epochs)
+    logs = T.fit(dt, dv, total_epochs(args), cardinality(args), name, validate = True, save = False, save_init = False, start = start_epochs(args))
 
     T.evaluate(dt)
 
-    if (rank == 0): 
+    if (args.rank == 0): 
         train_res = T.metric_results()
         print("Train Results: ", train_res)
 
     T.evaluate(dv)
     
-    if (rank == 0):
+    if (args.rank == 0):
         val_res =  T.metric_results()
         print("Validation Results: ", val_res)
         print("Sparsity: ", T.mm.sparsity)
         train_res.update({('val_' + k): v for k, v in val_res.items()})
     
-        with open(f"./logs/RESULTS/{old_name}_{spe}.json", "w") as f:
+        with open(f"./logs/RESULTS/{old_name}_{spr:.3e}.json", "w") as f:
             json.dump({"original": orig_train_res, "finetuned": train_res}, f, indent = 6)
         
         logs_to_pickle(logs, name)
 
-        plot_logs(logs, EPOCHS, name, CARDINALITY, start = start_epochs)
+        plot_logs(logs, total_epochs(args), name, cardinality(args), start = start_epochs(args))
 
-def main(rank, world_size, name: str, args: list, **kwargs):
+def main(rank, world_size, name: str, args, **kwargs):
 
-    is_vgg = args.pop(-1) == 1 # 1 is yes, 0 is no
-    is_gradnorm = args.pop(-1) == 1 # 1 is yes, 0 is no
-    is_short = args.pop(-1) == 1 # 1 is yes, 0 is no
-    is_init = args.pop(-1) == 1 # 1 is yes, 0 is no
-    type_of_concrete = args.pop(-1) # 0-4
-    if rank == 0: print(f"VGG: {is_vgg} | GradBalance: {is_gradnorm} | INIT: {is_init} | TYPE: {CONCRETE_EXPERIMENTS[type_of_concrete][0]}")
+    args.rank = rank
+    args.world_size = world_size
 
-    sp_exp = list(range(2, 43 if is_vgg else 33, 2)) if len(args) == 0 else args
+    if rank == 0: print(f"Model: {args.model}\nGradient Step: {args.gradstep}\nTime: {args.time}\nType: {args.criteria}\nDuration: {args.duration}")
 
-    name = f"{CONCRETE_EXPERIMENTS[type_of_concrete][0].lower()}_{'gradbalance' if is_gradnorm else 'multiplier'}_{'init' if is_init else 'rewind'}_{'short' if is_short else 'long'}_{'vgg16' if is_vgg else 'resnet20'}_{name}" 
+    sparsity_range = {"vgg16": [0.8 ** x for x in range(2, 43, 2)],
+                      "resnet20": [0.8 ** x for x in range(2, 43, 2)],
+                      "resnet50": [0.32 ** x for x in range(1, 7)]}
 
-    start_epochs = 0 if is_init else (5 if is_vgg else 3)
-    start_epochs *= 3
-    concrete_epochs = 20 if is_short else 160
+    sps =  sparsity_range[args.model] if args.sparsities is None else args.sparsities
+
+    name = f"{args.criteria}_{args.model}_{args.dataset}_{args.time}_{args.duration}_{name}"
 
     DISTRIBUTED = world_size > 1
 
     old_name = name
 
-    dataAug = torch.jit.script(DataAugmentation().to('cuda'))
-    resize = torch.jit.script(Resize().to('cuda'))
-    normalize = torch.jit.script(Normalize().to('cuda'))
-    center_crop = torch.jit.script(CenterCrop().to('cuda'))
+    data_path = {"cifar10": cifar10, "cifar100": cifar100, "imagenet": imagenet}[args.dataset]
 
-    dt, dv = get_loaders(rank, world_size, batch_size = 512)
+    dataAug = torch.jit.script(data_path.DataAugmentation().to('cuda'))
+    normalize = torch.jit.script(data_path.Normalize().to('cuda'))
+    center_crop = torch.jit.script(data_path.CenterCrop().to('cuda'))
 
-    if not is_init: 
-        ostate, _ = run_start_train(rank = rank, world_size = world_size, 
-                                            name = name, is_vgg = is_vgg, start_epochs = start_epochs,
-                                            dt = dt, dv = dv, transforms = (dataAug, resize, normalize, center_crop,))
+    dt, dv = data_path.get_loaders(args.rank, args.world_size, batch_size = batchsize(args))
+
+    if args.time == "rewind": 
+        ostate, _ = run_start_train(name = name, dt = dt, dv = dv, 
+                                    transforms = (dataAug, center_crop, normalize,),
+                                    args = args)
     else: 
         ostate = None
 
-    for spe in sp_exp:
+    for spr in sps:
 
-        spr = 0.8**spe
-        if spe == 1000: spr = 0.0166
-        name = old_name + f"_{spe:02d}"
+        name = old_name + f"_{spr * 100:.3e}"
 
-        state, ticket = run_concrete(rank = rank, world_size = world_size, name = name, 
-                                     is_vgg = is_vgg, type_of_concrete = type_of_concrete, 
-                                     is_gradnorm = is_gradnorm, concrete_epochs = concrete_epochs, state = ostate, 
-                                     spe = spe, spr = spr, dt = dt, transforms = (resize, normalize, center_crop,),)
+        state, ticket = run_concrete(name = name, args = args, 
+                                     state = ostate, spr = spr, dt = dt, 
+                                     transforms = (center_crop, normalize,),)
 
         torch.cuda.empty_cache()
         gc.collect()
         
-        run_fit_and_export(rank = rank, world_size = world_size, name = name, old_name = old_name, 
-                           state = state, ticket = ticket, is_vgg = is_vgg, start_epochs = start_epochs,
-                           spe = spe, spr = spr, dt = dt, dv = dv, transforms = (dataAug, resize, normalize, center_crop,))
+        run_fit_and_export(name = name, old_name = old_name, args = args, 
+                           state = state, ticket = ticket, spr = spr, dt = dt, dv = dv, 
+                           transforms = (dataAug, center_crop, normalize,))
         
         torch.cuda.empty_cache()
         gc.collect()

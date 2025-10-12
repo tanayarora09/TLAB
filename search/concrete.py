@@ -41,6 +41,7 @@ class FrozenConcrete:
         self.act_w = []
 
         self.concrete_temperature = concrete_temperature
+        self._current_temperature = self.concrete_temperature
 
     def metric_results(self) -> dict[str, float]:
         """
@@ -89,16 +90,21 @@ class FrozenConcrete:
             dist.all_reduce(self.loss_tr, op = dist.ReduceOp.SUM)
             dist.all_reduce(self.count_tr, op = dist.ReduceOp.SUM)
 
+    def _set_concrete_temperature(self, temp: float  = None):
+        if temp is None: temp = self.concrete_temperature
+        self._current_temperature = temp
+        self.mm.set_concrete_temperature(temp)
+
     def build(self, desired_sparsity: float, optimizer, 
               optimizer_kwargs: dict, 
               transforms: Tuple[Callable],
-              use_gradnorm_approach = False):
+              gradbalance = False):
 
         """
         desired_sparsity = 0.2 --> 80% Sparse, 20% Dense
         """
 
-        self.isGradNorm = use_gradnorm_approach
+        self.gradbalance = gradbalance
 
         self.loss_tr = torch.as_tensor(0.0, dtype = torch.float64, device = 'cuda')
         self.count_tr = torch.as_tensor(0, dtype = torch.int64, device = 'cuda')
@@ -108,7 +114,7 @@ class FrozenConcrete:
 
         self.spr = desired_sparsity
         self._desired_active = self.spr * self.mm.num_prunable
-        if use_gradnorm_approach: self._desired_active *= 1.1
+        if gradbalance: self._desired_active *= 1.1
         self._inv_desired_active = 1. / self._desired_active
         self._sparsity_scaler_constant = 100. #100. / self.mm.num_prunable
 
@@ -123,11 +129,11 @@ class FrozenConcrete:
             param.grad = None
             param.requires_grad_(False)
         
-        self.target_logit = torch.log(torch.as_tensor(desired_sparsity/(1 - desired_sparsity), device = 'cuda')) * self.concrete_temperature 
+        self.target_logit = torch.log(torch.as_tensor(desired_sparsity/(1 - desired_sparsity), device = 'cuda')) # / self.concrete_temperature 
         self.mm.prepare_for_continuous_optimization(initial_alpha = self.target_logit)
-        self.mm.set_concrete_temperature(self.concrete_temperature)
+        self._set_concrete_temperature()
 
-        self.lagrange_multiplier = torch.as_tensor(0.0, device = 'cuda', dtype = torch.float32).requires_grad_(not use_gradnorm_approach)
+        self.lagrange_multiplier = torch.as_tensor(0.0, device = 'cuda', dtype = torch.float32).requires_grad_(not gradbalance)
         self._output_target_lambda = None
 
         lambda_lr = 1e-3
@@ -135,8 +141,8 @@ class FrozenConcrete:
         if "lr" in optimizer_kwargs: lambda_lr = 1e-2 * optimizer_kwargs["lr"]
 
         self.optim_lagrangian = None
-        if not use_gradnorm_approach: self.optim_lagrangian = torch.optim.SGD((self.lagrange_multiplier, ), lr = lambda_lr, maximize = True)
-        if use_gradnorm_approach: 
+        if not gradbalance: self.optim_lagrangian = torch.optim.SGD((self.lagrange_multiplier, ), lr = lambda_lr, maximize = True)
+        if gradbalance: 
             self.lagrangian_smoothing = 1e-2
             self.lagrange_multiplier.fill_(float("-inf"))
 
@@ -179,7 +185,7 @@ class FrozenConcrete:
         with torch.no_grad():    
             for pg in self.optim.param_groups:
                 pg['lr'] /= factor
-            if not self.isGradNorm: 
+            if not self.gradbalance: 
                 for pg in self.optim_lagrangian.param_groups:
                     pg['lr'] /= factor
 
@@ -189,7 +195,7 @@ class FrozenConcrete:
 
         loss = self._compute_loss(x, y) * self._loss_scaler_constant
 
-        if not self.isGradNorm:
+        if not self.gradbalance:
 
             lagrangian_loss = loss + self.lagrange_multiplier * sparsity_error
         
@@ -250,7 +256,7 @@ class FrozenConcrete:
 
     def optimize_mask(self, train_data: DataLoader, epochs: int, train_cardinality: int, 
                       sampler_offset: int = 0, dynamic_epochs = False, reduce_epochs: List[int] = [], 
-                      invert_mask = False, custom_continuous_to_mg: bool = False):
+                      invert_mask = False, custom_continuous_to_mg: bool = False, anneal_temperature = False,):
 
         """
         If Dynamic Epochs is True, Epochs argument will be ignored
@@ -265,16 +271,19 @@ class FrozenConcrete:
 
         break_epoch = False
         epoch = 0
-        
+
         while not break_epoch:
 
             self.reset_metrics()
             train_data.sampler.set_epoch(epoch + train_cardinality * sampler_offset)
 
+            if not dynamic_epochs and anneal_temperature:
+                self._set_concrete_temperature( self.concrete_temperature * (0.1 / self.concrete_temperature) ** (epoch / (epoch - 1)) )
+
             for step, (x, y, *_) in enumerate(train_data):
                 
                 iteration = int(epoch * train_cardinality + step + 1)
-                
+
                 x, y = x.cuda(), y.cuda()
                 for T in self.transforms: x = T(x)
                 
@@ -288,7 +297,7 @@ class FrozenConcrete:
 
                         logs[iteration] = self.metric_results()
                         
-                        bar.set_postfix_str(f"Loss: {logs[iteration]['loss']:.4e} | Expected {logs[iteration]['sparsity']:.3f}% | Gated {logs[iteration]['true_sparsity']:.3f}% | STD : {self.mm.get_buffer("MASK").std().item():.3f} | Lagrangian {self.lagrange_multiplier.item():.3e}",
+                        bar.set_postfix_str(f"L: {logs[iteration]['loss']:.4e} | Pred {logs[iteration]['sparsity']:.3f}% | Real {logs[iteration]['true_sparsity']:.3f}% | STD : {self.mm.get_buffer("MASK").std().item():.3f} | Lagrangian {self.lagrange_multiplier.item():.3e} | Tau {self._current_temperature:.2f}",
                                             refresh = False)
                         
                         bar.update(iteration - last_iter)
@@ -298,6 +307,7 @@ class FrozenConcrete:
 
             if not dynamic_epochs:
                 if epoch >= epochs: break_epoch = True
+
             else:
                 if (self.mm.get_true_active()/self.mm.num_prunable) >= self.spr: break_epoch = True
 
@@ -322,10 +332,10 @@ class GraSPConcrete(FrozenConcrete):
     def build(self, desired_sparsity: float, optimizer, 
               optimizer_kwargs: dict, 
               transforms: Tuple[Callable],
-              use_gradnorm_approach = False):
+              gradbalance = False):
         
         #optimizer_kwargs["maximize"] = True
-        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, use_gradnorm_approach)
+        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, gradbalance)
 
         #self._sparsity_scaler_constant *= 100
         #self._loss_scaler_constant *= 1e-2 # so loss ~ 5e-3
@@ -357,9 +367,9 @@ class SNIPConcrete(FrozenConcrete):
     def build(self, desired_sparsity: float, optimizer, 
               optimizer_kwargs: dict, 
               transforms: Tuple[Callable],
-              use_gradnorm_approach = False):
+              gradbalance = False):
         
-        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, use_gradnorm_approach)
+        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, gradbalance)
         #self._sparsity_scaler_constant *= 100
         self._loss_scaler_constant *= 100
 
@@ -372,9 +382,9 @@ class LossChangeConcrete(FrozenConcrete):
     def build(self, desired_sparsity: float, optimizer, 
               optimizer_kwargs: dict, 
               transforms: Tuple[Callable],
-              use_gradnorm_approach = False):
+              gradbalance = False):
         
-        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, use_gradnorm_approach)
+        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, gradbalance)
         #self._sparsity_scaler_constant *= 100
         self._loss_scaler_constant *= 10000
 
@@ -407,9 +417,9 @@ class ActivationConcrete(FrozenConcrete):
     def build(self, desired_sparsity: float, 
               optimizer, optimizer_kwargs: dict, 
               transforms: Tuple[Callable],
-              use_gradnorm_approach = False):
+              gradbalance = False):
         
-        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, use_gradnorm_approach)
+        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, gradbalance)
 
         #self._add_dense_to_capture_layers()
         self.init_hooks()
@@ -435,9 +445,9 @@ class KldLogit(ActivationConcrete):
     def build(self, desired_sparsity: float, optimizer, 
               optimizer_kwargs: dict, 
               transforms: Tuple[Callable],
-              use_gradnorm_approach = False):
+              gradbalance = False):
         
-        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, use_gradnorm_approach)
+        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, gradbalance)
         self._loss_scaler_constant *= 100
 
     def _compute_loss(self, x, y):
@@ -467,12 +477,24 @@ class NormalizedMseFeatures(ActivationConcrete):
     def build(self, desired_sparsity: float, optimizer, 
               optimizer_kwargs: dict, 
               transforms: Tuple[Callable],
-              use_gradnorm_approach = False):
+              gradbalance = False):
         
-        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, use_gradnorm_approach)
+        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, gradbalance)
         self._loss_scaler_constant *= 100
-        if not use_gradnorm_approach: self.optim_lagrangian.param_groups[0]["lr"] /= 10
+        if not gradbalance: self.optim_lagrangian.param_groups[0]["lr"] /= 10
     
+    def _normalize(self, act: torch.Tensor):
+        
+        #if (act.ndim == 4): 
+        #    mean = act.mean(dim = [2, 3], keepdim = True)
+        #    std = act.std(dim = [2, 3], keepdim = True)
+        #
+        #elif (act.ndim == 2):
+        mean = act.mean(dim = 1, keepdim = True)
+        std = act.std(dim = 1, keepdim = True)
+
+        return act.sub(mean).div(std + 1e-9)
+
     def _compute_loss(self, x, y):
         
         self.clear_capture()
@@ -490,9 +512,7 @@ class NormalizedMseFeatures(ActivationConcrete):
         cnt = 0
 
         for idx, act in enumerate(self.act_w):
-            std, mean = torch.std_mean(dense_acts[idx], dim = 1, keepdim = True)
-            loss += F.mse_loss(act.sub(act.mean(dim = 1, keepdim = True)).div(act.std(dim = 1, keepdim = True)), 
-                               dense_acts[idx].sub(mean).div(std), reduction = "mean")
+            loss += F.mse_loss(self._normalize(act), self._normalize(dense_acts[idx]), reduction = "mean")
             cnt += 1
 
         self.clear_capture()
@@ -504,13 +524,14 @@ class NormalizedMseFeatures(ActivationConcrete):
 
 
 class OldKld(ActivationConcrete):
+
     
     def build(self, desired_sparsity: float, optimizer, 
               optimizer_kwargs: dict, 
               transforms: Tuple[Callable],
-              use_gradnorm_approach = False):
+              gradbalance = False):
         
-        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, use_gradnorm_approach)
+        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, gradbalance)
         self._loss_scaler_constant *= 100 
 
     def _compute_loss(self, x, y):
@@ -577,9 +598,9 @@ class TrajectoryConcrete(FrozenConcrete):
               optimizer, 
               optimizer_kwargs: dict, 
               transforms: Tuple[Callable],
-              use_gradnorm_approach = False):
+              gradbalance = False):
         
-        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, use_gradnorm_approach)
+        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, gradbalance)
         
         for weight in self.weights: weight.requires_grad_(True)        
         self.mm.zero_grad()
@@ -623,11 +644,18 @@ class StepAlignmentConcrete(TrajectoryConcrete):
               optimizer, 
               optimizer_kwargs: dict, 
               transforms: Tuple[Callable],
-              use_gradnorm_approach = False):
+              gradbalance = False):
         
-        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, use_gradnorm_approach)
+        super().build(desired_sparsity, optimizer, optimizer_kwargs, transforms, gradbalance)
         
         self._loss_scaler_constant *= 100
+
+    def _normalize(self, grad: torch.Tensor):
+        
+        mean = grad.mean()
+        std = grad.std()
+
+        return grad.sub(mean).div(std + 1e-9)
 
     def _step_comparison_loss(self, step1, step2):
 
