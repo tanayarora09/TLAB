@@ -244,6 +244,7 @@ def get_loaders(rank, world_size, batch_size = 512, train = True, validation = T
             sampler = DistributedSampler(train_data, rank = rank, num_replicas = world_size),
             pin_memory = True, 
             collate_fn = pad_and_stack_batch,
+            prefetch_factor= 1,
             num_workers = 8, 
             persistent_workers = False#True
         )
@@ -258,6 +259,7 @@ def get_loaders(rank, world_size, batch_size = 512, train = True, validation = T
             batch_size = per_process_batch_size, 
             sampler = DistributedSampler(test_data, rank = rank, num_replicas = world_size), 
             pin_memory = True, 
+            prefetch_factor= 1,
             num_workers = 8, 
             persistent_workers = True
         )
@@ -292,6 +294,7 @@ def get_partial_train_loader(rank, world_size, data_fraction_factor: float = Non
         sampler = DistributedSampler(train_data, rank = rank, num_replicas = world_size),
         pin_memory = True, 
         collate_fn = pad_and_stack_batch,
+        prefetch_factor= 1,
         num_workers = 8, 
         persistent_workers = True, 
         drop_last = True
