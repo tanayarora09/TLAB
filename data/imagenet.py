@@ -14,9 +14,25 @@ import tempfile
 from filelock import FileLock
 
 from typing import List, Tuple
+import numpy as np
 
 IS_ORCA = False
-dataset_path = "/tmp/imagenet" if IS_ORCA else "/disk/bigstuff/imagenet"
+dataset_path = "/disk/bigstuff/imagenet" if not IS_ORCA else "/scratch/tarora_pdx-imagenet/imagenet"#"/tmp/imagenet
+
+class NpyImageDataset(torch.utils.data.Dataset):
+    def __init__(self, npy_path, transform=None):
+        self.samples = np.load(npy_path, allow_pickle=True)
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, idx):
+        path, label = self.samples[idx]
+        img = Image.open(path).convert("RGB")
+        if self.transform:
+            img = self.transform(img)
+        return img, label
 
 def pad_and_stack_batch(batch: List[Tuple[torch.Tensor, int]]) -> Tuple[torch.Tensor, torch.Tensor]:
     images = [item[0] for item in batch]
@@ -219,7 +235,8 @@ def get_loaders(rank, world_size, batch_size = 512, train = True, validation = T
         train_transform = ScriptedToTensor()
 
 
-        train_data = torchvision.datasets.ImageFolder(dataset_path + "/train", transform = train_transform)
+        train_data = NpyImageDataset("data/imagenet_train.npy", transform = train_transform)
+        #torchvision.datasets.ImageFolder(dataset_path + "/train", transform = train_transform)
 
         dt = DataLoader(
             train_data, 
@@ -228,7 +245,7 @@ def get_loaders(rank, world_size, batch_size = 512, train = True, validation = T
             pin_memory = True, 
             collate_fn = pad_and_stack_batch,
             num_workers = 8, 
-            persistent_workers = True
+            persistent_workers = False#True
         )
 
     if validation:
@@ -254,7 +271,8 @@ def get_partial_train_loader(rank, world_size, data_fraction_factor: float = Non
 
     train_transform = ScriptedToTensor()
 
-    train_data = torchvision.datasets.ImageFolder(dataset_path + "/train", transform = train_transform)
+    train_data = NpyImageDataset("data/imagenet_train.npy", transform = train_transform)
+    #torchvision.datasets.ImageFolder(dataset_path + "/train", transform = train_transform)
 
     size = len(train_data)
     if batch_count is None and data_fraction_factor is None: raise ValueError 
@@ -317,6 +335,7 @@ def custom_fetch_data(dataloader, amount, samples=10, classes=10, sampler_offset
     return results
 
 def _use_scratch_orca():
+    return
     source_dir = "/scratch/tarora_pdx-imagenet/imagenet"
     target_dir = "/tmp/imagenet"
     lock_path = "/tmp/imagenet.lock"
