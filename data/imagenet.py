@@ -4,6 +4,7 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader, DistributedSampler, Subset
 import torchvision
 from torchvision.transforms.v2 import functional as TF
+import torchvision.transforms.v2 as T
 from PIL import Image
 
 import random
@@ -62,12 +63,21 @@ def pad_and_stack_batch(batch: List[Tuple[torch.Tensor, int]]) -> Tuple[torch.Te
         
     return torch.stack(padded_batch, dim=0), labels
 
+class ResizeMax:
+    def __call__(self, img):
+        w, h = img.size
+        if max(w, h) > 400:
+            scale = 400.0 / max(w, h)
+            new_w, new_h = int(w * scale), int(h * scale)
+            img = TF.resize(img, (new_h, new_w))
+        return img
+
 class ScriptedToTensor(nn.Module):
 
     def forward(self, x: Image.Image) -> torch.Tensor:
         x = TF.pil_to_tensor(x)
         x = TF.to_dtype(x, dtype=torch.float32, scale=True)
-        return x.clone().contiguous()
+        return x
 
 class DataAugmentation(nn.Module):
     def __init__(self):
@@ -207,7 +217,7 @@ class CenterCrop(nn.Module):
             h_resized = int(torch.round(torch.tensor(h_orig, dtype=torch.float32) * scale))
             w_resized = int(torch.round(torch.tensor(w_orig, dtype=torch.float32) * scale))
 
-            img_content = TF.resized_crop(img, 0, 0, h_orig, w_orig, 
+            img_content = TF.resized_crop(img, 0, 0, int(h_orig), int(w_orig), 
                                           (h_resized, w_resized), 
                                           interpolation=TF.InterpolationMode.BICUBIC)
             
@@ -232,7 +242,7 @@ def get_loaders(rank, world_size, batch_size = 512, train = True, validation = T
     per_process_batch_size = batch_size // world_size
     
     if train:
-        train_transform = ScriptedToTensor()
+        train_transform = T.Compose([ ResizeMax(), ScriptedToTensor()]) 
 
 
         train_data = NpyImageDataset("data/imagenet_train.npy", transform = train_transform)
@@ -250,7 +260,7 @@ def get_loaders(rank, world_size, batch_size = 512, train = True, validation = T
         )
 
     if validation:
-        eval_transform = ScriptedToTensor()
+        eval_transform = T.Compose([ ResizeMax(), ScriptedToTensor()]) 
         
         test_data = torchvision.datasets.ImageFolder(dataset_path + "/val", transform = eval_transform)
 
@@ -271,7 +281,7 @@ def get_partial_train_loader(rank, world_size, data_fraction_factor: float = Non
     
     if IS_ORCA: _use_scratch_orca()
 
-    train_transform = ScriptedToTensor()
+    train_transform = T.Compose([ ResizeMax(), ScriptedToTensor()]) 
 
     train_data = NpyImageDataset("data/imagenet_train.npy", transform = train_transform)
     #torchvision.datasets.ImageFolder(dataset_path + "/train", transform = train_transform)
