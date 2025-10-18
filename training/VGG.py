@@ -16,13 +16,13 @@ import os
 class VGG_CNN(BaseCNNTrainer):
     def post_epoch_hook(self, epoch, EPOCHS):
         if (epoch + 1) == 79 or (epoch + 1) == 119: # Epochs 80, 120
-            self.reduce_learning_rate(10)
+            self.scale_learning_rate(0.1)
         return 
     
 class VGG_IMP(BaseIMP):
     def post_epoch_hook(self, epoch, EPOCHS):
         if epoch == 78 or epoch == 118: # Epochs 80, 120
-            self.reduce_learning_rate(10)
+            self.scale_learning_rate(0.1)
         return 
 
 
@@ -206,7 +206,7 @@ class VGG_POC(BaseIMP):
     
     def post_epoch_hook(self, epoch):
         if epoch == 78 or epoch == 118: # Epochs 80, 120
-            self.reduce_learning_rate(10)
+            self.scale_learning_rate(0.1)
         return 
 
     def post_step_hook(self, x, y, _):
@@ -226,11 +226,11 @@ class VGG_DGTS(CNN_DGTS):
         
     def post_epoch_hook(self, epoch, EPOCHS):
         if (epoch + 1) == 79 or (epoch + 1) == 119: # Epochs 80, 120
-            self.reduce_learning_rate(10)
+            self.scale_learning_rate(0.1)
         return 
 
     """def pre_epoch_hook(self, epoch, EPOCHS):
         if (epoch + 1 == 80) or (epoch + 1 == 120):
-            self.reduce_learning_rate(10)
+            self.scale_learning_rate(0.1)
         #if (epoch + 1 == (EPOCHS // 2)) or (epoch + 1 == (EPOCHS * 3 // 4)): 
-        #    self.reduce_learning_rate(10)"""
+        #    self.scale_learning_rate(0.1)"""

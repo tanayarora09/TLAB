@@ -26,6 +26,8 @@ class BaseCNNTrainer:
 
     #------------------------------------------ MAIN INIT FUNCTIONS -------------------------------------- #
 
+    warmup_epochs = 0
+
     def __init__(self, model, 
                  rank: int, world_size: int):
         """
@@ -226,6 +228,7 @@ class BaseCNNTrainer:
                 if (iter - 1) == rewind_iter and save:
                     self.save_ckpt(name = name, prefix = "rewind")
 
+                if epoch < self.warmup_epochs: self.apply_warmup(iter, self.warmup_epochs * train_cardinality)
                 self.pre_step_hook(step, train_cardinality)
 
                 #dist.barrier(device_ids = [self.RANK])
@@ -485,10 +488,20 @@ class BaseCNNTrainer:
     def reset_optimizer(self):
         self.optim = self.optimizer(self.m.parameters(), **self.optimizer_kwargs)
 
-    def reduce_learning_rate(self, factor: int):
+    def scale_learning_rate(self, factor: float):
         with torch.no_grad():    
             for pg in self.optim.param_groups:
-                pg['lr'] /= factor
+                pg['lr'] *= factor
+
+    def apply_warmup(self, iteration, total):
+        if iteration <= 0 or iteration > total:
+            return
+        elif iteration == 1:
+            scale = 1.0 / float(total)
+        else:
+            scale = float(iteration) / float(iteration - 1)
+        self.scale_learning_rate(scale)
+        return
 
     def clear_lines(self, n: int):
         """

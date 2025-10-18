@@ -99,8 +99,8 @@ class DataAugmentation(nn.Module):
         B = x.shape[0]
         device = x.device
         
-        H = original_dims[:, 0].to(torch.int64)
-        W = original_dims[:, 1].to(torch.int64)
+        H = original_dims[:, 0].to(torch.int32)
+        W = original_dims[:, 1].to(torch.int32)
         area = H * W
 
         log_ratio = torch.log(torch.tensor(self.ratio, device=device))
@@ -146,10 +146,10 @@ class DataAugmentation(nn.Module):
             fb_h = H.clone()
 
             wide_mask = in_ratio > max_ratio
-            fb_w[wide_mask] = torch.round(H[wide_mask].to(torch.float32) * max_ratio)
+            fb_w[wide_mask] = torch.round(H[wide_mask].to(torch.float32) * max_ratio).to(torch.int32)
             
             tall_mask = in_ratio < min_ratio
-            fb_h[tall_mask] = torch.round(W[tall_mask].to(torch.float32) / min_ratio)
+            fb_h[tall_mask] = torch.round(W[tall_mask].to(torch.float32) / min_ratio).to(torch.int32)
 
             fb_i = ((H - fb_h) // 2)
             fb_j = ((W - fb_w) // 2)
@@ -267,6 +267,7 @@ def get_loaders(rank, world_size, batch_size = 512, train = True, validation = T
             test_data, 
             batch_size = per_process_batch_size, 
             sampler = DistributedSampler(test_data, rank = rank, num_replicas = world_size), 
+            collate_fn = pad_and_stack_batch,
             pin_memory = True, 
             num_workers = 8, 
             persistent_workers = True

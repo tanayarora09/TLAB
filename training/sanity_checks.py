@@ -9,10 +9,10 @@ from utils.search_utils import plot_logs_concrete
 
 
 from training.VGG import VGG_CNN
-from models.VGG import VGG
+from models.vgg import VGG
 
 from training.ResNet import ResNet_CNN
-from models.ResNet import ResNet
+from models.resnet import ResNet
 
 from search.salient import *
 from search.concrete import * 
