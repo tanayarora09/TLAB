@@ -136,7 +136,7 @@ def run_start_train(name, args,
 
     T = _make_trainer(args)
 
-    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': learning_rate(args), 'momentum': 0.9, 'weight_decay': 1e-3},
+    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': learning_rate(args), 'momentum': 0.9, 'weight_decay': 1e-4},
             loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
             collective_transforms = tuple(), train_transforms = (transforms[0],),
             eval_transforms = (transforms[1],), final_collective_transforms = (transforms[2], ),

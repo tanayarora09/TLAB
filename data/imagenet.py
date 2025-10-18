@@ -66,8 +66,8 @@ def pad_and_stack_batch(batch: List[Tuple[torch.Tensor, int]]) -> Tuple[torch.Te
 class ResizeMax:
     def __call__(self, img):
         w, h = img.size
-        if max(w, h) > 400:
-            scale = 400.0 / max(w, h)
+        if max(w, h) != 500:
+            scale = 500.0 / max(w, h)
             new_w, new_h = int(w * scale), int(h * scale)
             img = TF.resize(img, (new_h, new_w))
         return img
@@ -134,7 +134,7 @@ class DataAugmentation(nn.Module):
 
                 success |= valid
 
-            #if success.all(): break
+            if success.all(): break
 
         failed = ~success
         if failed.any():
@@ -213,13 +213,13 @@ class CenterCrop(nn.Module):
             
             min_dim = torch.min(h_orig, w_orig)
             scale = self.resize_to / min_dim
-            
-            h_resized = int(torch.round(torch.tensor(h_orig, dtype=torch.float32) * scale))
-            w_resized = int(torch.round(torch.tensor(w_orig, dtype=torch.float32) * scale))
+
+            h_resized = int(torch.round(h_orig.to(torch.float32) * scale))
+            w_resized = int(torch.round(w_orig.to(torch.float32) * scale))
 
             img_content = TF.resized_crop(img, 0, 0, int(h_orig), int(w_orig), 
                                           (h_resized, w_resized), 
-                                          interpolation=TF.InterpolationMode.BICUBIC)
+                                          interpolation=TF.InterpolationMode.BILINEAR)
             
             cropped_img = TF.center_crop(img_content, self.output_size)
             crops.append(cropped_img)
@@ -234,7 +234,7 @@ class Normalize(nn.Module):
         x = TF.normalize(x, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225), inplace = False)
         return x
 
-def get_loaders(rank, world_size, batch_size = 512, train = True, validation = True):
+def get_loaders(rank, world_size, batch_size = 512, train = True, validation = True, shuffle = True):
     
     if IS_ORCA: _use_scratch_orca()
 
@@ -251,7 +251,7 @@ def get_loaders(rank, world_size, batch_size = 512, train = True, validation = T
         dt = DataLoader(
             train_data, 
             batch_size = per_process_batch_size, 
-            sampler = DistributedSampler(train_data, rank = rank, num_replicas = world_size),
+            sampler = DistributedSampler(train_data, rank = rank, num_replicas = world_size, shuffle = shuffle),
             pin_memory = True, 
             collate_fn = pad_and_stack_batch,
             num_workers = 8, 
@@ -266,7 +266,7 @@ def get_loaders(rank, world_size, batch_size = 512, train = True, validation = T
         dv = DataLoader(
             test_data, 
             batch_size = per_process_batch_size, 
-            sampler = DistributedSampler(test_data, rank = rank, num_replicas = world_size), 
+            sampler = DistributedSampler(test_data, rank = rank, num_replicas = world_size, shuffle = shuffle), 
             collate_fn = pad_and_stack_batch,
             pin_memory = True, 
             num_workers = 8, 

@@ -181,13 +181,13 @@ class FrozenConcrete:
     def _compute_loss(self, x, y) -> torch.Tensor:
         raise NotImplementedError
 
-    def _reduce_learning_rate(self, factor):
+    def _scale_learning_rate(self, factor):
         with torch.no_grad():    
             for pg in self.optim.param_groups:
-                pg['lr'] /= factor
+                pg['lr'] *= factor
             if not self.gradbalance: 
                 for pg in self.optim_lagrangian.param_groups:
-                    pg['lr'] /= factor
+                    pg['lr'] *= factor
 
     def optimize_step(self, x, y):
         
@@ -311,7 +311,7 @@ class FrozenConcrete:
             else:
                 if (self.mm.get_true_active()/self.mm.num_prunable) >= self.spr: break_epoch = True
 
-            if (epoch + 1) in reduce_epochs: self._reduce_learning_rate(10)
+            if (epoch + 1) in reduce_epochs: self._scale_learning_rate(0.1)
 
 
         if self.IsRoot: 
