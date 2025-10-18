@@ -31,6 +31,12 @@ CONCRETE_EXPERIMENTS = {"loss": SNIPConcrete,
                         "gradmatch": StepAlignmentConcrete,
                         "deltaloss": LossChangeConcrete}
 
+def momentum(args):
+    return 0.9
+
+def weight_decay(args):
+    return 1e-4
+
 def total_epochs(args):
     return {"resnet20": 160, "vgg16": 160, "resnet50": 90}[args.model]
 
@@ -136,7 +142,7 @@ def run_start_train(name, args,
 
     T = _make_trainer(args)
 
-    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': learning_rate(args), 'momentum': 0.9, 'weight_decay': 1e-4},
+    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': learning_rate(args), 'momentum': momentum(args), 'weight_decay': weight_decay(args)},
             loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
             collective_transforms = tuple(), train_transforms = (transforms[0],),
             eval_transforms = (transforms[1],), final_collective_transforms = (transforms[2], ),
@@ -167,7 +173,7 @@ def run_fit_and_export(name, old_name,
 
     T.mm.export_ticket(old_name, entry_name = f"{spr * 100:.3e}", root = 0)
 
-    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': learning_rate(args), 'momentum': 0.9, 'weight_decay': 1e-3},
+    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': learning_rate(args), 'momentum': momentum(args), 'weight_decay': weight_decay(args)},
             loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
             collective_transforms = tuple(), train_transforms = (transforms[0],),
             eval_transforms = (transforms[1],), final_collective_transforms = (transforms[2], ),
