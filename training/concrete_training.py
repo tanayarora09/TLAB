@@ -35,7 +35,7 @@ def momentum(args):
     return 0.9
 
 def weight_decay(args):
-    return 1e-4
+    return 1e-4 if args.model == "resnet50" else 1e-3
 
 def total_epochs(args):
     return {"resnet20": 160, "vgg16": 160, "resnet50": 90}[args.model]
@@ -243,6 +243,8 @@ def main(rank, world_size, name: str, args, **kwargs):
 
     dt, dv = data_path.get_loaders(args.rank, args.world_size, batch_size = batchsize(args))
 
+    start_start = time.time()
+
     if args.time == "rewind": 
         ostate, _ = run_start_train(name = name, dt = dt, dv = dv, 
                                     transforms = (dataAug, center_crop, normalize,),
@@ -250,7 +252,12 @@ def main(rank, world_size, name: str, args, **kwargs):
     else: 
         ostate = None
 
+    start_end = time.time()
+    start_train_time = (start_end - start_start)
+
     for spr in sps:
+
+        prune_train_start = time.time()
 
         name = old_name + f"_{spr * 100:.3e}"
 
@@ -267,5 +274,11 @@ def main(rank, world_size, name: str, args, **kwargs):
         
         torch.cuda.empty_cache()
         gc.collect()
+
+        prune_train_end = time.time()
+
+        total_time = (prune_train_end - prune_train_start) + start_train_time
+        with open(f"logs/TIMES/{name}.txt", "w") as f:
+            f.write(f"{total_time:.2f}")
 
         if DISTRIBUTED: torch.distributed.barrier(device_ids = [rank])
