@@ -58,7 +58,7 @@ def start_epochs(args):
     return start_epochs
 
 def concrete_epochs(args):
-    concrete_epoch_ratio = 0.125 if args.duration == "short" else 1.0
+    concrete_epoch_ratio = {"short": 0.125, "half": 0.5, "long": 1.0}[args.duration]
     return int(concrete_epoch_ratio * total_epochs(args))
 
 def ddp_network(args):
