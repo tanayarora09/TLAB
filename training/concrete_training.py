@@ -52,6 +52,9 @@ def cardinality(args):
 def learning_rate(args):
     return {"resnet20": 1e-1, "vgg16": 1e-1, "resnet50": 4e-1}[args.model]
 
+def prune_rate(args):
+    return {"vgg16": 0.8, "resnet20": 0.8, "resnet50": 0.31622776601}[args.model]
+
 def start_epochs(args):
     start_epochs = {"resnet20": 9, "vgg16": 15, "resnet50": 18}[args.model]
     if args.time == "init": start_epochs = 0
@@ -209,7 +212,7 @@ def run_fit_and_export(name, old_name,
         print("Sparsity: ", T.mm.sparsity)
         train_res.update({('val_' + k): v for k, v in val_res.items()})
     
-        with open(f"./logs/RESULTS/{old_name}_{spr:.3e}.json", "w") as f:
+        with open(f"./logs/RESULTS/{old_name}_{spr*100:.3e}.json", "w") as f:
             json.dump({"original": orig_train_res, "finetuned": train_res}, f, indent = 6)
         
         logs_to_pickle(logs, name)
@@ -223,9 +226,9 @@ def main(rank, world_size, name: str, args, **kwargs):
 
     if rank == 0: print(f"Model: {args.model}\nGradient Step: {args.gradstep}\nTime: {args.time}\nType: {args.criteria}\nDuration: {args.duration}")
 
-    sparsity_range = {"vgg16": [0.8 ** x for x in range(2, 43, 2)],
-                      "resnet20": [0.8 ** x for x in range(2, 43, 2)],
-                      "resnet50": [0.32 ** x for x in range(1, 7)]}
+    sparsity_range = {"vgg16": [prune_rate(args) ** x for x in range(2, 43, 2)],
+                      "resnet20": [prune_rate(args) ** x for x in range(2, 43, 2)],
+                      "resnet50": [prune_rate(args) ** x for x in range(1, 7)]}
 
     sps =  sparsity_range[args.model] if args.sparsities is None else args.sparsities
 

@@ -1,78 +1,134 @@
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from data import cifar10, cifar100
+from data import cifar10, cifar100, imagenet
 
-from utils.serialization_utils import logs_to_pickle, save_tensor
-from utils.training_utils import plot_logs
+from utils.serialization_utils import logs_to_pickle
 
-from training.VGG import VGG_CNN, VGG_IMP
-from training.ResNet import ResNet_CNN, ResNet_IMP
-from models.vgg import VGG
-from models.resnet import ResNet
-from models.base import BaseModel
+from training.VGG import VGG_IMP
+from training.ResNet import ResNet_IMP, ResNet50_IMP
+from models.vgg import vgg
+from models.resnet import resnet
 
 import json
+import time
 import pickle
 import gc
 import h5py
+import math
 
-def main(rank, world_size, name: str, sp_exp: list, **kwargs):
+def momentum(args):
+    return 0.9
 
-    EPOCHS = 160
-    CARDINALITY = 98
-    PRUNE_ITERS = sp_exp[0] #should only be one argument
-    is_cifar100 = sp_exp.pop(-1) == 1
-    is_vgg = sp_exp.pop(-1) == 1
+def weight_decay(args):
+    return 1e-4 if args.model == "resnet50" else 1e-3
 
-    data_path = cifar100 if is_cifar100 else cifar10
-    outfeatures = 100 if is_cifar100 else 10
+def prune_rate(args):
+    return {"vgg16": 0.8, "resnet20": 0.8, "resnet50": 0.31622776601}[args.model]
 
-    REWIND_EPOCH = 15 if is_vgg else 9
+def total_epochs(args):
+    return {"resnet20": 160, "vgg16": 160, "resnet50": 90}[args.model]
 
-    if len(sp_exp) != 1: raise ValueError()
+def batchsize(args):
+    return 1024 if args.dataset == "imagenet" else 512
 
-    old_name = name
+def datasize(args):
+    return 1281167 if args.dataset == "imagenet" else 50000
 
-    if rank == 0: h5py.File(f"./logs/TICKETS/{old_name}.h5", "w").close()
+def cardinality(args):
+    return math.ceil(datasize(args)/batchsize(args))
+
+def learning_rate(args):
+    return {"resnet20": 1e-1, "vgg16": 1e-1, "resnet50": 4e-1}[args.model]
+
+def start_epochs(args):
+    start_epochs = {"resnet20": 9, "vgg16": 15, "resnet50": 18}[args.model]
+    if args.time == "init": start_epochs = 0
+    return start_epochs
+
+def rewind_iteration(args):
+    return int(start_epochs(args) * cardinality(args))
+
+def ddp_network(args):
+    
+    classes = {"cifar10": 10,
+               "cifar100": 100,
+               "imagenet": 1000}[args.dataset]
+    
+    kwargs = {"outfeatures": classes,
+              "rank": args.rank,
+              "world_size": args.world_size,
+              "custom_init": True}
+
+    model = None
+    if args.model == "vgg16": model = vgg(depth = 16, **kwargs)
+    if args.model == "resnet20": model = resnet(depth = 20, **kwargs)
+    if args.model == "resnet50": model = resnet(depth = 50, **kwargs)
+
+    model = model.cuda()
+
+    if args.world_size > 1:
+        model = DDP(model, 
+            device_ids = [args.rank],
+            output_device = args.rank, 
+            gradient_as_bucket_view = True)
+
+    return model
+
+
+def _make_trainer(args, state = None, ticket = None):
+
+    model = ddp_network(args)
+
+    if state is not None: model.load_state_dict(state)
+    model_to_inspect = model.module if args.world_size > 1 else model
+    if ticket is not None: model_to_inspect.set_ticket(ticket)
+
+    if (args.rank == 0):
+        print(f"Training with sparsity {(model_to_inspect.sparsity.item()):.3e}% \n")
+
+    return {"vgg16": VGG_IMP, "resnet20": ResNet_IMP, "resnet50": ResNet50_IMP}[args.model](model, args.rank, args.world_size)
+
+def main(rank, world_size, name: str, args, **kwargs):
+
+    args.rank = rank
+    args.world_size = world_size
+
+    data_path = {"cifar10": cifar10, "cifar100": cifar100, "imagenet": imagenet}[args.dataset]
 
     dataAug = torch.jit.script(data_path.DataAugmentation().to('cuda'))
-    resize = torch.jit.script(data_path.Resize().to('cuda'))
     normalize = torch.jit.script(data_path.Normalize().to('cuda'))
     center_crop = torch.jit.script(data_path.CenterCrop().to('cuda'))
 
-    depth = 16 if is_vgg else 20
-    model = (VGG if is_vgg else ResNet)(rank = rank, world_size = world_size, depth = depth, output_channels = outfeatures, custom_init = True).cuda() 
+    dt, dv = data_path.get_loaders(args.rank, args.world_size, batch_size = batchsize(args))
 
-    if world_size > 1:
-        model = DDP(model, 
-                device_ids = [rank],
-                output_device = rank, 
-                gradient_as_bucket_view = True)
+    old_name = name
 
-    T = (VGG_IMP if is_vgg else ResNet_IMP)(model, rank, world_size)
+    start_time = time.time()
 
-    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay' : 1e-3},
+    if rank == 0: h5py.File(f"./logs/TICKETS/{old_name}.h5", "w").close()
+
+    T = _make_trainer(args)
+
+    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': learning_rate(args), 'momentum': momentum(args), 'weight_decay': weight_decay(args)},
             loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
-            collective_transforms = (resize, normalize), train_transforms = (dataAug,),
-            eval_transforms = (center_crop,), final_collective_transforms = tuple(),
+            collective_transforms = tuple(), train_transforms = (dataAug,),
+            eval_transforms = (center_crop,), final_collective_transforms = (normalize, ),
             scale_loss = True, gradient_clipnorm = 2.0)
 
-    del model
+    time_prep = time.time() - start_time
+    (logs, results), sparsities_d = T.TicketIMP(dt, dv, total_epochs(args), cardinality(args), old_name, prune_rate(args), 
+                                                args.prune_iterations, rewind_iter = rewind_iteration(args), validate = False)
 
-    torch.cuda.empty_cache()
-    gc.collect()
-
-    dt, dv = data_path.get_loaders(rank, world_size, batch_size = 512)
-
-    (logs, results), sparsities_d = T.TicketIMP(dt, dv, EPOCHS, CARDINALITY, old_name, 0.8, PRUNE_ITERS, rewind_iter = REWIND_EPOCH*CARDINALITY, validate = False)
+    
 
     if rank == 0:
 
         for spe in list(range(len(results))):
             with open(f"./logs/RESULTS/{old_name}_{spe}.json", "w") as f:
                 json.dump(results[spe], f, indent = 6)
-
+            with open(f"./logs/TIMES/{old_name}_{spe}.txt", "w") as f:
+                f.write(f"{time_prep + sparsities_d[spe][1]:.2f}")
         logs_to_pickle(logs, name)
 
     torch.distributed.barrier(device_ids = [rank])

@@ -561,12 +561,13 @@ class BaseIMP(BaseCNNTrainer):
         Final sparsity = prune_rate ** prune_iters
         """
         
+        start_time = time.time()
+
         total_logs = defaultdict()
         results = defaultdict()
         
         sparsities_d = [None] * (prune_iters + 1)
         current_sparsity = 100.0
-        sparsities_d[0] = current_sparsity / 100
 
         sampler_offset = 0
 
@@ -580,16 +581,16 @@ class BaseIMP(BaseCNNTrainer):
 
         total_logs[0] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_{(100.0):.3e}", save = True, verbose = False,
                                  rewind_iter = rewind_iter, sampler_offset = sampler_offset, validate = validate)
-        
+
         if not validate: results[0] = self._get_results(train_data, validation_data)
+
+        sparsities_d[0] = (current_sparsity / 100, time.time() - start_time)
 
         for iteration in range(1, prune_iters + 1):
 
             self.mm.prune_by_mg(prune_rate, iteration, root = 0)
             
             current_sparsity = self.mm.sparsity
-
-            sparsities_d[iteration] = current_sparsity.item() / 100
 
             self.print(f"\nSPARSITY: {current_sparsity:.3e} | SEEDED: {torch.rand(1).item()}\n", "red")
 
@@ -607,6 +608,8 @@ class BaseIMP(BaseCNNTrainer):
                                              save_init = False, validate = validate)
             
             if not validate: results[iteration] = self._get_results(train_data, validation_data)
+            sparsities_d[iteration] = (current_sparsity.item() / 100, time.time() - start_time)
+
 
         self.post_IMP_hook()
 
