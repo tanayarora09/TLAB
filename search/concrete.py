@@ -190,10 +190,11 @@ class FrozenConcrete:
                     pg['lr'] *= factor
 
     def optimize_step(self, x, y):
-        
-        sparsity_error = (self.mm.get_expected_active() * self._inv_desired_active - 1) * self._sparsity_scaler_constant 
 
         loss = self._compute_loss(x, y) * self._loss_scaler_constant
+        sigmoid_mask = torch.sigmoid(self.mm.get_buffer("MASK"))
+        sparsity_error = (sigmoid_mask.sum() * self._inv_desired_active - 1) * self._sparsity_scaler_constant 
+
 
         if not self.gradbalance:
 
@@ -211,20 +212,28 @@ class FrozenConcrete:
 
         else: 
 
-            task_grad = torch.autograd.grad(loss, self.mm.get_buffer("MASK"), retain_graph = True)[0]
-            sparsity_grad = torch.autograd.grad(sparsity_error, self.mm.get_buffer("MASK"))[0]
+            task_grad = torch.autograd.grad(loss, self.mm.get_buffer("MASK"), retain_graph = False)[0]
+            sparsity_grad = (
+                self._inv_desired_active
+                * self._sparsity_scaler_constant
+                * sigmoid_mask
+                * (1 - sigmoid_mask)
+            )
 
             with torch.no_grad():
-
-                task_grad_max = task_grad.abs().amax().clamp_(min=1e-12)
-                task_grad_norm = task_grad.div(task_grad_max).norm(2)
-
-                sparsity_grad_max = sparsity_grad.abs().amax().clamp_(min=1e-12)
-                sparsity_grad_norm = sparsity_grad.div(sparsity_grad_max).norm(2)
-
-                target_lambda = (task_grad_norm * task_grad_max) / (sparsity_grad_norm * sparsity_grad_max + 1e-12)
+                
                 if sparsity_error < 0: target_lambda.fill_(0.0)
-                #target_lambda = torch.sign(sparsity_error) * target_lambda
+
+                else:
+                    task_grad_max = task_grad.abs().amax().clamp_(min=1e-12)
+                    task_grad_norm = task_grad.div(task_grad_max).norm(2)
+
+                    sparsity_grad_max = sparsity_grad.abs().amax().clamp_(min=1e-12)
+                    sparsity_grad_norm = sparsity_grad.div(sparsity_grad_max).norm(2)
+
+                    target_lambda = (task_grad_norm * task_grad_max) / (sparsity_grad_norm * sparsity_grad_max + 1e-12)
+                
+                    #target_lambda = torch.sign(sparsity_error) * target_lambda
 
                 dist.all_reduce(target_lambda, op = dist.ReduceOp.AVG)
 
@@ -289,7 +298,7 @@ class FrozenConcrete:
                 
                 self.optimize_step(x, y)
 
-                if (step + 1) % 13 == 0 or (step + 1 == train_cardinality):
+                if (step + 1) % (train_cardinality//30) == 0 or (step + 1 == train_cardinality):
 
                     self.transfer_metrics()
                     

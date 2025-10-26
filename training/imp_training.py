@@ -8,8 +8,8 @@ from utils.training_utils import plot_logs
 
 from training.VGG import VGG_CNN, VGG_IMP
 from training.ResNet import ResNet_CNN, ResNet_IMP
-from models.VGG import VGG
-from models.ResNet import ResNet
+from models.vgg import VGG
+from models.resnet import ResNet
 from models.base import BaseModel
 
 import json
