@@ -66,7 +66,7 @@ def parse_args():
                         help='Sparsity time strategy (init or rewind) (default: rewind).')
     parser.add_argument('--gradstep', type=str, default='gradbalance', choices=['gradbalance', 'lagrange'],
                         help='Gradient approach (default: gradbalance).')
-    parser.add_argument('--duration', type=str, default='long', choices=['short', 'long'],
+    parser.add_argument('--duration', type=str, default='long', choices=['short', 'long', 'half'],
                         help='Length of concrete optimization (default: long).')
     
     parser.add_argument('--num', type=int, default=1,
