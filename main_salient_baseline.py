@@ -5,9 +5,9 @@ import torch.distributed as dist
 
 import os
 import sys
+import argparse
 
 import random
-
 
 import matplotlib
 matplotlib.use('Agg') 
@@ -20,22 +20,19 @@ def setup_distribute(rank, world_size):
 def cleanup_distribute():
     dist.destroy_process_group()
 
-def dist_wrapper(rank, world_size, func, name: str, sp: int):
+def dist_wrapper(rank, world_size, func, name: str, args):
     setup_distribute(rank, world_size)
     torch.cuda.set_device(rank)
     set_dynamo_cfg()
     set_non_deterministic()
-    #reset_deterministic(SEED)
     try:
-        func(rank, world_size, name, sp)
+        func(rank, world_size, name, args)
     finally:
         cleanup_distribute()
 
 def set_dynamo_cfg():
-    #dynamo.config.capture_scalar_outputs = True
     dynamo.config.cache_size_limit = 256
     dynamo.config.guard_nn_modules = True
-    #dynamo.config.suppress_errors = True
 
 def set_non_deterministic():
     torch.backends.cudnn.benchmark = True
@@ -49,52 +46,53 @@ def reset_deterministic(SEED):
     torch.backends.cudnn.benchmark = False
     torch.backends.cudnn.deterministic = True
 
-def main(func, name: str, sp: int):#SEED: int):
+def main(func, name: str, args):
     world_size = torch.cuda.device_count()
-    mp.spawn(dist_wrapper, args=(world_size, func, name, sp), nprocs=world_size, join=True)
+    mp.spawn(dist_wrapper, args=(world_size, func, name, args), nprocs=world_size, join=True)
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run a concrete sparsification experiment.")
+
+    parser.add_argument('name', type=str, help='The base name for the experiment logs and files.')
+
+    parser.add_argument('--model', type=str, default='resnet20', choices=['resnet20', 'vgg16', 'resnet50'],
+                        help='Model architecture to use (default: resnet20).')
+    parser.add_argument('--dataset', type=str, default='cifar10', choices=['cifar10', 'cifar100', 'imagenet'],
+                        help='Dataset to use (default: cifar10).')
+    parser.add_argument('--criteria', type=str, default='snip', 
+                        choices=['snip', 'grasp', 'synflow', 'kldlogit', 'msefeature', 'gradmatch'],
+                        help='Sparsification criteria (default: snip).')
+    parser.add_argument('--time', type=str, default='init', choices=['init', 'rewind'],
+                        help='Sparsity time strategy (init or rewind) (default: init).')
+    parser.add_argument('--steps', type=int, default=1,
+                        help='Number of pruning iterations, exponential (default: 1).')
+    
+    parser.add_argument('--num', type=int, default=1,
+                        help='Number of independent experiments to run (default: 1).')
+    parser.add_argument('--sparsities', nargs='*', type=float, default=None,
+                        help='Optional list of density percentages. If not provided, a default range is used.')
+
+    args = parser.parse_args()
+
+    args.sparsities = [sp/100 for sp in args.sparsities]
+    
+    main_kwargs = args
+    exp_name = main_kwargs.name
+    num_exp = main_kwargs.num
+    
+    del main_kwargs.name
+    del main_kwargs.num
+
+    return exp_name, num_exp, main_kwargs
 
 if __name__ == "__main__":
 
-    if len(sys.argv) != 2 and len(sys.argv) != 4:
-        raise ValueError("Must pass exactly one name. Usage should be python main.py $NAME $\"EPS,ITS,SIZE,PLAT,SPARSITY\" $NUM_EXPERIMENTS")
-
-    name = sys.argv[1]
-
-    try: 
-
-        args = [int(item) for item in sys.argv[2].split(",")]
-        num_exp = int(sys.argv[3])
-
-    except IndexError:
-        print("Wrong number of arguments. Using default arguments.")
-        args = [1,2,3]
-        num_exp = 1
-
-    SEED: int = random.randint(0, 2**31)
-    print("--------------------------------------------------------------")
-    print("NO SEED: ", SEED)
-    print("--------------------------------------------------------------")
-
-    #with open(f"./logs/SEEDS/{name}_SEED.txt", "w") as f:
-    #    f.write(str(SEED))
-    #from training import normal
-
-    #main(normal.main, name, args)
-    
     from training import saliency_training
-    """for sp in args:
-        print("--------------------------------------------------------------")
-        print("SPARSITY ", sp)
-        print("--------------------------------------------------------------")
-        for exp in range(num_exp):
-            print("--------------------------------------------------------------")
-            print("EXPERIMENT NUMBER ", exp)
-            print("--------------------------------------------------------------")
-            main(baseline.main, name + f"_{sp}_{exp}", sp)"""
     
+    exp_name, num_exp, main_kwargs = parse_args()
+
     for exp in range(num_exp):
-        #if args[-2] == 1 and exp == 0: continue
         print("--------------------------------------------------------------")
         print("EXPERIMENT NUMBER ", exp)
-        print("--------------------------------------------------------------")      
-        main(saliency_training.main, name + f"_{exp}", args)
+        print("--------------------------------------------------------------") 
+        main(saliency_training.main, exp_name + f"_{exp}", main_kwargs)

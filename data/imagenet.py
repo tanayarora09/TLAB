@@ -311,7 +311,7 @@ def get_partial_train_loader(rank, world_size, data_fraction_factor: float = Non
     return dt
 
 
-def custom_fetch_data(dataloader, amount, samples=10, classes=10, sampler_offset=None):
+def custom_fetch_data(dataloader, amount, samples=10, classes=1000, sampler_offset=None):
     
     if samples == 0: return None
     

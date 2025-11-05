@@ -1,197 +1,266 @@
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from data.cifar10 import *
+from data import cifar10, cifar100, imagenet
 
 from utils.serialization_utils import logs_to_pickle, save_tensor
 from utils.training_utils import plot_logs
 
 from training.VGG import VGG_CNN
-from models.vgg import VGG
+from models.vgg import vgg
 
-from training.ResNet import ResNet_CNN
-from models.resnet import ResNet
+from training.ResNet import ResNet_CNN, ResNet50_CNN
+from models.resnet import resnet
 
 from search.salient import *
 
 import json
 import pickle
 import gc
+import math
+import time
 
-EPOCHS = 160
-CARDINALITY = 98
-
-TYPES = [("SNIP", SNIP_Pruner), ("GraSP", GraSP_Pruner), ("SynFlow", SynFlow_Pruner), 
-         ("KldLogit", KldLogit_Pruner), ("MseFeature", MSE_Pruner), ("GradMatch", GradMatch_Pruner)]
+TYPES = {"snip": SNIP_Pruner, "grasp": GraSP_Pruner, "synflow": SynFlow_Pruner, 
+         "kldlogit": KldLogit_Pruner, "msefeature": MSE_Pruner, "gradmatch": GradMatch_Pruner}
 
 
-def ddp_network(rank, world_size, is_vgg, bn_track = False):
+def dataname(args):
+    return "data." + args.dataset
 
-    depth = 16 if is_vgg else 20
+def momentum(args):
+    return 0.9
+
+def weight_decay(args):
+    return 1e-4 if args.model == "resnet50" else 1e-3
+
+def total_epochs(args):
+    return {"resnet20": 160, "vgg16": 160, "resnet50": 90}[args.model]
+
+def batchsize(args):
+    return 1024 if args.dataset == "imagenet" else 512
+
+def datasize(args):
+    return 1281167 if args.dataset == "imagenet" else 50000
+
+def cardinality(args):
+    return math.ceil(datasize(args)/batchsize(args))
+
+def learning_rate(args):
+    return {"resnet20": 1e-1, "vgg16": 1e-1, "resnet50": 4e-1}[args.model]
+
+def prune_rate(args):
+    return {"vgg16": 0.8, "resnet20": 0.8, "resnet50": 0.31622776601}[args.model]
+
+def start_epochs(args):
+    start_epochs = {"resnet20": 9, "vgg16": 15, "resnet50": 18}[args.model]
+    if args.time == "init": start_epochs = 0
+    return start_epochs
+
+def micro_batchsize(args):
+    return {"cifar10": 256, "cifar100": 256, "imagenet": 64}[args.dataset]
+
+def ddp_network(args, bn_track = False):
     
-    print("bn:", bn_track)
-
-    model = (VGG if is_vgg else ResNet)(depth = depth, rank = rank, world_size = world_size, custom_init = True, bn_track = bn_track).cuda()
+    classes = {"cifar10": 10,
+               "cifar100": 100,
+               "imagenet": 1000}[args.dataset]
     
-    if world_size > 1:
+    kwargs = {"outfeatures": classes,
+              "rank": args.rank,
+              "world_size": args.world_size,
+              "custom_init": True}
 
-        if bn_track: model = torch.nn.SyncBatchNorm.convert_sync_batchnorm(model)
+    if bn_track: kwargs["bn_track"] = True
 
+    model = None
+    if args.model == "vgg16": model = vgg(depth = 16, **kwargs)
+    if args.model == "resnet20": model = resnet(depth = 20, **kwargs)
+    if args.model == "resnet50": model = resnet(depth = 50, **kwargs)
+
+    model = model.cuda()
+
+    if args.world_size > 1:
         model = DDP(model, 
-                device_ids = [rank],
-                output_device = rank, 
-                gradient_as_bucket_view = True)
-    
+            device_ids = [args.rank],
+            output_device = args.rank, 
+            gradient_as_bucket_view = True)
+
     return model
 
-def run_salient(rank, world_size, name, old_name, type_of_salient, steps_of_salient, is_vgg, spe, spr, transforms, state = None): #ONLY ON ROOT
-
-    model = ddp_network(rank, world_size, is_vgg, bn_track = (type_of_salient == 2 or type_of_salient == 5))
+def run_salient(name, args, spr, transforms, state = None): 
+        
+    model = ddp_network(args, bn_track = (args.criteria in ["synflow", "gradmatch"]))
     if state is not None: model.load_state_dict(state)
     state = model.state_dict()
-    
-    if rank == 0:
-        inp_args = {}
-        if type_of_salient == 4: 
+    model_to_inspect = model.module if args.world_size > 1 else model
+
+    if args.rank == 0:
+        inp_args = {"rank": 0, "world_size": 1, "model": model_to_inspect, "data_module" : dataname(args)}
+        if args.criteria == "msefeature": 
             captures = []
             fcaptures = []
-            model_to_inspect = model.module if world_size > 1 else model
             for bname, block in model_to_inspect.named_children():
                 for lname, layer in block.named_children():
                     if lname.endswith("relu"): captures.append(layer)
                     elif lname.endswith("fc"): fcaptures.append((layer, lambda x: torch.softmax(x, dim = 1)))
             inp_args.update({"capture_layers": captures, "fake_capture_layers": fcaptures})
 
-        pruner = (TYPES[type_of_salient][1])(0, 1, model.module if world_size > 1 else model, **inp_args)
+        pruner = (TYPES[args.criteria])(**inp_args)
         pruner.build(spr, transforms, input = None)
-        ticket = pruner.grad_mask(steps = steps_of_salient)
+        ticket = pruner.grad_mask(steps = args.steps, micro_batch_size = micro_batchsize(args))
         pruner.finish()
 
     else:
-        ticket = torch.zeros(model.module.num_prunable, dtype = torch.bool, device = 'cuda')
+        ticket = torch.zeros(model_to_inspect.num_prunable, dtype = torch.bool, device = 'cuda')
 
-    if world_size > 1:
-        torch.distributed.barrier(device_ids = [rank])
+    if args.world_size > 1:
+        torch.distributed.barrier(device_ids = [args.rank])
         torch.distributed.broadcast(ticket, src = 0)
 
     return state, ticket
 
-def _make_trainer(rank, world_size, is_vgg, state = None, ticket = None):
+def _make_trainer(args, state = None, ticket = None):
 
-    model = ddp_network(rank, world_size, is_vgg)
-    if state is not None: model.load_state_dict(state, strict = False) # SynFlow requires finding tickets with running batchnorm.
-    model_to_inspect = model.module if world_size > 1 else model
+    model = ddp_network(args)
+
+    if state is not None: model.load_state_dict(state, strict = False)
+    model_to_inspect = model.module if args.world_size > 1 else model
     if ticket is not None: model_to_inspect.set_ticket(ticket)
 
-    if (rank == 0):
-        print(model_to_inspect.sparsity, "\n")
+    if (args.rank == 0):
+        print(f"Training with sparsity {(model_to_inspect.sparsity.item()):.3e}% \n")
 
-    return (VGG_CNN if is_vgg else ResNet_CNN)(model, rank, world_size)
+    return {"vgg16": VGG_CNN, "resnet20": ResNet_CNN, "resnet50": ResNet50_CNN}[args.model](model, args.rank, args.world_size)
 
-def run_fit_and_export(rank, world_size, name, old_name, state, ticket, is_init, is_vgg, spe, spr, transforms, dt, dv): #Transforms: DataAug, Resize, Normalize, Crop
+def run_fit_and_export(name, old_name,
+                       args, state, ticket, 
+                       spr, dt, dv, transforms,): #Transforms: DataAug, Resize, Normalize, Crop
 
-    T = _make_trainer(rank, world_size, is_vgg, state, ticket, )
+    T = _make_trainer(args, state, ticket)
 
-    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay': 1e-3},
+    T.mm.export_ticket(old_name, entry_name = f"{spr * 100:.3e}", root = 0)
+
+    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': learning_rate(args), 'momentum': momentum(args), 'weight_decay': weight_decay(args)},
             loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
-            collective_transforms = (transforms[1], transforms[2]), train_transforms = (transforms[0],),
-            eval_transforms = (transforms[3],), final_collective_transforms = tuple(),
+            collective_transforms = tuple(), train_transforms = (transforms[0],),
+            eval_transforms = (transforms[1],), final_collective_transforms = (transforms[2], ),
             scale_loss = True, gradient_clipnorm = 2.0)
     
-    start_epochs = 0 if is_init else (5 if is_vgg else 3)
-
-    logs = T.fit(dt, dv, EPOCHS, CARDINALITY, name, validate = False, save = False, save_init = False, start = start_epochs)
+    logs = T.fit(dt, dv, total_epochs(args), cardinality(args), name, validate = True, save = False, save_init = False, start = start_epochs(args))
 
     T.evaluate(dt)
 
-    if (rank == 0): 
+    if (args.rank == 0): 
         train_res = T.metric_results()
         print("Train Results: ", train_res)
 
     T.evaluate(dv)
     
-    if (rank == 0):
+    if (args.rank == 0):
         val_res =  T.metric_results()
         print("Validation Results: ", val_res)
         print("Sparsity: ", T.mm.sparsity)
         train_res.update({('val_' + k): v for k, v in val_res.items()})
     
-        with open(f"./logs/RESULTS/{old_name}_{spe}.json", "w") as f:
+        with open(f"./logs/RESULTS/{old_name}_{spr*100:.3e}.json", "w") as f:
             json.dump(train_res, f, indent = 6)
         
         logs_to_pickle(logs, name)
-        
-    T.mm.export_ticket(old_name, entry_name = f"{spr * 100:.3e}", root = 0)
 
-def run_start_train(rank, world_size, 
-                    name, is_vgg, start_epochs, 
+        plot_logs(logs, total_epochs(args), name, cardinality(args), start = start_epochs(args))
+
+
+def run_start_train(name, args, 
                     dt, dv, transforms,): 
 
-    T = _make_trainer(rank, world_size, is_vgg)
+    T = _make_trainer(args)
 
-    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay': 1e-3},
+    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': learning_rate(args), 'momentum': momentum(args), 'weight_decay': weight_decay(args)},
             loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
-            collective_transforms = (transforms[1], transforms[2]), train_transforms = (transforms[0],),
-            eval_transforms = (transforms[3],), final_collective_transforms = tuple(),
+            collective_transforms = tuple(), train_transforms = (transforms[0],),
+            eval_transforms = (transforms[1],), final_collective_transforms = (transforms[2], ),
             scale_loss = True, gradient_clipnorm = 2.0)
 
-    T.fit(dt, dv, start_epochs, CARDINALITY, name + "_pretrain", save = False, save_init = False, validate = False)
+    T.fit(dt, dv, start_epochs(args), cardinality(args), name + "_pretrain", save = False, save_init = False, validate = False)
 
     T.evaluate(dt)
 
-    if (rank == 0): 
+    if (args.rank == 0): 
         train_res = T.metric_results()
         print("Train Results: ", train_res)
 
     T.evaluate(dv)
     
-    if (rank == 0):
+    if (args.rank == 0):
         val_res =  T.metric_results()
         print("Validation Results: ", val_res) 
 
     return T.m.state_dict(), T.optim.state_dict()
 
-def main(rank, world_size, name: str, sp_exp: list, **kwargs):
+def main(rank, world_size, name: str, args, **kwargs):
 
-    is_vgg = sp_exp.pop(-1) == 1 # 1 is yes, 0 is no
-    is_init = sp_exp.pop(-1) == 1 
-    type_of_salient = sp_exp.pop(-1) # SNIP, GraSP, SynFlow, KldLogit, MseFeature, GradMatch
-    steps_of_salient = sp_exp.pop(-1) # 1, 100 are common
-    print(f"TYPE: {TYPES[type_of_salient][0]} | INIT {is_init} | VGG: {is_vgg}")
+    args.rank = rank
+    args.world_size = world_size
+    if rank == 0: print(f"Model: {args.model}\nTime: {args.time}\nType: {args.criteria}\nSteps: {args.steps}")
+
+    sparsity_range = {"vgg16": [prune_rate(args) ** x for x in range(2, 43, 2)],
+                      "resnet20": [prune_rate(args) ** x for x in range(2, 43, 2)],
+                      "resnet50": [prune_rate(args) ** x for x in range(1, 7)]}
+
+    sps =  sparsity_range[args.model] if args.sparsities is None else args.sparsities
+
+    name = f"{args.criteria}_{args.model}_{args.dataset}_{args.time}_{args.steps}_{name}"
 
     DISTRIBUTED = world_size > 1
 
     old_name = name
 
-    dataAug = torch.jit.script(DataAugmentation().to('cuda'))
-    resize = torch.jit.script(Resize().to('cuda'))
-    normalize = torch.jit.script(Normalize().to('cuda'))
-    center_crop = torch.jit.script(CenterCrop().to('cuda'))
+    data_path = {"cifar10": cifar10, "cifar100": cifar100, "imagenet": imagenet}[args.dataset]
 
+    dataAug = torch.jit.script(data_path.DataAugmentation().to('cuda'))
+    normalize = torch.jit.script(data_path.Normalize().to('cuda'))
+    center_crop = torch.jit.script(data_path.CenterCrop().to('cuda'))
 
-    dt, dv = get_loaders(rank, world_size, batch_size = 512) 
+    dt, dv = data_path.get_loaders(args.rank, args.world_size, batch_size = batchsize(args))
 
-    ckpt = None
-    if not is_init:
-        start_epochs = 5 if is_vgg else 3
-        ckpt, _ = run_start_train(rank, world_size, name + "_pretrain", is_vgg, start_epochs, dt, dv, (dataAug, resize, normalize, center_crop,))
+    start_start = time.time()
 
-    for spe in reversed(sp_exp):
+    if args.time == "rewind": 
+        ostate, _ = run_start_train(name = name, dt = dt, dv = dv, 
+                                    transforms = (dataAug, center_crop, normalize,),
+                                    args = args)
+    else: 
+        ostate = None
 
-        spr = 0.8**spe
-        name = old_name + f"_{spe:02d}"
+    start_end = time.time()
+    start_train_time = (start_end - start_start)
+    
+    
+    for spr in sps:
 
-        state, ticket = run_salient(rank, world_size, name, old_name, type_of_salient, steps_of_salient,
-                                    is_vgg, spe, spr, (resize, normalize, center_crop,), state = ckpt)
+        prune_train_start = time.time()
+
+        name = old_name + f"_{spr:03e}"
+
+        state, ticket = run_salient(name = name, args = args, 
+                                     state = ostate, spr = spr,
+                                     transforms = (center_crop, normalize,),)
 
         torch.cuda.empty_cache()
         gc.collect()
         
-        run_fit_and_export(rank, world_size, name, old_name, state, ticket, is_init, 
-                 is_vgg, spe, spr, (dataAug, resize, normalize, center_crop,), dt, dv)
+        run_fit_and_export(name = name, old_name = old_name, args = args, 
+                           state = state, ticket = ticket, spr = spr, dt = dt, dv = dv, 
+                           transforms = (dataAug, center_crop, normalize,))
 
         
         torch.cuda.empty_cache()
         gc.collect()
+
+        prune_train_end = time.time()
+
+        total_time = (prune_train_end - prune_train_start) + start_train_time
+        with open(f"logs/TIMES/{name}.txt", "w") as f:
+            f.write(f"{total_time:.2f}")
 
         if DISTRIBUTED: torch.distributed.barrier(device_ids = [rank])
