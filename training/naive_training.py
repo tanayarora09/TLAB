@@ -7,9 +7,9 @@ from utils.serialization_utils import logs_to_pickle, save_tensor
 from utils.training_utils import plot_logs
 
 from training.VGG import VGG_CNN
-from models.VGG import VGG
+from models.vgg import VGG
 from training.ResNet import ResNet_CNN
-from models.ResNet import ResNet
+from models.resnet import ResNet
 from models.base import BaseModel
 
 import json

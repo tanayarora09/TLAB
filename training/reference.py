@@ -7,7 +7,7 @@ from utils.serialization_utils import logs_to_pickle, save_tensor
 from utils.training_utils import plot_logs
 
 from training.VGG import VGG_IMP
-from models.VGG import VGG
+from models.vgg import vgg
 
 import json
 import pickle
@@ -25,7 +25,7 @@ def main(rank, world_size, name: str, **kwargs):
     normalize = torch.jit.script(Normalize().to('cuda'))
     center_crop = torch.jit.script(CenterCrop().to('cuda'))
 
-    model = VGG(depth = 19, rank = rank, world_size = world_size, custom_init = True)
+    model = vgg(depth = 19, rank = rank, world_size = world_size, custom_init = True)
 
 
     model = DDP(model.to('cuda'), 

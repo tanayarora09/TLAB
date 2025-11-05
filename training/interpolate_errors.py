@@ -9,7 +9,7 @@ from utils.training_utils import plot_logs
 
 from training.VGG import VGG_CNN
 from search.salient import DGTS
-from models.VGG import VGG, BaseModel
+from models.vgg import VGG, BaseModel
 
 import json
 import pickle
