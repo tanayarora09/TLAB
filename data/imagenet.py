@@ -234,7 +234,7 @@ class Normalize(nn.Module):
         x = TF.normalize(x, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225), inplace = False)
         return x
 
-def get_loaders(rank, world_size, batch_size = 512, train = True, validation = True, shuffle = True):
+def get_loaders(rank, world_size, batch_size = 256, train = True, validation = True, shuffle = True):
     
     if IS_ORCA: _use_scratch_orca()
 
@@ -276,7 +276,7 @@ def get_loaders(rank, world_size, batch_size = 512, train = True, validation = T
     return dt, dv
 
 
-def get_partial_train_loader(rank, world_size, data_fraction_factor: float = None, batch_count: float = None, batch_size = 1024):
+def get_partial_train_loader(rank, world_size, data_fraction_factor: float = None, batch_count: float = None, batch_size = 256):
     
     if IS_ORCA: _use_scratch_orca()
 

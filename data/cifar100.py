@@ -82,7 +82,7 @@ class ScriptedToTensor(nn.Module):
         return x
 
 
-def get_loaders(rank, world_size, batch_size = 512, train = True, validation = True):
+def get_loaders(rank, world_size, batch_size = 128, train = True, validation = True):
     """
     Iterate if there are weird behaviors with sample counts
     """
