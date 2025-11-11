@@ -116,7 +116,8 @@ def run_concrete(name, args,
 
     search.build(spr, torch.optim.Adam, optimizer_kwargs = {'lr': learning_rate(args)}, transforms = transforms, gradbalance = (args.gradstep != "lagrange"))
 
-    logs, ticket = search.optimize_mask(dt, concrete_epochs(args), cardinality(args), dynamic_epochs = False, reduce_epochs = [60 if args.model == "resnet50" else 120])
+    cepochs = concrete_epochs(args)
+    logs, ticket = search.optimize_mask(dt, cepochs, cardinality(args), dynamic_epochs = False, reduce_epochs = [int(0.88 * cepochs)])
     
     search.finish()
 

@@ -221,10 +221,10 @@ class FrozenConcrete:
             )
 
             with torch.no_grad():
-                
-                if sparsity_error < 0: target_lambda.fill_(0.0)
 
-                else:
+                target_lambda = torch.zeros_like(self.lagrange_multiplier)
+
+                if sparsity_error > 0:
                     task_grad_max = task_grad.abs().amax().clamp_(min=1e-12)
                     task_grad_norm = task_grad.div(task_grad_max).norm(2)
 
