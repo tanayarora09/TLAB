@@ -116,16 +116,22 @@ class BaseCNNTrainer:
 
     #------------------------------------------ MAIN METRIC FUNCTIONS -------------------------------------- #
     
-    def correct_k(self, output: torch.Tensor, labels: torch.Tensor, topk: int = 1) -> torch.Tensor:
+    def correct_k(self, output: torch.Tensor, labels: torch.Tensor, topk: Tuple[int] = (1, )) -> torch.Tensor:
         """
         Returns number of correct prediction.
         Deprecates output tensor.
         """
         with torch.no_grad():
-            _, output = output.topk(topk, 1)
-            output.t_()
-            output.eq_(labels.view(1, -1).expand_as(output))
-            return output[:topk].view(-1).to(torch.int64).sum(0)
+            maxk = max(topk)
+            batch_size = labels.size(0)
+            _, pred = output.topk(maxk, dim = 1)
+            pred = pred.t()
+            correct = pred.eq(labels.view(1, -1).expand_as(pred))
+            
+            res = []
+            for k in topk:
+                res.append(correct[:k].reshape(-1).sum(dtype = torch.int64))
+            return res
 
     def metric_results(self) -> dict[str, float]:
         """
@@ -355,9 +361,10 @@ class BaseCNNTrainer:
         with torch.no_grad():
 
             self.loss_tr += loss
-            self.acc_tr += self.correct_k(output, y)
-            self.acc3_tr += self.correct_k(output, y, topk = 3)
-            self.acc5_tr += self.correct_k(output, y, topk = 5)
+            corrects = self.correct_k(output, y, topk = (1, 3, 5))
+            self.acc_tr += corrects[0]
+            self.acc3_tr += corrects[1]
+            self.acc5_tr += corrects[2]
             self.count_tr += y.size(dim = 0)
         
         return
@@ -417,9 +424,10 @@ class BaseCNNTrainer:
             loss = self.criterion(output, y)
 
             self.loss_tr += loss
-            self.acc_tr += self.correct_k(output, y)
-            self.acc3_tr += self.correct_k(output, y, topk = 3)
-            self.acc5_tr += self.correct_k(output, y, topk = 5)
+            corrects = self.correct_k(output, y, topk = (1, 3, 5))
+            self.acc_tr += corrects[0]
+            self.acc3_tr += corrects[1]
+            self.acc5_tr += corrects[2]
             self.count_tr += y.size(dim = 0)
 
         return
