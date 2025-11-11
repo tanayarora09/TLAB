@@ -82,7 +82,7 @@ class ScriptedToTensor(nn.Module):
         return x
 
 
-def get_loaders(rank, world_size, batch_size = 128, train = True, validation = True):
+def get_loaders(rank, world_size, batch_size = 512, train = True, validation = True):
     """
     Iterate if there are weird behaviors with sample counts
     """
@@ -115,7 +115,7 @@ def get_loaders(rank, world_size, batch_size = 128, train = True, validation = T
     
     return dt, dv
 
-def get_partial_train_loader(rank, world_size, data_fraction_factor: float = None, batch_count: float = None, batch_size = 128):
+def get_partial_train_loader(rank, world_size, data_fraction_factor: float = None, batch_count: float = None, batch_size = 512):
     
     if IS_ORCA: _use_scratch_orca()
 
@@ -135,6 +135,38 @@ def get_partial_train_loader(rank, world_size, data_fraction_factor: float = Non
                     persistent_workers = True, drop_last = True)
 
     return dt
+
+def get_sp_loaders(batch_size = 128, train = True, validation = True):
+    """
+    Iterate if there are weird behaviors with sample counts
+    """
+    
+    if IS_ORCA: _use_scratch_orca()
+
+    dt, dv = None, None
+    
+    if train:
+
+        train_data = torchvision.datasets.CIFAR100(dataset_path, train = True, download = False,
+                                                transform = ScriptedToTensor())
+
+        dt = DataLoader(train_data, batch_size = batch_size, 
+                        pin_memory = True, num_workers = 8, 
+                        persistent_workers = True,
+                        shuffle = True)
+
+    if validation:
+
+        test_data = torchvision.datasets.CIFAR100(dataset_path, train = False, download = False,
+                                            transform = ScriptedToTensor())
+
+        dt = DataLoader(test_data, batch_size = batch_size, 
+                        pin_memory = True, num_workers = 8, 
+                        persistent_workers = True,
+                        shuffle = True)
+    
+    return dt, dv
+
 
 def custom_fetch_data(dataloader, amount, samples=10, classes=100, sampler_offset=None):
     

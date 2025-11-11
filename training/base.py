@@ -87,10 +87,14 @@ class BaseCNNTrainer:
 
         self.loss_tr = torch.as_tensor(0.0, dtype = torch.float64, device = 'cuda')
         self.acc_tr = torch.as_tensor(0, dtype = torch.int64, device = 'cuda')
+        self.acc3_tr = torch.as_tensor(0, dtype = torch.int64, device = 'cuda')
+        self.acc5_tr = torch.as_tensor(0, dtype = torch.int64, device = 'cuda')
         self.count_tr = torch.as_tensor(0, dtype = torch.int64, device = 'cuda')
 
         self.eloss = torch.as_tensor(0.0, dtype = torch.float64, device = 'cuda')
         self.eacc = torch.as_tensor(0, dtype = torch.int64, device = 'cuda')
+        self.e3acc = torch.as_tensor(0, dtype = torch.int64, device = 'cuda')
+        self.e5acc = torch.as_tensor(0, dtype = torch.int64, device = 'cuda')
         self.ecount = torch.as_tensor(0, dtype = torch.int64, device = 'cuda')
 
         self._COLORS = {
@@ -130,12 +134,16 @@ class BaseCNNTrainer:
         """
         with torch.no_grad():
             return {"loss": (self.eloss.div(self.ecount).detach().item()),
-                "accuracy": (self.eacc.div(self.ecount).detach().item())}
+                "accuracy": (self.eacc.div(self.ecount).detach().item()),
+                "accuracy@3": (self.e3acc.div(self.ecount).detach().item()), 
+                "accuracy@5": (self.e5acc.div(self.ecount).detach().item()), }
     
     def reset_metrics(self):
         with torch.no_grad():
             self.eloss.fill_(0.0)
             self.eacc.fill_(0)
+            self.e3acc.fill_(0)
+            self.e5acc.fill_(0)
             self.ecount.fill_(0)
             self.reset_running_metrics()
 
@@ -147,6 +155,8 @@ class BaseCNNTrainer:
         with torch.no_grad():
             self.loss_tr.fill_(0.0)
             self.acc_tr.fill_(0)
+            self.acc3_tr.fill_(0)
+            self.acc5_tr.fill_(0)
             self.count_tr.fill_(0)
     
     def transfer_metrics(self):
@@ -158,6 +168,8 @@ class BaseCNNTrainer:
             self._collect_metrics()
             self.eloss += self.loss_tr
             self.eacc += self.acc_tr
+            self.e3acc += self.acc3_tr
+            self.e5acc += self.acc5_tr
             self.ecount += self.count_tr
             self.reset_running_metrics()
 
@@ -170,6 +182,8 @@ class BaseCNNTrainer:
         with torch.no_grad():
             dist.all_reduce(self.loss_tr, op = dist.ReduceOp.SUM)
             dist.all_reduce(self.acc_tr, op = dist.ReduceOp.SUM)
+            dist.all_reduce(self.acc3_tr, op = dist.ReduceOp.SUM)
+            dist.all_reduce(self.acc5_tr, op = dist.ReduceOp.SUM)
             dist.all_reduce(self.count_tr, op = dist.ReduceOp.SUM)
 
     #------------------------------------------ MAIN TRAIN FUNCTIONS -------------------------------------- #
@@ -342,6 +356,8 @@ class BaseCNNTrainer:
 
             self.loss_tr += loss
             self.acc_tr += self.correct_k(output, y)
+            self.acc3_tr += self.correct_k(output, y, topk = 3)
+            self.acc5_tr += self.correct_k(output, y, topk = 5)
             self.count_tr += y.size(dim = 0)
         
         return
@@ -402,6 +418,8 @@ class BaseCNNTrainer:
 
             self.loss_tr += loss
             self.acc_tr += self.correct_k(output, y)
+            self.acc3_tr += self.correct_k(output, y, topk = 3)
+            self.acc5_tr += self.correct_k(output, y, topk = 5)
             self.count_tr += y.size(dim = 0)
 
         return

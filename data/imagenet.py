@@ -234,7 +234,7 @@ class Normalize(nn.Module):
         x = TF.normalize(x, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225), inplace = False)
         return x
 
-def get_loaders(rank, world_size, batch_size = 256, train = True, validation = True, shuffle = True):
+def get_loaders(rank, world_size, batch_size = 1024, train = True, validation = True, shuffle = True):
     
     if IS_ORCA: _use_scratch_orca()
 
@@ -276,7 +276,7 @@ def get_loaders(rank, world_size, batch_size = 256, train = True, validation = T
     return dt, dv
 
 
-def get_partial_train_loader(rank, world_size, data_fraction_factor: float = None, batch_count: float = None, batch_size = 256):
+def get_partial_train_loader(rank, world_size, data_fraction_factor: float = None, batch_count: float = None, batch_size = 1024):
     
     if IS_ORCA: _use_scratch_orca()
 
@@ -310,11 +310,52 @@ def get_partial_train_loader(rank, world_size, data_fraction_factor: float = Non
 
     return dt
 
+def get_sp_loaders(batch_size = 256, train = True, validation = True, shuffle = True):
+    
+    if IS_ORCA: _use_scratch_orca()
+
+    dt, dv = None, None
+    
+    if train:
+        train_transform = T.Compose([ ResizeMax(), ScriptedToTensor()]) 
+
+
+        train_data = NpyImageDataset("data/imagenet_train.npy", transform = train_transform)
+        #torchvision.datasets.ImageFolder(dataset_path + "/train", transform = train_transform)
+
+        dt = DataLoader(
+            train_data, 
+            batch_size = batch_size, 
+            pin_memory = True, 
+            collate_fn = pad_and_stack_batch,
+            num_workers = 8, 
+            persistent_workers = True,
+            shuffle = shuffle
+        )
+
+    if validation:
+        eval_transform = T.Compose([ ResizeMax(), ScriptedToTensor()]) 
+        
+        test_data = torchvision.datasets.ImageFolder(dataset_path + "/val", transform = eval_transform)
+
+        dt = DataLoader(
+            test_data, 
+            batch_size = batch_size, 
+            pin_memory = True, 
+            collate_fn = pad_and_stack_batch,
+            num_workers = 8, 
+            persistent_workers = True,
+            shuffle = shuffle
+        )
+    
+    return dt, dv
 
 def custom_fetch_data(dataloader, amount, samples=10, classes=1000, sampler_offset=None):
     
     if samples == 0: return None
     
+    return next(dataloader)
+
     if sampler_offset is not None:
         dataloader.sampler.set_epoch(sampler_offset)
     
