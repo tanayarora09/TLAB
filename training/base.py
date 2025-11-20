@@ -574,7 +574,7 @@ class BaseIMP(BaseCNNTrainer):
 
     def TicketIMP(self, train_data: torch.utils.data.DataLoader, validation_data: torch.utils.data.DataLoader, 
                   epochs_per_run: int, train_cardinality: int, name: str, prune_rate: float, prune_iters: int,
-                  rewind_iter: int = 500, validate = True):
+                  rewind_iter: int = 500, validate = True, partitioned_jobs = False, job_data: dict = None):
 
         """
         Find Winning Ticket Through IMP with Rewinding. Calls Trainer.fit(); See description for argument requirements.
@@ -585,57 +585,109 @@ class BaseIMP(BaseCNNTrainer):
         prune_iters should be the number of iterations to run IMP for.
         
         Final sparsity = prune_rate ** prune_iters
-        """
-        
+        """        
+
         start_time = time.time()
 
         total_logs = defaultdict()
         results = defaultdict()
-        
+        start_iter = 0
+
         sparsities_d = [None] * (prune_iters + 1)
-        current_sparsity = 100.0
+        this_sparsity = 100.0
 
         sampler_offset = 0
 
-        if self.IsRoot: h5py.File(f"./logs/TICKETS/{name}.h5", "w").close() # For logging tickets.
+        #if job_data is not None and not partitioned_jobs: raise ValueError()
+
+        if job_data is not None and partitioned_jobs:
+            start_iter = job_data["start_iter"]
+            total_logs = job_data.get("total_logs") or total_logs
+            results = job_data.get("results") or results
+            sparsities_d = job_data.get("sparsities_d") or sparsities_d
+
+        if (start_iter == 0) and self.IsRoot: h5py.File(f"./logs/TICKETS/{name}.h5", "w").close() # For logging tickets.
 
         self.pre_IMP_hook(name)
 
         self.print(f"\nRUNNING IMP ON {self.mm.num_prunable} PRUNABLE WEIGHTS.", "pink")
-
-        self.print(f"\nSPARSITY: {current_sparsity:.3e}\n", "red")
-
-        total_logs[0] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_{(100.0):.3e}", save = True, verbose = False,
-                                 rewind_iter = rewind_iter, sampler_offset = sampler_offset, validate = validate)
-
-        if not validate: results[0] = self._get_results(train_data, validation_data)
-
-        sparsities_d[0] = (current_sparsity / 100, time.time() - start_time)
-
-        for iteration in range(1, prune_iters + 1):
-
-            self.mm.prune_by_mg(prune_rate, iteration, root = 0)
+        
+        if start_iter == 0:
             
-            current_sparsity = self.mm.sparsity
+            self.print(f"\nSPARSITY: {this_sparsity:.3e}\n", "red")
+    
+            sparsities_d[0] = (this_sparsity / 100)
+            total_logs[0] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, name + f"_{(100.0):.3e}", save = True, verbose = False,
+                                    rewind_iter = rewind_iter, sampler_offset = sampler_offset, validate = validate)
 
-            self.print(f"\nSPARSITY: {current_sparsity:.3e} | SEEDED: {torch.rand(1).item()}\n", "red")
+            if not validate: results[0] = [self._get_results(train_data, validation_data), time.time() - start_time]
 
-            self.post_prune_hook(iteration, epochs_per_run)
+        if partitioned_jobs: iter_range = range(start_iter, start_iter + 1)
+        else: iter_range = range(1, prune_iters + 1)
 
-            self.mm.export_ticket(name, entry_name = f"{(current_sparsity):.3e}")
+        for iteration in iter_range:
+
+            if not partitioned_jobs or start_iter == 0:
+                
+                if start_iter == 0 and partitioned_jobs: iteration = 1
+
+                self.mm.prune_by_mg(prune_rate, iteration, root = 0)
+
+                this_sparsity = self.mm.sparsity.item()
+
+                self.print(f"\nSPARSITY: {this_sparsity:.3e} | SEEDED: {torch.rand(1).item()}\n", "red")
+
+                self.post_prune_hook(iteration, epochs_per_run)
+
+                self.mm.export_ticket(name, entry_name = f"{(this_sparsity):.3e}")
+                sparsities_d[iteration] = (this_sparsity / 100)
+
+                if partitioned_jobs: 
+                    results[0][1] = (time.time() - start_time)
+                    return (total_logs, results, sparsities_d)
+
+            else:
+
+                if iteration > 0:
+
+                    this_sparsity = sparsities_d[iteration] * 100
+                    ticket_name = f"{(this_sparsity):.3e}"
+                    self.mm.set_ticket(self.mm.load_ticket(name, entry_name = ticket_name))
 
             self.load_ckpt(name + f"_{(100.0):.3e}", prefix = "rewind", weights_only = True)
 
             #sampler_offset += 1
 
+            self.print(f"\nSPARSITY: {this_sparsity:.3e}\n", "red")
+    
             total_logs[iteration] = self.fit(train_data, validation_data, epochs_per_run, train_cardinality, 
-                                             name + f"_{(current_sparsity):.3e}", save = False, verbose = False,
+                                             name + f"_{(this_sparsity):.3e}", save = False, verbose = False,
                                              sampler_offset = sampler_offset, start = rewind_iter//train_cardinality,
                                              save_init = False, validate = validate)
-            
-            if not validate: results[iteration] = self._get_results(train_data, validation_data)
-            sparsities_d[iteration] = (current_sparsity.item() / 100, time.time() - start_time)
 
+            if not validate: results[iteration] = [self._get_results(train_data, validation_data), None]
+            
+            if partitioned_jobs and iteration < prune_iters:
+
+                iteration += 1
+
+                self.mm.prune_by_mg(prune_rate, iteration, root = 0)  
+                next_sparsity = self.mm.sparsity.item()
+
+                self.print(f"\nSPARSITY: {next_sparsity:.3e} | SEEDED: {torch.rand(1).item()}\n", "red") 
+
+                self.post_prune_hook(iteration, epochs_per_run)
+
+                self.mm.export_ticket(name, entry_name = f"{(next_sparsity):.3e}")
+
+                sparsities_d[iteration] = (next_sparsity / 100)
+
+                results[iteration-1][1] = (time.time() - start_time) + results[iteration-2][1]
+
+                return (total_logs, results, sparsities_d)
+
+            if partitioned_jobs: results[iteration][1] = (time.time() - start_time) + results[iteration-1][1]
+            else: results[iteration][1] = (time.time() - start_time)
 
         self.post_IMP_hook()
 

@@ -67,6 +67,10 @@ def parse_args():
     parser.add_argument('--prune_iterations', type=int, default=1,
                         help='Number of prune iterations to run; i.e. 2 will give maximum prune density of (rate)**2  (default: 1).')
 
+    parser.add_argument('--partitioned_jobs', action='store_true',
+                        help='Run each prune iteration in a separate scheduled job.')
+    parser.add_argument('--current_iteration', type = int, default = 0, help = "Need to queue iterations 0 through prune_iterations, inclusive.")
+
     args = parser.parse_args()
     
     main_kwargs = args
