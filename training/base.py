@@ -26,10 +26,9 @@ class BaseCNNTrainer:
 
     #------------------------------------------ MAIN INIT FUNCTIONS -------------------------------------- #
 
-    warmup_epochs = 0
-
     def __init__(self, model, 
-                 rank: int, world_size: int):
+                 rank: int, world_size: int,
+                 warmup_epochs:int = 0, reduce_epochs: list[int] = []):
         """
         Model has to be DDP.
         Non-Distributed Environments Not Supported.
@@ -44,6 +43,9 @@ class BaseCNNTrainer:
         self.m = model
         if self.DISTRIBUTED: self.mm  = getattr(model, 'module')
         else: self.mm = model
+
+        self.warmup_epochs = warmup_epochs
+        self.reduce_epochs = reduce_epochs
 
     def build(self, optimizer,
               optimizer_kwargs: dict, 
@@ -375,8 +377,11 @@ class BaseCNNTrainer:
     def pre_epoch_hook(self, *args) -> None:
         pass
     
-    def post_epoch_hook(self, *args, **kwargs) -> None:
-        pass
+    def post_epoch_hook(self, epoch, epochs, *args, **kwargs) -> None:
+        if (epoch + 1 + 1) in self.reduce_epochs:
+            self.scale_learning_rate(0.1)
+        return 
+
     
     def pre_step_hook(self, *args, **kwargs) -> None:
         pass

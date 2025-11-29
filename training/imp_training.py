@@ -1,12 +1,11 @@
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from data import cifar10, cifar100, imagenet
+from data import cifar10, cifar100, imagenet, tiny_imagenet
 
 from utils.serialization_utils import logs_to_pickle
 
-from training.VGG import VGG_IMP
-from training.ResNet import ResNet_IMP, ResNet50_IMP
+from training.base import BaseIMP
 from models.vgg import vgg
 from models.resnet import resnet
 
@@ -21,6 +20,7 @@ import math
 IS_ORCA = False
 SAVE_DIRECTORY = "/scratch/tarora_pdx-imagenet/save" if IS_ORCA else "/stash/tlab/tanaya/save"
 
+
 def momentum(args):
     return 0.9
 
@@ -28,22 +28,23 @@ def weight_decay(args):
     return 1e-4 if args.model == "resnet50" else 1e-3
 
 def prune_rate(args):
-    return {"vgg16": 0.8, "resnet20": 0.8, "resnet50": 0.31622776601}[args.model]
+    if args.dataset == "tiny-imagenet": return 0.31622776601
+    return {"vgg16": 0.8, "resnet20": 0.8, "resnet50": 0.1}[args.model]
 
 def total_epochs(args):
-    return {"resnet20": 160, "vgg16": 160, "resnet50": 90}[args.model]
+    return {"cifar10": 160, "cifar100": 160, "imagenet": 90, "tiny-imagenet": 200}[args.dataset]
 
 def batchsize(args):
     return 1024 if args.dataset == "imagenet" else 512
 
 def datasize(args):
-    return 1281167 if args.dataset == "imagenet" else 50000
+    return {"cifar10": 50000, "cifar100": 50000, "tiny-imagenet": 100000,"imagenet": 1281167}[args.dataset]
 
 def cardinality(args):
     return math.ceil(datasize(args)/batchsize(args))
 
 def learning_rate(args):
-    return {"resnet20": 1e-1, "vgg16": 1e-1, "resnet50": 4e-1}[args.model]
+    return {"cifar10": 1e-1, "cifar100": 1e-1, "imagenet": 4e-1, "tiny-imagenet": 4e-1}[args.dataset]
 
 def start_epochs(args):
     start_epochs = {"resnet20": 9, "vgg16": 15, "resnet50": 18}[args.model]
@@ -53,10 +54,20 @@ def start_epochs(args):
 def rewind_iteration(args):
     return int(start_epochs(args) * cardinality(args))
 
+def warmup_steps(args):
+    if args.dataset == "imagenet": return 5
+    return 0
+
+def reduce_eps(args):
+    if args.dataset == "imagenet": return [30, 60, 80] 
+    elif args.dataset == "tiny-imagenet": return [60, 120, 160]
+    return [80, 120]
+
 def ddp_network(args):
     
     classes = {"cifar10": 10,
                "cifar100": 100,
+               "tiny-imagenet": 200,
                "imagenet": 1000}[args.dataset]
     
     kwargs = {"outfeatures": classes,
@@ -91,7 +102,7 @@ def _make_trainer(args, state = None, ticket = None):
     if (args.rank == 0):
         print(f"Training with sparsity {(model_to_inspect.sparsity.item()):.3e}% \n")
 
-    return {"vgg16": VGG_IMP, "resnet20": ResNet_IMP, "resnet50": ResNet50_IMP}[args.model](model, args.rank, args.world_size)
+    return BaseIMP(model, args.rank, args.world_size, warmup_steps = warmup_steps(args), reduce_epochs = reduce_eps(args))
 
 def main(rank, world_size, name: str, args, **kwargs):
 
@@ -114,7 +125,7 @@ def main(rank, world_size, name: str, args, **kwargs):
         resume_data = resume_data[0]
     resume_data["start_iter"] = args.current_iteration
 
-    data_path = {"cifar10": cifar10, "cifar100": cifar100, "imagenet": imagenet}[args.dataset]
+    data_path = {"cifar10": cifar10, "cifar100": cifar100, "imagenet": imagenet, "tiny-imagenet": tiny_imagenet}[args.dataset]
 
     dataAug = torch.jit.script(data_path.DataAugmentation().to('cuda'))
     normalize = torch.jit.script(data_path.Normalize().to('cuda'))

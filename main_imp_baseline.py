@@ -57,7 +57,7 @@ def parse_args():
 
     parser.add_argument('--model', type=str, default='resnet20', choices=['resnet20', 'vgg16', 'resnet50'],
                         help='Model architecture to use (default: resnet20).')
-    parser.add_argument('--dataset', type=str, default='cifar10', choices=['cifar10', 'cifar100', 'imagenet'],
+    parser.add_argument('--dataset', type=str, default='cifar10', choices=['cifar10', 'cifar100', 'imagenet', 'tiny-imagenet'],
                         help='Dataset to use (default: cifar10).')
     parser.add_argument('--time', type=str, default='rewind', choices=['init', 'rewind'],
                         help='Sparsity time strategy (init or rewind) (default: rewind).')
