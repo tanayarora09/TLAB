@@ -34,13 +34,14 @@ def momentum(args):
     return 0.9
 
 def weight_decay(args):
+    if args.dataset == "tiny-imagenet": return 5e-4
     return 1e-4 if args.model == "resnet50" else 1e-3
 
 def total_epochs(args):
     return {"cifar10": 160, "cifar100": 160, "imagenet": 90, "tiny-imagenet": 200}[args.dataset]
 
 def batchsize(args):
-    return 1024 if args.dataset == "imagenet" else 512
+    return 1024 if args.model == "resnet50" else 512
 
 def datasize(args):
     return {"cifar10": 50000, "cifar100": 50000, "tiny-imagenet": 100000,"imagenet": 1281167}[args.dataset]
@@ -61,6 +62,7 @@ def start_epochs(args):
     return start_epochs
 
 def warmup_eps(args):
+    if args.dataset == "tiny-imagenet": return 10
     if args.dataset == "imagenet": return 5
     return 0
 

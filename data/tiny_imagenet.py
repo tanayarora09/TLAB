@@ -140,51 +140,6 @@ class DataAugmentation(nn.Module):
 
         return final_i, final_j, final_h, final_w
 
-    def apply_op(self, img: torch.Tensor, op: str, m: int) -> torch.Tensor:
-        m_norm = float(m)/30.0
-        C, H, W = img.shape
-
-        if op == "rotate":
-            angle = m_norm*30.0
-            if torch.rand(1).item() > 0.5:
-                angle = -angle
-            img = TF.rotate(img, angle=angle, expand=False)
-        elif op == "translate_x":
-            max_dx = int(round(m_norm*0.45*W))
-            dx = int(round(torch.empty(1).uniform_(-max_dx,max_dx).item()))
-            img = TF.affine(img, angle=0.0, translate=(dx,0), scale=1.0, shear=(0.0,0.0))
-        elif op == "translate_y":
-            max_dy = int(round(m_norm*0.45*H))
-            dy = int(round(torch.empty(1).uniform_(-max_dy,max_dy).item()))
-            img = TF.affine(img, angle=0.0, translate=(0,dy), scale=1.0, shear=(0.0,0.0))
-        elif op == "shear_x":
-            img = TF.affine(img, angle=0.0, translate=(0,0), scale=1.0, shear=(m_norm*30.0,0.0))
-        elif op == "shear_y":
-            img = TF.affine(img, angle=0.0, translate=(0,0), scale=1.0, shear=(0.0,m_norm*30.0))
-        elif op == "brightness":
-            factor = 1.0 + m_norm*0.9
-            if torch.rand(1).item() > 0.5:
-                factor = 2.0 - factor
-            img = TF.adjust_brightness(img, factor)
-        elif op == "contrast":
-            factor = 1.0 + m_norm*0.9
-            if torch.rand(1).item() > 0.5:
-                factor = 2.0 - factor
-            img = TF.adjust_contrast(img, factor)
-        elif op == "saturation":
-            factor = 1.0 + m_norm*0.9
-            if torch.rand(1).item() > 0.5:
-                factor = 2.0 - factor
-            img = TF.adjust_saturation(img, factor)
-        elif op == "solarize":
-            threshold = m_norm
-            img = torch.where(img>threshold, 1.0 - img, img)
-        elif op == "posterize":
-            bits = int(round(4 + m_norm*4))
-            levels = 2**bits
-            img = torch.floor(img*(levels-1))/(levels-1)
-        return img
-
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         
         B, C, H_max, W_max = x.shape
@@ -196,11 +151,11 @@ class DataAugmentation(nn.Module):
 
         i, j, h, w = self.get_params_batch(x)
 
-        for b in range(B):
-            x_out[b] = TF.resized_crop(x[b], int(i[b]), int(j[b]), int(h[b]), int(w[b]), self.size)
+        crops = [TF.resized_crop(x[b], int(i[b]), int(j[b]), int(h[b]), int(w[b]), self.size) for b in range(b)]
+        x = torch.stack(crops, dim = 0)
 
         for b in range(B):
-            img = x_out[b]
+            img = x[b]
             b_factor = 1.0 + (torch.empty(1, device=device).uniform_(-self.cj_b, self.cj_b).item())
             img = TF.adjust_brightness(img, b_factor)
             c_factor = 1.0 + (torch.empty(1, device=device).uniform_(-self.cj_c, self.cj_c).item())
@@ -209,17 +164,7 @@ class DataAugmentation(nn.Module):
             img = TF.adjust_saturation(img, s_factor)
             h_factor = torch.empty(1, device=device).uniform_(-self.cj_h, self.cj_h).item()
             img = TF.adjust_hue(img, h_factor)
-            x_out[b] = img
-
-        ops = ["rotate", "translate_x", "translate_y", "shear_x", "shear_y", "brightness", "contrast", "saturation", "solarize", "posterize"]
-        for b in range(B):
-            img = x_out[b]
-            for _ in range(self.randaugment_n):
-                op_idx = torch.randint(0, len(ops), (1,), device=device).item()
-                op = ops[op_idx]
-                img = self.apply_op(img, op, self.randaugment_m)
-            x_out[b] = img
-
+            x[b] = img
 
         return x
 

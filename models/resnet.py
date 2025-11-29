@@ -146,21 +146,27 @@ class ResNetCifar(BaseModel):
 
     class OutBlock(nn.Module):
 
-        def __init__(self, infeatures: int, outfeatures: int, custom_init = False):
+        def __init__(self, infeatures: int, outfeatures: int, custom_init = False, dropout = None):
 
             super(ResNetCifar.OutBlock, self).__init__()
 
             self.register_module("gap", nn.AdaptiveAvgPool2d((1, 1)))
-
             self.register_module("fc", fc(infeatures, outfeatures, custom_init))
+
+            if dropout is not None: 
+                self.register_module("dropout", nn.Dropout(dropout))
+                self.dropout = True
+            else:
+                self.dropout = False
 
         def forward(self, x):
             x = self.get_submodule("gap")(x)
             x = x.squeeze((-1, -2))
+            if self.dropout: x = self.get_submodule("dropout")(x)
             x = self.get_submodule("fc")(x)
             return x
 
-    def __init__(self, rank: int, world_size: int, depth: int = 20, outfeatures: int = 10, inchannels: int = 3, custom_init = True, bn_track = False):
+    def __init__(self, rank: int, world_size: int, depth: int = 20, outfeatures: int = 10, inchannels: int = 3, custom_init = True, bn_track = False, dropout = None):
         super(ResNetCifar, self).__init__()
 
         if depth not in valid:
@@ -185,7 +191,7 @@ class ResNetCifar(BaseModel):
                 self.layers.append(f"block{idx}{block_idx}")
                 current = filters
 
-        self.outblock = self.OutBlock(plan[-1][0], outfeatures, custom_init = custom_init)
+        self.outblock = self.OutBlock(plan[-1][0], outfeatures, custom_init = custom_init, dropout = dropout)
 
         self.init_base(rank, world_size)
 
@@ -321,20 +327,26 @@ class ResNetImagenet(BaseModel):
 
     class OutBlock(nn.Module):
 
-        def __init__(self, infeatures: int, outfeatures: int, custom_init = False):
+        def __init__(self, infeatures: int, outfeatures: int, custom_init = False, dropout = None):
 
             super(ResNetImagenet.OutBlock, self).__init__()
 
             self.register_module("gap", nn.AdaptiveAvgPool2d((1, 1)))
             self.register_module("fc", fc(infeatures, outfeatures, custom_init))
+            if dropout is not None: 
+                self.register_module("dropout", nn.Dropout(dropout))
+                self.dropout = True
+            else:
+                self.dropout = False
 
         def forward(self, x):
             x = self.get_submodule("gap")(x)
             x = x.squeeze((-1, -2))
+            if self.dropout: x = self.get_submodule("dropout")(x)
             x = self.get_submodule("fc")(x)
             return x
 
-    def __init__(self, rank, world_size, depth=18, outfeatures=1000, inchannels=3, custom_init=True, bn_track=False):
+    def __init__(self, rank, world_size, depth=18, outfeatures=1000, inchannels=3, custom_init=True, bn_track=False, dropout = None):
         super().__init__()
 
         self.layers = []
@@ -359,7 +371,7 @@ class ResNetImagenet(BaseModel):
         self._make_layer(2, block, 256, layers_cfg[2], stride=2, custom_init=custom_init, bn_track=bn_track)
         self._make_layer(3, block, 512, layers_cfg[3], stride=2, custom_init=custom_init, bn_track=bn_track)
         
-        self.register_module("outblock", self.OutBlock(512 * block.expansion, outfeatures, custom_init))
+        self.register_module("outblock", self.OutBlock(512 * block.expansion, outfeatures, custom_init, dropout))
 
         self.init_base(rank, world_size)
 
@@ -386,7 +398,7 @@ class ResNetImagenet(BaseModel):
         return x
 
 
-def resnet(rank: int, world_size: int, depth: int = 20, outfeatures: int = 10, inchannels: int = 3, custom_init = True, bn_track = False):
+def resnet(rank: int, world_size: int, depth: int = 20, outfeatures: int = 10, inchannels: int = 3, custom_init = True, bn_track = False, dropout = None):
 
-    if depth in ivalid: return ResNetImagenet(rank, world_size, depth, outfeatures, inchannels, custom_init, bn_track)
-    elif depth in valid: return ResNetCifar(rank, world_size, depth, outfeatures, inchannels, custom_init, bn_track)
+    if depth in ivalid: return ResNetImagenet(rank, world_size, depth, outfeatures, inchannels, custom_init, bn_track, dropout)
+    elif depth in valid: return ResNetCifar(rank, world_size, depth, outfeatures, inchannels, custom_init, bn_track, dropout)
