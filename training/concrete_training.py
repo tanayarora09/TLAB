@@ -104,7 +104,7 @@ def run_concrete(name, args,
                  state, spr, 
                  dt, transforms,):
     
-    if spr == 1.0: return None, None
+    if spr == 1.0: return state, None
 
     model = ddp_network(args)
     if state is not None: model.load_state_dict(state)

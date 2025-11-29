@@ -42,7 +42,7 @@ class ScriptedToTensor(nn.Module):
         x = TF.to_dtype(x, dtype=torch.float32, scale=True)
         return x
 
-class DataAugmentation(nn.Module):
+"""class DataAugmentation(nn.Module):
     
     def __init__(self):
         super(DataAugmentation, self).__init__()
@@ -63,8 +63,94 @@ class DataAugmentation(nn.Module):
         # Perform batched cropping
         x = torch.stack([img[:, i_: i_ + 64, j_: j_ + 64] for img, i_, j_ in zip(x, i, j)])
 
-        return x
+        return x"""
     
+class DataAugmentation(nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.size = (64, 64)
+        self.scale = (0.1, 1.0)
+        self.ratio = (0.8, 1.25)
+
+    def get_params_batch(self, x: torch.Tensor):
+        B = x.shape[0]
+        device = x.device
+        
+        H = torch.full(B, fill_value = 64, dtype = torch.int32, device = device)
+        area = H * H
+
+        log_ratio = torch.log(torch.tensor(self.ratio, device=device))
+
+        final_h = torch.full((B,), -1, device=device, dtype=torch.int32)
+        final_w = torch.full((B,), -1, device=device, dtype=torch.int32)
+        final_i = torch.full((B,), -1, device=device, dtype=torch.int32)
+        final_j = torch.full((B,), -1, device=device, dtype=torch.int32)
+        success = torch.zeros(B, device=device, dtype=torch.bool)
+
+        for _ in range(10):
+            target_area = area * torch.empty(B, device=device).uniform_(self.scale[0], self.scale[1])
+            aspect_ratio = torch.exp(torch.empty(B, device=device).uniform_(log_ratio[0], log_ratio[1]))
+
+            crop_w = torch.round(torch.sqrt(target_area * aspect_ratio))
+            crop_h = torch.round(torch.sqrt(target_area / aspect_ratio))
+            
+            valid = (crop_w > 0) & (crop_w <= H) & (crop_h > 0) & (crop_h <= H) & (~success)
+
+            if valid.any():
+                max_i = (H - crop_h + 1).clamp(min=1)
+                max_j = (H - crop_w + 1).clamp(min=1)
+
+                rand_i = torch.floor((torch.rand(B, device=device) * max_i.float()))
+                rand_j = torch.floor(torch.rand(B, device=device) * max_j.float())
+
+                final_h = torch.where(valid, crop_h, final_h)
+                final_w = torch.where(valid, crop_w, final_w)
+                final_i = torch.where(valid, rand_i, final_i)
+                final_j = torch.where(valid, rand_j, final_j)
+
+                success |= valid
+
+            if success.all(): break
+
+        failed = ~success
+        if failed.any():
+            in_ratio = H.to(torch.float32) / H.to(torch.float32)
+            min_ratio = torch.tensor(self.ratio[0], device=device, dtype=torch.float32)
+            max_ratio = torch.tensor(self.ratio[1], device=device, dtype=torch.float32)
+
+            fb_w = H.clone()
+            fb_h = H.clone()
+
+            wide_mask = in_ratio > max_ratio
+            fb_w[wide_mask] = torch.round(H[wide_mask].to(torch.float32) * max_ratio).to(torch.int32)
+            
+            tall_mask = in_ratio < min_ratio
+            fb_h[tall_mask] = torch.round(H[tall_mask].to(torch.float32) / min_ratio).to(torch.int32)
+
+            fb_i = ((H - fb_h) // 2)
+            fb_j = ((H - fb_w) // 2)
+
+            final_h = torch.where(failed, fb_h, final_h)
+            final_w = torch.where(failed, fb_w, final_w)
+            final_i = torch.where(failed, fb_i, final_i)
+            final_j = torch.where(failed, fb_j, final_j)
+
+        return final_i, final_j, final_h, final_w
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        
+        B, C, H_max, W_max = x.shape
+        device = x.device
+
+        flip_mask = torch.rand(B, device=device) > 0.5
+        x = torch.where(flip_mask[:, None, None, None], TF.hflip(x), x)
+
+        i, j, h, w = self.get_params_batch(x)
+        
+        crops = [TF.resized_crop(x[b], int(i[b]), int(j[b]), int(h[b]), int(w[b]), self.size) for b in range(B)]
+
+        return torch.stack(crops, dim=0)
+
 
 class CenterCrop(nn.Module):
     def __init__(self):

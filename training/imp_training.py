@@ -25,7 +25,7 @@ def momentum(args):
     return 0.9
 
 def weight_decay(args):
-    return 1e-4 if args.model == "resnet50" else 1e-3
+    return 1e-4 if args.dataset == "imagenet" else 1e-3
 
 def prune_rate(args):
     if args.dataset == "tiny-imagenet": return 0.31622776601
