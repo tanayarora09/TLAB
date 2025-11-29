@@ -54,7 +54,7 @@ def start_epochs(args):
 def rewind_iteration(args):
     return int(start_epochs(args) * cardinality(args))
 
-def warmup_steps(args):
+def warmup_eps(args):
     if args.dataset == "imagenet": return 5
     return 0
 
@@ -102,7 +102,7 @@ def _make_trainer(args, state = None, ticket = None):
     if (args.rank == 0):
         print(f"Training with sparsity {(model_to_inspect.sparsity.item()):.3e}% \n")
 
-    return BaseIMP(model, args.rank, args.world_size, warmup_steps = warmup_steps(args), reduce_epochs = reduce_eps(args))
+    return BaseIMP(model, args.rank, args.world_size, warmup_epochs = warmup_eps(args), reduce_epochs = reduce_eps(args))
 
 def main(rank, world_size, name: str, args, **kwargs):
 
