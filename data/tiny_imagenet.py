@@ -69,14 +69,17 @@ class DataAugmentation(nn.Module):
     def __init__(self):
         super().__init__()
         self.size = (64, 64)
-        self.scale = (0.1, 1.0)
-        self.ratio = (0.8, 1.25)
+        self.scale = (0.6, 1.0)
+        self.ratio = (0.8, 1.25)       
+        self.randaugment_n = 2
+        self.randaugment_m = 9  
+        self.cj_b, self.cj_c, self.cj_s, self.cj_h = (0.4, 0.4, 0.4, 0.1)
 
     def get_params_batch(self, x: torch.Tensor):
         B = x.shape[0]
         device = x.device
         
-        H = torch.full(B, fill_value = 64, dtype = torch.int32, device = device)
+        H = torch.full((B,), fill_value = 64, dtype = torch.int32, device = device)
         area = H * H
 
         log_ratio = torch.log(torch.tensor(self.ratio, device=device))
@@ -137,6 +140,122 @@ class DataAugmentation(nn.Module):
 
         return final_i, final_j, final_h, final_w
 
+    def apply_color_jitter_batch(self, x: torch.Tensor):
+        # x: B,C,H,W; returns B,C,H,W
+        B = x.shape[0]
+        out = []
+        device = x.device
+        for b in range(B):
+            img = x[b]
+            # brightness
+            b_factor = 1.0 + (torch.empty(1, device=device).uniform_(-self.cj_b, self.cj_b).item())
+            img = TF.adjust_brightness(img, b_factor)
+            # contrast
+            c_factor = 1.0 + (torch.empty(1, device=device).uniform_(-self.cj_c, self.cj_c).item())
+            img = TF.adjust_contrast(img, c_factor)
+            # saturation
+            s_factor = 1.0 + (torch.empty(1, device=device).uniform_(-self.cj_s, self.cj_s).item())
+            img = TF.adjust_saturation(img, s_factor)
+            # hue (TF expects degrees in [-0.5,0.5])
+            h_factor = (torch.empty(1, device=device).uniform_(-self.cj_h, self.cj_h).item())
+            img = TF.adjust_hue(img, h_factor)
+            out.append(img)
+        return torch.stack(out, dim=0)
+
+    def _randaugment_ops(self):
+        # return list of op names we support
+        return [
+            'rotate',
+            'translate_x',
+            'translate_y',
+            'shear_x',
+            'shear_y',
+            'brightness',
+            'contrast',
+            'saturation',
+            'solarize',
+            'posterize',
+        ]
+
+    def _m_to_arg(self, op: str, m: int, img_size: Tuple[int,int]):
+        # map magnitude m in [0,30] to op-specific parameter
+        # returns numeric value(s)
+        m = float(m) / 30.0  # normalize
+        W, H = img_size
+        if op == 'rotate':
+            # rotate degrees in [-30, 30]
+            return (m * 30.0) * (1 if torch.rand(1).item() > 0.5 else -1)
+        if op in ('translate_x', 'translate_y'):
+            # translate as fraction of dimension up to 0.45
+            max_frac = 0.45
+            return m * max_frac
+        if op in ('shear_x', 'shear_y'):
+            # shear degrees up to 30
+            return (m * 30.0) * (1 if torch.rand(1).item() > 0.5 else -1)
+        if op in ('brightness', 'contrast', 'saturation'):
+            # factor in [1-0.9, 1+0.9]
+            return 1.0 + (m * 0.9) * (1 if torch.rand(1).item() > 0.5 else -1)
+        if op == 'solarize':
+            # threshold 0..1, map to 0.0..1.0
+            return m
+        if op == 'posterize':
+            # bits to keep 4->8 mapped
+            return int(round(4 + m * 4))
+        return None
+
+    def apply_randaugment_batch(self, x: torch.Tensor, n=None, m=None):
+        """
+        Apply RandAugment with n operations and magnitude m (0..30).
+        Uses per-sample random selection of ops and parameters.
+        """
+        B, C, H, W = x.shape
+        device = x.device
+        n = self.randaugment_n if n is None else n
+        m = self.randaugment_m if m is None else m
+        ops = self._randaugment_ops()
+
+        out = []
+        for b in range(B):
+            img = x[b]
+            for _ in range(n):
+                op = ops[torch.randint(len(ops), (1,), device=device).item()]
+                arg = self._m_to_arg(op, m, (W,H))
+                # apply op
+                if op == 'rotate':
+                    img = TF.rotate(img, angle=arg, expand=False)
+                elif op == 'translate_x':
+                    max_dx = int(round(arg * W))
+                    dx = int(round(torch.empty(1, device=device).uniform_(-max_dx, max_dx).item()))
+                    img = TF.affine(img, angle=0.0, translate=(dx,0), scale=1.0, shear=(0.0,0.0))
+                elif op == 'translate_y':
+                    max_dy = int(round(arg * H))
+                    dy = int(round(torch.empty(1, device=device).uniform_(-max_dy, max_dy).item()))
+                    img = TF.affine(img, angle=0.0, translate=(0,dy), scale=1.0, shear=(0.0,0.0))
+                elif op == 'shear_x':
+                    img = TF.affine(img, angle=0.0, translate=(0,0), scale=1.0, shear=(arg,0.0))
+                elif op == 'shear_y':
+                    img = TF.affine(img, angle=0.0, translate=(0,0), scale=1.0, shear=(0.0,arg))
+                elif op == 'brightness':
+                    img = TF.adjust_brightness(img, arg)
+                elif op == 'contrast':
+                    img = TF.adjust_contrast(img, arg)
+                elif op == 'saturation':
+                    img = TF.adjust_saturation(img, arg)
+                elif op == 'solarize':
+                    # TF.solarize expects tensor in 0..1? It accepts PIL. We'll implement simple solarize op:
+                    # clip values above threshold to (1 - value)
+                    threshold = arg  # 0..1
+                    img = torch.where(img > threshold, 1.0 - img, img)
+                elif op == 'posterize':
+                    # reduce bit-depth: assume img in [0,1]
+                    bits = max(1, int(arg))
+                    levels = 2 ** bits
+                    img = torch.floor(img * (levels - 1)) / (levels - 1)
+                else:
+                    pass
+            out.append(img)
+        return torch.stack(out, dim=0)
+
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         
         B, C, H_max, W_max = x.shape
@@ -148,8 +267,14 @@ class DataAugmentation(nn.Module):
         i, j, h, w = self.get_params_batch(x)
         
         crops = [TF.resized_crop(x[b], int(i[b]), int(j[b]), int(h[b]), int(w[b]), self.size) for b in range(B)]
+        
+        x = torch.stack(crops, dim=0)
 
-        return torch.stack(crops, dim=0)
+        x = self.apply_color_jitter_batch(x)
+
+        x = self.apply_randaugment_batch(x)
+
+        return x
 
 
 class CenterCrop(nn.Module):
