@@ -24,13 +24,7 @@ class ModelHparams:
 
 
 @dataclass(frozen=True)
-class ExperimentHparams:
-    dataset: str
-    model: str
-    model_depth: int
-    num_classes: int
-    prune_rate: float
-    start_epoch: int
+class TrainingHparams:
     total_epochs: int
     batch_size: int
     learning_rate: float
@@ -38,12 +32,28 @@ class ExperimentHparams:
     weight_decay: float
     warmup_epochs: int
     lr_milestones: List[int]
-    train_size: int
+    start_epoch: int
     micro_batch_size: Optional[int] = None
+
+    def cardinality(self, train_size: int) -> int:
+        return math.ceil(train_size / self.batch_size)
+
+
+@dataclass(frozen=True)
+class SearchHparams:
+    prune_rate: float
+
+
+@dataclass(frozen=True)
+class ExperimentHparams:
+    model: ModelHparams
+    data: DatasetHparams
+    train: TrainingHparams
+    search: SearchHparams
 
     @property
     def cardinality(self) -> int:
-        return math.ceil(self.train_size / self.batch_size)
+        return self.train.cardinality(self.data.train_size)
 
 
 _MODEL_CONFIGS: Dict[str, ModelHparams] = {
@@ -152,13 +162,7 @@ def build_experiment_hparams(model: str, dataset: str, *, time: str = "rewind", 
 
     start_epoch = 0 if time == "init" else model_cfg.start_epoch
 
-    return ExperimentHparams(
-        dataset=dataset,
-        model=model,
-        model_depth=model_cfg.depth,
-        num_classes=dataset_cfg.num_classes,
-        prune_rate=_prune_rate(dataset, model, pipeline),
-        start_epoch=start_epoch,
+    train = TrainingHparams(
         total_epochs=_total_epochs(dataset, model, pipeline),
         batch_size=_batch_size(dataset, model, pipeline),
         learning_rate=_learning_rate(dataset, model, pipeline),
@@ -166,6 +170,15 @@ def build_experiment_hparams(model: str, dataset: str, *, time: str = "rewind", 
         weight_decay=_weight_decay(dataset, model, pipeline),
         warmup_epochs=_warmup_epochs(dataset, pipeline),
         lr_milestones=dataset_cfg.lr_milestones,
-        train_size=dataset_cfg.train_size,
+        start_epoch=start_epoch,
         micro_batch_size=_MICRO_BATCH_SIZES.get(dataset),
+    )
+
+    search = SearchHparams(prune_rate=_prune_rate(dataset, model, pipeline))
+
+    return ExperimentHparams(
+        model=model_cfg,
+        data=dataset_cfg,
+        train=train,
+        search=search,
     )

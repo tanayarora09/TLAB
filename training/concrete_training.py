@@ -32,7 +32,7 @@ CONCRETE_EXPERIMENTS = {"loss": SNIPConcrete,
                         "deltaloss": LossChangeConcrete}
 
 def momentum(args):
-    return hparams(args).momentum
+    return hparams(args).train.momentum
 
 
 @lru_cache(maxsize=None)
@@ -45,34 +45,34 @@ def hparams(args):
 
 
 def weight_decay(args):
-    return hparams(args).weight_decay
+    return hparams(args).train.weight_decay
 
 def total_epochs(args):
-    return hparams(args).total_epochs
+    return hparams(args).train.total_epochs
 
 def batchsize(args):
-    return hparams(args).batch_size
+    return hparams(args).train.batch_size
 
 def datasize(args):
-    return hparams(args).train_size
+    return hparams(args).data.train_size
 
 def cardinality(args):
     return hparams(args).cardinality
 
 def learning_rate(args):
-    return hparams(args).learning_rate
+    return hparams(args).train.learning_rate
 
 def prune_rate(args):
-    return hparams(args).prune_rate
+    return hparams(args).search.prune_rate
 
 def start_epochs(args):
-    return hparams(args).start_epoch
+    return hparams(args).train.start_epoch
 
 def warmup_eps(args):
-    return hparams(args).warmup_epochs
+    return hparams(args).train.warmup_epochs
 
 def reduce_eps(args):
-    return hparams(args).lr_milestones
+    return hparams(args).train.lr_milestones
 
 def concrete_epochs(args):
     concrete_epoch_ratio = {"short": 0.125, "half": 0.5, "long": 1.0}[args.duration]
@@ -81,15 +81,15 @@ def concrete_epochs(args):
 def ddp_network(args):
     hp = hparams(args)
 
-    kwargs = {"outfeatures": hp.num_classes,
+    kwargs = {"outfeatures": hp.data.num_classes,
               "rank": args.rank,
               "world_size": args.world_size,
               "custom_init": True}
 
     model = None
-    if args.model == "vgg16": model = vgg(depth = hp.model_depth, **kwargs)
-    if args.model == "resnet20": model = resnet(depth = hp.model_depth, **kwargs)
-    if args.model == "resnet50": model = resnet(depth = hp.model_depth, **kwargs)
+    if args.model == "vgg16": model = vgg(depth = hp.model.depth, **kwargs)
+    if args.model == "resnet20": model = resnet(depth = hp.model.depth, **kwargs)
+    if args.model == "resnet50": model = resnet(depth = hp.model.depth, **kwargs)
 
     model = model.cuda()
 
