@@ -19,7 +19,7 @@ import pickle
 import gc
 import time
 from functools import lru_cache
-from training.hparams import build_experiment_hparams
+from hparams import build_experiment_hparams
 
 TYPES = {"snip": SNIP_Pruner, "grasp": GraSP_Pruner, "synflow": SynFlow_Pruner, 
          "kldlogit": KldLogit_Pruner, "msefeature": MSE_Pruner, "gradmatch": GradMatch_Pruner}

@@ -6,7 +6,7 @@ from data import cifar10, cifar100, imagenet, tiny_imagenet
 from utils.serialization_utils import logs_to_pickle
 
 from training.base import BaseIMP
-from training.hparams import build_experiment_hparams
+from hparams import build_experiment_hparams
 from models.vgg import vgg
 from models.resnet import resnet
 

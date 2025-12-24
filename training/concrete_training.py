@@ -12,7 +12,7 @@ from training.base import BaseCNNTrainer
 
 from models.vgg import vgg
 from models.resnet import resnet
-from training.hparams import build_experiment_hparams
+from hparams import build_experiment_hparams
 
 from search.salient import *
 from search.concrete import * 
