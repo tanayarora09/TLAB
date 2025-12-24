@@ -100,8 +100,8 @@ def _make_trainer(rank, world_size, is_vgg, state = None, ticket = None):
     if ticket is not None: model_to_inspect.set_ticket(ticket)
 
     if (rank == 0):
-        if world_size == 1: print(f"Training with sparsity {(model.sparsity.item()):.3e}% \n")
-        else: print(f"Training with sparsity {(model.module.sparsity.item()):.3e}% \n")
+        if world_size == 1: print(f"Training with sparsity {(model.sparsity):.3e}% \n")
+        else: print(f"Training with sparsity {(model.module.sparsity):.3e}% \n")
 
     return (VGG_CNN if is_vgg else ResNet_CNN)(model, rank, world_size)
 

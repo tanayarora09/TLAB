@@ -14,7 +14,7 @@ from search.salient import *
 from search.concrete import *
 from search.genetic import *
 from models.VGG import VGG
-from models.base import BaseModel
+from models.base import MaskedModel
 from models.ResNet import ResNet
 
 

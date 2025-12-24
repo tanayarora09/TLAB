@@ -7,7 +7,7 @@ import torch.distributed as dist
 from torch.utils.data import DataLoader
 from typing import Callable, List, Tuple
 
-from models.base import BaseModel
+from models.base import MaskedModel
 import importlib
 
 __all__ = ["SNIP_Pruner", "SynFlow_Pruner", "GraSP_Pruner", "OldKld_Pruner", "MSE_Pruner", "KldLogit_Pruner", "GradMatch_Pruner"]

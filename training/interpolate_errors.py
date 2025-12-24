@@ -9,7 +9,7 @@ from utils.training_utils import plot_logs
 
 from training.VGG import VGG_CNN
 from search.salient import DGTS
-from models.vgg import VGG, BaseModel
+from models.vgg import VGG, MaskedModel
 
 import json
 import pickle
@@ -193,7 +193,7 @@ def main(rank, world_size, name: str, args: list, lock, shared_list, **kwargs):
     """
     while not T._pruned:
 
-        tmp_name = f"{name}_{T.mm.sparsity.item()*0.8:.1f}"
+        tmp_name = f"{name}_{T.mm.sparsity*0.8:.1f}"
 
         logs = T.fit(dt, dv, EPOCHS, CARDINALITY, tmp_name, 
                      save = True if (T.mm.sparsity_d.item() == 1.00) else False,
@@ -209,7 +209,7 @@ def main(rank, world_size, name: str, args: list, lock, shared_list, **kwargs):
         T.remove_handles()
 
         T.prune_model(ticket)
-        T.fitnesses.append((T.mm.sparsity.item(), fitness))
+        T.fitnesses.append((T.mm.sparsity, fitness))
 
         if T.mm.sparsity_d <= T.desired_sparsity:
             T._pruned = True
@@ -219,7 +219,7 @@ def main(rank, world_size, name: str, args: list, lock, shared_list, **kwargs):
         if (rank == 0):
 
             logs_to_pickle(logs, tmp_name)
-            T.mm.export_ticket(name, entry_name = f"{T.mm.sparsity.item():.1f}")
+            T.mm.export_ticket(name, entry_name = f"{T.mm.sparsity:.1f}")
 
         torch.distributed.barrier(device_ids = [rank])
 

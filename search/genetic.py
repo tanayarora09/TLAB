@@ -1,4 +1,4 @@
-from models.base import BaseModel
+from models.base import MaskedModel
 from models.LotteryLayers import Lottery 
 
 from data.cifar10 import custom_fetch_data, get_loaders
@@ -27,7 +27,7 @@ class BaseGeneticSearch:
     """
     Population Management, Parent Selection, Mutation, Search Loop, Etc.
     """
-    def __init__(self, rank: int, world_size: int, model: BaseModel,
+    def __init__(self, rank: int, world_size: int, model: MaskedModel,
                  input: torch.Tensor | DataLoader, 
                  sparsity_rate: float,
                  transforms: Tuple[Callable] = tuple(),
@@ -282,7 +282,7 @@ class BaseGeneticSearch:
 
 class KldLogitSearch(BaseGeneticSearch):
 
-    def __init__(self, rank: int, world_size: int, model: BaseModel,
+    def __init__(self, rank: int, world_size: int, model: MaskedModel,
                  input: torch.Tensor | DataLoader, sparsity_rate: float,
                  transforms: Tuple[Callable] = tuple(),
                  input_sampler_offset: int = None,
@@ -357,7 +357,7 @@ class KldLogitSearch(BaseGeneticSearch):
 
 class GradMatchSearch(BaseGeneticSearch):
 
-    def __init__(self, rank: int, world_size: int, model: BaseModel,
+    def __init__(self, rank: int, world_size: int, model: MaskedModel,
                  input: torch.Tensor | DataLoader, sparsity_rate: float,
                  transforms: Tuple[Callable] = tuple(),
                  input_sampler_offset: int = None,
@@ -478,7 +478,7 @@ class DeltaLossSearch(BaseGeneticSearch):
 
 class GradientNormSearch(BaseGeneticSearch):
 
-    def __init__(self, rank: int, world_size: int, model: BaseModel,
+    def __init__(self, rank: int, world_size: int, model: MaskedModel,
                  input: torch.Tensor | DataLoader, sparsity_rate: float,
                  transforms: Tuple[Callable] = tuple(),
                  input_sampler_offset: int = None,
@@ -524,7 +524,7 @@ class GradientNormSearch(BaseGeneticSearch):
 
 class NormalizedMSESearch(BaseGeneticSearch):
 
-    def __init__(self, rank: int, world_size: int, model: BaseModel,
+    def __init__(self, rank: int, world_size: int, model: MaskedModel,
                  input: torch.Tensor | DataLoader, 
                  sparsity_rate: float,
                  transforms: Tuple[Callable] = tuple(),
@@ -651,7 +651,7 @@ class NormalizedMSESearch(BaseGeneticSearch):
         
 class OldKldSearch(BaseGeneticSearch):
 
-    def __init__(self, rank: int, world_size: int, model: BaseModel,
+    def __init__(self, rank: int, world_size: int, model: MaskedModel,
                  input: torch.Tensor | DataLoader, 
                  sparsity_rate: float,
                  transforms: Tuple[Callable] = tuple(),

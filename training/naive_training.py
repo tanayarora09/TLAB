@@ -10,7 +10,7 @@ from training.VGG import VGG_CNN
 from models.vgg import VGG
 from training.ResNet import ResNet_CNN
 from models.resnet import ResNet
-from models.base import BaseModel
+from models.base import MaskedModel
 
 import json
 import pickle

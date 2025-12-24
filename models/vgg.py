@@ -3,7 +3,7 @@ from torch import nn
 from typing import Tuple, Callable
 
 from models.LotteryLayers import LotteryConv2D, LotteryDense
-from models.base import BaseModel
+from models.base import MaskedModel
 
 import types
 
@@ -26,7 +26,7 @@ def bn_init(self) -> None:
 def conv_fc_init(self) -> None:
     nn.init.kaiming_normal_(self.weight)
 
-class VGG(BaseModel):
+class VGG(MaskedModel):
 
     class ConvBN(nn.Module):
     

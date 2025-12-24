@@ -14,7 +14,7 @@ import copy
 import time
 from tqdm import tqdm 
 
-from models.base import BaseModel
+from models.base import MaskedModel
 from data.cifar10 import get_loaders, custom_fetch_data
 
 
@@ -22,7 +22,7 @@ __all__ = ["SNIPConcrete", "GraSPConcrete", "NormalizedMseFeatures", "KldLogit",
 
 
 class FrozenConcrete:
-    def __init__(self, rank: int, world_size: int, model: BaseModel | DDP,
+    def __init__(self, rank: int, world_size: int, model: MaskedModel | DDP,
                  capture_layers: List[Module] = None,
                  fake_capture_layers: List[Tuple[Module, Callable]] = None,
                  concrete_temperature = 2./3.):
@@ -130,7 +130,7 @@ class FrozenConcrete:
             param.requires_grad_(False)
         
         self.target_logit = torch.log(torch.as_tensor(desired_sparsity/(1 - desired_sparsity), device = 'cuda')) # / self.concrete_temperature 
-        self.mm.prepare_for_continuous_optimization(initial_alpha = self.target_logit)
+        self.mm.to_soft_mask(initial_alpha = self.target_logit)
         self._set_concrete_temperature()
 
         self.lagrange_multiplier = torch.as_tensor(0.0, device = 'cuda', dtype = torch.float32).requires_grad_(not gradbalance)
@@ -151,7 +151,7 @@ class FrozenConcrete:
 
     def finish(self):
         
-        self.mm.revert_to_binary_mask(torch.ones(self.mm.num_prunable, dtype = torch.bool))
+        self.mm.to_hard_mask(torch.ones(self.mm.num_prunable, dtype = torch.bool))
 
         self.m.train(self.original_training_mode)
         if self.leafed_state_dict:
@@ -329,7 +329,7 @@ class FrozenConcrete:
             print(f"True On-Gate Sparsity: {100 * (self.mm.get_true_active()/self.mm.num_prunable).item()}")
             print(f"Clipped Sparsity: {(100 * self.spr)}")
 
-        if not custom_continuous_to_mg: ticket = self.mm.get_continuous_ticket(sparsity_d = None if dynamic_epochs else self.spr, invert = invert_mask)
+        if not custom_continuous_to_mg: ticket = self.mm.get_hard_ticket(sparsity_d = None if dynamic_epochs else self.spr, invert = invert_mask)
 
         else: ticket = self.mm.custom_continuous_to_mg(sparsity_d = self.spr)
 

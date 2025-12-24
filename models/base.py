@@ -9,12 +9,12 @@ from models.LotteryLayers import Lottery
 
 import torchinfo
 
-class BaseModel(nn.Module):
+class MaskedModel(nn.Module):
 
     """
     Overhead for Models:
 
-    Models MUST use LotteryLayers for all layers that must be pruned.
+    Models MUST use LotteryLayers for all layers that are to be pruned.
 
     Expected Structure:
 
@@ -47,8 +47,8 @@ class BaseModel(nn.Module):
         for param in self.parameters():
             if param.requires_grad: self._learnable_count += param.numel()
 
-        self.is_continuous = False
-        self.concrete_temperature = None
+        self.is_soft = False
+        self.concrete_tau = None
 
         self.lottery_layers = tuple([layer for name, block in self.named_children() for name, layer in block.named_children() if isinstance(layer, Lottery)])
 
@@ -58,7 +58,7 @@ class BaseModel(nn.Module):
         self.register_buffer("MASK", torch.ones(self._prunable_count, dtype = torch.bool, 
                                                 device = "cuda", requires_grad = False), persistent = False)
 
-        self.mask_is_active = True
+        self.is_masked = True
 
         self._reupdate_mask()
 
@@ -66,38 +66,36 @@ class BaseModel(nn.Module):
         offset = 0       
         for layer in self.lottery_layers:
             layer.update_mask(self.get_buffer("MASK"), offset)
-            if self.concrete_temperature is not None: layer.update_temperature(self.concrete_temperature)
+            if self.concrete_tau is not None: layer.set_concrete_temperature(self.concrete_tau)
             offset += layer.MASK_NUMEL
 
     def deactivate_mask(self):
-        for layer in self.lottery_layers: layer.deactivate_mask()
-        self.mask_is_active = False
+        for layer in self.lottery_layers: layer.deactivate()
+        self.is_masked = False
 
     def activate_mask(self):
-        for layer in self.lottery_layers: layer.activate_mask()
-        self.mask_is_active = True        
+        for layer in self.lottery_layers: layer.activate()
+        self.is_masked = True        
 
-    def prepare_for_continuous_optimization(self, initial_alpha: float = 0.0):
+    def to_soft_mask(self, initial_alpha: float = 0.0):
         """
         Ensure model.eval() is called.
         """
         setattr(self, "MASK", self.get_buffer("MASK").to(torch.float32)) # now MASK = log_alpha
-        self.concrete_temperature = torch.as_tensor(2./3., dtype = torch.float32, device = "cuda")
+        self.concrete_tau = torch.as_tensor(2./3., dtype = torch.float32, device = "cuda")
         self.get_buffer("MASK").fill_(initial_alpha)
         self.get_buffer("MASK").requires_grad_(True)
-        self.is_continuous = True
+        self.is_soft = True
         self._reupdate_mask()
 
-    #@torch.no_grad()
     def get_expected_active(self):
-        return torch.sigmoid(self.get_buffer("MASK")).sum() # / self.concrete_temperature
+        return torch.sigmoid(self.get_buffer("MASK")).sum()
     
-    #@torch.no_grad()
     def get_true_active(self):
         return (self.get_buffer("MASK") > 0.).sum()
 
     @torch.no_grad()
-    def get_continuous_ticket(self, sparsity_d: float = None, invert: bool = False):
+    def get_hard_ticket(self, sparsity_d: float = None, invert: bool = False):
 
         if self.RANK == 0: 
             if sparsity_d is None: ticket = self.get_buffer("MASK") > 0.
@@ -122,58 +120,34 @@ class BaseModel(nn.Module):
 
     @torch.no_grad()
     def get_concrete_temperature(self):
-        return self.concrete_temperature.item()
+        return self.concrete_tau.item()
     
     @torch.no_grad()
     def set_concrete_temperature(self, x):
-        self.concrete_temperature.fill_(x)
+        self.concrete_tau.fill_(x)
 
-    def custom_continuous_to_mg(self, sparsity_d: float, root = 0):
-        with torch.no_grad():
-            for layer in self.lottery_layers:
-                if self.RANK == root: getattr(layer, layer.MASKED_NAME).mul_(torch.sigmoid(getattr(layer, layer.MASK_NAME))) # / self.concrete_temperature
-                torch.distributed.broadcast(getattr(layer, layer.MASKED_NAME), src = root)
-                torch.distributed.barrier(device_ids = [self.RANK])
-            self.revert_to_binary_mask(ticket = torch.ones(self.num_prunable, dtype = torch.bool, device = 'cuda'))
-            self.prune_by_mg(rate = sparsity_d, iteration = 1, root = root)
-            ticket = self.export_ticket_cpu()
-        return ticket
-
-
-    def revert_to_binary_mask(self, ticket: torch.Tensor):
-        self.concrete_temperature = None
-        self.is_continuous = False
+    def to_hard_mask(self, ticket: torch.Tensor):
+        self.concrete_tau = None
+        self.is_soft = False
         assert ticket.numel() == self.num_prunable
         setattr(self, "MASK", torch.as_tensor(ticket, dtype = torch.bool, device = 'cuda').requires_grad_(False))
         self._reupdate_mask()
 
-
     def set_ticket(self, mask: torch.Tensor, zero_out = False, realzo = False) -> None:
         with torch.no_grad():
             if mask.numel() != self.num_prunable: raise ValueError("Mask must have correct number of parameters.")
-
             self.get_buffer("MASK").copy_(mask)
-
-            if False: #zero_out:
-                for name, module in self.named_modules():
-                    if isinstance(module, nn.BatchNorm2d): 
-                        module.reset_parameters()
-                        module.reset_running_stats()
-
-#    def reset_batchnorm(self):
-#        self.apply(lambda module: if isinstance(module, nn.BatchNorm2d): module.reset_parameters())
     
     def reset_ticket(self) -> None:
-
         self.get_buffer("MASK").fill_(True)
 
     @property
     def sparsity(self):
-        return self.sparsity_d * 100
+        return (self.sparsity_d * 100).item()
 
     @property
     def sparsity_d(self):
-        if not self.is_continuous: return (self.get_buffer("MASK").count_nonzero() / self.num_prunable)
+        if not self.is_soft: return (self.get_buffer("MASK").count_nonzero() / self.num_prunable)
         else: return (self.get_expected_active() / self.num_prunable)
 
     @property
@@ -210,7 +184,7 @@ class BaseModel(nn.Module):
             for name, layer in block.named_children():
                 if isinstance(layer, Lottery):
                     weight = getattr(layer, layer.MASK_NAME) * getattr(layer, "weight")
-                    nonzero = (weight.abs().sum(dim=(1, 2, 3)) > 0).sum()
+                    nonzero = (weight.abs().flatten(1).sum(1) > 0).sum()
                     print(f"{bname} | {nonzero} | {weight.shape[0]}")
 
 
@@ -218,14 +192,11 @@ class BaseModel(nn.Module):
     els = export_layerwise_sparsities
     cc = count_channels
 
-    @torch._dynamo.disable
     @torch.no_grad()
     def export_ticket_cpu(self) -> torch.Tensor:
-
-        return self.get_buffer("MASK").detach().cpu()
+        return self.get_buffer("MASK").detach().copy().cpu()
 
     
-    @torch._dynamo.disable
     @torch.no_grad()
     def export_ticket(self, name: str, root: int = 0, entry_name: str = "mask", ticket: torch.Tensor = None) -> None:
         if not (self.RANK == root): return
@@ -233,8 +204,7 @@ class BaseModel(nn.Module):
             if ticket is not None: 
                 f.create_dataset(entry_name, data = ticket.cpu().numpy())
             f.create_dataset(entry_name, data = self.export_ticket_cpu().numpy())
-
-    @torch._dynamo.disable         
+      
     @torch.no_grad()
     def load_ticket(self, name: str, root: int = 0, entry_name: str = "mask") -> torch.Tensor:
         """
@@ -249,26 +219,24 @@ class BaseModel(nn.Module):
 
         if self.DISTRIBUTED:
             dist.barrier(device_ids = [self.RANK])
-
             dist.broadcast(data, src=root)
 
         return data
-
-    @torch._dynamo.disable         
+        
     @torch.no_grad()
     def load_ticket_to_model(self, name: str, root: int = 0, entry_name: str = "mask") -> None:
         """
         ROOT = 0
         """
-        if self.RANK == root:
+        if self.RANK == root or not self.DISTRIBUTED:
             with h5py.File(f"./logs/TICKETS/{name}.h5", 'r') as f:
                 data = torch.as_tensor(f[entry_name][:], device = "cuda")
-        else:
+        elif self.DISTRIBUTED:
             data = torch.empty(self.num_prunable, device = "cuda") 
 
-        dist.barrier(device_ids = [self.RANK])
-
-        dist.broadcast(data, src=root)
+        if self.DISTRIBUTED:
+            dist.barrier(device_ids = [self.RANK])
+            dist.broadcast(data, src=root)
 
         self.set_ticket(data)
 
@@ -287,12 +255,11 @@ class BaseModel(nn.Module):
             if self.RANK == root or not self.DISTRIBUTED:
 
                 all_magnitudes = (torch.cat([(layer.get_parameter(layer.MASKED_NAME)).detach().view(-1) for layer in self.lottery_layers], 
-                                        dim = 0) * self.get_buffer("MASK")).abs_()#.cpu()
+                                        dim = 0) * self.get_buffer("MASK")).abs_()
         
                 num_to_keep = int((rate ** iteration) * all_magnitudes.numel())
-
-                threshold = torch.kthvalue(all_magnitudes, all_magnitudes.numel() - num_to_keep).values#np.quantile(all_magnitudes.numpy(), q = 1.0 - rate ** iteration, method = "higher")
-
+                threshold = torch.kthvalue(all_magnitudes, all_magnitudes.numel() - num_to_keep).values
+                
                 ticket = all_magnitudes.ge(threshold)
 
             elif self.DISTRIBUTED: 
@@ -301,7 +268,6 @@ class BaseModel(nn.Module):
             if self.DISTRIBUTED:
 
                 dist.barrier(device_ids = [self.RANK])
-
                 dist.broadcast(ticket, src = root)
 
             self.set_ticket(ticket)
@@ -335,8 +301,6 @@ class BaseModel(nn.Module):
             self.set_ticket(ticket)
 
             return         
-        
-
 
     
     #@torch.no_grad()
@@ -399,9 +363,10 @@ class BaseModel(nn.Module):
         return
 
 
-    #@torch.compile
     def merge_tickets(self, t1: torch.Tensor, t2: torch.Tensor, t1_weight: float, t2_weight: float) -> torch.Tensor:
         """
+        DEPRECATED
+        
         Merges two tickets stochastically (genetic breeding)
 
         Keep all with both, sample rest with weight going to better fitness
@@ -410,9 +375,11 @@ class BaseModel(nn.Module):
         """
         return merge_tickets_graphed(t1, t2, torch.as_tensor(t1_weight), torch.as_tensor(t2_weight))
 
-    #@torch.compile
     def mutate_ticket(self, ticket: torch.Tensor, temperature: float = 0.2) -> torch.Tensor:
         """
+
+        DEPRECATED
+
         Mutates a given ticket by randomly swapping temperature * min(true_values, false_values) values
         """
 
@@ -433,6 +400,11 @@ class BaseModel(nn.Module):
 @torch.compile
 def merge_tickets_graphed(t1: torch.Tensor, t2: torch.Tensor, t1w: torch.Tensor, 
                           t2w: torch.Tensor) -> torch.Tensor:
+    
+    """
+    DEPRECATED
+    """
+
     with torch.no_grad():
         child = t1 & t2
         remaining = (t1.sum() - child.sum()).int()
@@ -447,6 +419,10 @@ def merge_tickets_graphed(t1: torch.Tensor, t2: torch.Tensor, t1w: torch.Tensor,
 
 @torch.compile
 def mutate_ticket_graphed(ticket: torch.Tensor, temperature: torch.Tensor):
+
+    """
+    DEPRECATED
+    """
 
     with torch.no_grad():
 

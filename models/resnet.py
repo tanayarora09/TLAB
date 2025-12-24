@@ -3,7 +3,7 @@ from torch import nn
 from typing import Tuple, Callable
 
 from models.LotteryLayers import LotteryConv2D, LotteryDense
-from models.base import BaseModel
+from models.base import MaskedModel
 
 import types
 
@@ -53,7 +53,7 @@ def fc(infeatures, outfeatures, custom_init):
     
     return fc_obj
 
-class ResNetCifar(BaseModel):
+class ResNetCifar(MaskedModel):
 
     class ResBlock(nn.Module):
 
@@ -208,7 +208,7 @@ class ResNetCifar(BaseModel):
 
         return x
 
-class ResNetImagenet(BaseModel):
+class ResNetImagenet(MaskedModel):
 
     class BasicBlock(nn.Module):
         expansion = 1
@@ -398,7 +398,13 @@ class ResNetImagenet(BaseModel):
         return x
 
 
-def resnet(rank: int, world_size: int, depth: int = 20, outfeatures: int = 10, inchannels: int = 3, custom_init = True, bn_track = False, dropout = None):
+def resnet_imagenet(rank: int, world_size: int, depth: int = 20, outfeatures: int = 10, inchannels: int = 3, custom_init = True, bn_track = False, dropout = None):
 
     if depth in ivalid: return ResNetImagenet(rank, world_size, depth, outfeatures, inchannels, custom_init, bn_track, dropout)
-    elif depth in valid: return ResNetCifar(rank, world_size, depth, outfeatures, inchannels, custom_init, bn_track, dropout)
+    raise ValueError("Invalid ResNet depth for this model file.")
+    
+
+def resnet_cifar(rank: int, world_size: int, depth: int = 20, outfeatures: int = 10, inchannels: int = 3, custom_init = True, bn_track = False, dropout = None):
+
+    if depth in valid: return ResNetCifar(rank, world_size, depth, outfeatures, inchannels, custom_init, bn_track, dropout)
+    raise ValueError("Invalid ResNet depth for this model file.")

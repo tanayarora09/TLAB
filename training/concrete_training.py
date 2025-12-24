@@ -87,6 +87,8 @@ def ddp_network(args):
               "world_size": args.world_size,
               "custom_init": True}
 
+    if args.dataset == "tiny-imagenet": kwargs["dropout"] = 0.5
+
     model = None
     if args.model == "vgg16": model = vgg(depth = 16, **kwargs)
     if args.model == "resnet20": model = resnet(depth = 20, **kwargs)
@@ -147,7 +149,7 @@ def _make_trainer(args, state = None, ticket = None):
     if ticket is not None: model_to_inspect.set_ticket(ticket)
 
     if (args.rank == 0):
-        print(f"Training with sparsity {(model_to_inspect.sparsity.item()):.3e}% \n")
+        print(f"Training with sparsity {(model_to_inspect.sparsity):.3e}% \n")
 
     return BaseCNNTrainer(model, args.rank, args.world_size, warmup_epochs = warmup_eps(args), reduce_epochs = reduce_eps(args))
 

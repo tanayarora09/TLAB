@@ -100,7 +100,7 @@ def _make_trainer(args, state = None, ticket = None):
     if ticket is not None: model_to_inspect.set_ticket(ticket)
 
     if (args.rank == 0):
-        print(f"Training with sparsity {(model_to_inspect.sparsity.item()):.3e}% \n")
+        print(f"Training with sparsity {(model_to_inspect.sparsity):.3e}% \n")
 
     return BaseIMP(model, args.rank, args.world_size, warmup_epochs = warmup_eps(args), reduce_epochs = reduce_eps(args))
 

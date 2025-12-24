@@ -18,7 +18,7 @@ import math
 
 import h5py
 from models.LotteryLayers import Lottery
-from models.base import BaseModel
+from models.base import MaskedModel
 
 from data.cifar10 import custom_fetch_data
 
@@ -316,7 +316,7 @@ class BaseCNNTrainer:
                 for k, v in logs[(epoch + 1) * train_cardinality].items():
                     self.print(f" {k}: {v:.9f}", 'cyan')
 
-                progress_bar.set_postfix_str(self.color_str(f"Time Taken: {(time.time() - train_start):.2f}s", "green") + ", " + self.color_str(f"Sparsity: {self.mm.sparsity.item()}", "green")) 
+                progress_bar.set_postfix_str(self.color_str(f"Time Taken: {(time.time() - train_start):.2f}s", "green") + ", " + self.color_str(f"Sparsity: {self.mm.sparsity}", "green")) 
 
                 progress_bar.update(1)
 
@@ -638,7 +638,7 @@ class BaseIMP(BaseCNNTrainer):
 
                 self.mm.prune_by_mg(prune_rate, iteration, root = 0)
 
-                this_sparsity = self.mm.sparsity.item()
+                this_sparsity = self.mm.sparsity
 
                 self.print(f"\nSPARSITY: {this_sparsity:.3e} | SEEDED: {torch.rand(1).item()}\n", "red")
 
@@ -677,7 +677,7 @@ class BaseIMP(BaseCNNTrainer):
                 iteration += 1
 
                 self.mm.prune_by_mg(prune_rate, iteration, root = 0)  
-                next_sparsity = self.mm.sparsity.item()
+                next_sparsity = self.mm.sparsity
 
                 self.print(f"\nSPARSITY: {next_sparsity:.3e} | SEEDED: {torch.rand(1).item()}\n", "red") 
 
@@ -727,7 +727,7 @@ class CNN_DGTS(BaseCNNTrainer):
     class DGTS:
 
         def __init__(self, rank: int, world_size: int, lock, dynamic_list, 
-                     model: BaseModel, act_w: list, max_size: int = 50,
+                     model: MaskedModel, act_w: list, max_size: int = 50,
                      possible_children: int = 5, reverse_scores: bool = False):
             self.lock = lock
             self.population = dynamic_list
@@ -985,11 +985,11 @@ class CNN_DGTS(BaseCNNTrainer):
             elif (step + 1) == 390:
                 status, ticket, fitness = self.plateau_monitor(x, y)
                 self.remove_handles()
-                self.fitnesses.append((iteration, fitness, self.mm.sparsity.item() * 0.8))
+                self.fitnesses.append((iteration, fitness, self.mm.sparsity * 0.8))
                 if status:
                     self.prune_model(ticket)
                     self._last_prune = iteration
-                    self.prunes.append(f"Epoch {(iteration + 1) / 391:.1f}: Pruned to {self.mm.sparsity.item():.3f} with fitness: {fitness}.")
+                    self.prunes.append(f"Epoch {(iteration + 1) / 391:.1f}: Pruned to {self.mm.sparsity:.3f} with fitness: {fitness}.")
                     self._prune_status = 1
             
         elif (self._prune_status == 1): 
@@ -1001,8 +1001,8 @@ class CNN_DGTS(BaseCNNTrainer):
                 self._prune_next = False
                 self.prune_model(ticket)
                 self._last_prune = iteration
-                self.fitnesses.append((iteration, fitness, self.mm.sparsity.item()))
-                self.prunes.append(f"Epoch {(iteration + 1) / 391:.1f}: Pruned to {self.mm.sparsity.item():.3f} with fitness: {fitness}.")
+                self.fitnesses.append((iteration, fitness, self.mm.sparsity))
+                self.prunes.append(f"Epoch {(iteration + 1) / 391:.1f}: Pruned to {self.mm.sparsity:.3f} with fitness: {fitness}.")
                 if (self.mm.sparsity_d.item() <= self.desired_sparsity): self._prune_status = 2
             elif check_prune(iteration + 1, step + 1): 
                 self.init_capture_hooks()
@@ -1052,7 +1052,7 @@ class CNN_DGTS(BaseCNNTrainer):
                 
                 self.mm.set_ticket(ticket)
 
-                self.fitnesses.append((self.mm.sparsity.item(), fitness))
+                self.fitnesses.append((self.mm.sparsity, fitness))
                 self.prunes.append(f"Epoch {(iteration + 1) / 391}: Pruned to {self.mm.sparsity:.3f} with fitness: {fitness}.")
                 
                 #idx += 1
@@ -1120,12 +1120,12 @@ class CNN_DGTS(BaseCNNTrainer):
             
             self.remove_handles()
 
-            self.fitnesses.append(((iteration+1)/391, fitness, self.mm.sparsity.item() * 0.8))
+            self.fitnesses.append(((iteration+1)/391, fitness, self.mm.sparsity * 0.8))
 
             if status:
 
                 self.mm.set_ticket(ticket)
-                self.prunes.append(f"Epoch {(iteration + 1) / 391:.1f}: Pruned to {self.mm.sparsity.item():.3f} with fitness: {fitness}.")
+                self.prunes.append(f"Epoch {(iteration + 1) / 391:.1f}: Pruned to {self.mm.sparsity:.3f} with fitness: {fitness}.")
 
                 if self.mm.sparsity_d <= self.desired_sparsity:
                     self.prunes.append(f"Pruning finished on epoch {(iteration + 1)/391:.1f}.")
@@ -1197,7 +1197,7 @@ class CNN_DGTS(BaseCNNTrainer):
 
                 status, ticket, fitness = self.plateau_monitor(x, y, name)
                 self.remove_handles()
-                self.fitnesses.append((iteration, fitness, self.mm.sparsity.item() * self.sparsity_rate))
+                self.fitnesses.append((iteration, fitness, self.mm.sparsity * self.sparsity_rate))
                 
                 if not status: return True
                 

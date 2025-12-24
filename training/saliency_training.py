@@ -128,7 +128,7 @@ def _make_trainer(args, state = None, ticket = None):
     if ticket is not None: model_to_inspect.set_ticket(ticket)
 
     if (args.rank == 0):
-        print(f"Training with sparsity {(model_to_inspect.sparsity.item()):.3e}% \n")
+        print(f"Training with sparsity {(model_to_inspect.sparsity):.3e}% \n")
 
     return {"vgg16": VGG_CNN, "resnet20": ResNet_CNN, "resnet50": ResNet50_CNN}[args.model](model, args.rank, args.world_size)
 
