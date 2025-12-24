@@ -17,8 +17,9 @@ from search.salient import *
 import json
 import pickle
 import gc
-import math
 import time
+from functools import lru_cache
+from training.hparams import build_experiment_hparams
 
 TYPES = {"snip": SNIP_Pruner, "grasp": GraSP_Pruner, "synflow": SynFlow_Pruner, 
          "kldlogit": KldLogit_Pruner, "msefeature": MSE_Pruner, "gradmatch": GradMatch_Pruner}
@@ -28,44 +29,49 @@ def dataname(args):
     return "data." + args.dataset
 
 def momentum(args):
-    return 0.9
+    return hparams(args).momentum
+
+
+@lru_cache(maxsize=None)
+def _cached_hparams(model: str, dataset: str, time: str):
+    return build_experiment_hparams(model, dataset, time=time, pipeline="saliency")
+
+
+def hparams(args):
+    return _cached_hparams(args.model, args.dataset, getattr(args, "time", "rewind"))
+
 
 def weight_decay(args):
-    return 1e-4 if args.model == "resnet50" else 1e-3
+    return hparams(args).weight_decay
 
 def total_epochs(args):
-    return {"resnet20": 160, "vgg16": 160, "resnet50": 90}[args.model]
+    return hparams(args).total_epochs
 
 def batchsize(args):
-    return 1024 if args.dataset == "imagenet" else 512
+    return hparams(args).batch_size
 
 def datasize(args):
-    return 1281167 if args.dataset == "imagenet" else 50000
+    return hparams(args).train_size
 
 def cardinality(args):
-    return math.ceil(datasize(args)/batchsize(args))
+    return hparams(args).cardinality
 
 def learning_rate(args):
-    return {"resnet20": 1e-1, "vgg16": 1e-1, "resnet50": 4e-1}[args.model]
+    return hparams(args).learning_rate
 
 def prune_rate(args):
-    return {"vgg16": 0.8, "resnet20": 0.8, "resnet50": 0.31622776601}[args.model]
+    return hparams(args).prune_rate
 
 def start_epochs(args):
-    start_epochs = {"resnet20": 9, "vgg16": 15, "resnet50": 18}[args.model]
-    if args.time == "init": start_epochs = 0
-    return start_epochs
+    return hparams(args).start_epoch
 
 def micro_batchsize(args):
-    return {"cifar10": 256, "cifar100": 256, "imagenet": 64}[args.dataset]
+    return hparams(args).micro_batch_size
 
 def ddp_network(args, bn_track = False):
-    
-    classes = {"cifar10": 10,
-               "cifar100": 100,
-               "imagenet": 1000}[args.dataset]
-    
-    kwargs = {"outfeatures": classes,
+    hp = hparams(args)
+
+    kwargs = {"outfeatures": hp.num_classes,
               "rank": args.rank,
               "world_size": args.world_size,
               "custom_init": True}
@@ -73,9 +79,9 @@ def ddp_network(args, bn_track = False):
     if bn_track: kwargs["bn_track"] = True
 
     model = None
-    if args.model == "vgg16": model = vgg(depth = 16, **kwargs)
-    if args.model == "resnet20": model = resnet(depth = 20, **kwargs)
-    if args.model == "resnet50": model = resnet(depth = 50, **kwargs)
+    if args.model == "vgg16": model = vgg(depth = hp.model_depth, **kwargs)
+    if args.model == "resnet20": model = resnet(depth = hp.model_depth, **kwargs)
+    if args.model == "resnet50": model = resnet(depth = hp.model_depth, **kwargs)
 
     model = model.cuda()
 

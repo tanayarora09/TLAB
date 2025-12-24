@@ -12,6 +12,7 @@ from training.base import BaseCNNTrainer
 
 from models.vgg import vgg
 from models.resnet import resnet
+from training.hparams import build_experiment_hparams
 
 from search.salient import *
 from search.concrete import * 
@@ -20,8 +21,8 @@ from search.genetic import *
 import json
 import pickle
 import gc
-import math
 import time
+from functools import lru_cache
  
 CONCRETE_EXPERIMENTS = {"loss": SNIPConcrete,
                         "gradnorm": GraSPConcrete,
@@ -31,66 +32,64 @@ CONCRETE_EXPERIMENTS = {"loss": SNIPConcrete,
                         "deltaloss": LossChangeConcrete}
 
 def momentum(args):
-    return 0.9
+    return hparams(args).momentum
+
+
+@lru_cache(maxsize=None)
+def _cached_hparams(model: str, dataset: str, time: str):
+    return build_experiment_hparams(model, dataset, time=time, pipeline="concrete")
+
+
+def hparams(args):
+    return _cached_hparams(args.model, args.dataset, getattr(args, "time", "rewind"))
+
 
 def weight_decay(args):
-    if args.dataset == "tiny-imagenet": return 5e-4
-    return 1e-4 if args.model == "resnet50" else 1e-3
+    return hparams(args).weight_decay
 
 def total_epochs(args):
-    return {"cifar10": 160, "cifar100": 160, "imagenet": 90, "tiny-imagenet": 200}[args.dataset]
+    return hparams(args).total_epochs
 
 def batchsize(args):
-    return 1024 if args.model == "resnet50" else 512
+    return hparams(args).batch_size
 
 def datasize(args):
-    return {"cifar10": 50000, "cifar100": 50000, "tiny-imagenet": 100000,"imagenet": 1281167}[args.dataset]
+    return hparams(args).train_size
 
 def cardinality(args):
-    return math.ceil(datasize(args)/batchsize(args))
+    return hparams(args).cardinality
 
 def learning_rate(args):
-    return {"cifar10": 1e-1, "cifar100": 1e-1, "imagenet": 4e-1, "tiny-imagenet": 4e-1}[args.dataset]
+    return hparams(args).learning_rate
 
 def prune_rate(args):
-    if args.dataset == "tiny-imagenet": return 0.31622776601
-    return {"vgg16": 0.8, "resnet20": 0.8, "resnet50": 0.1}[args.model]
+    return hparams(args).prune_rate
 
 def start_epochs(args):
-    start_epochs = {"resnet20": 9, "vgg16": 15, "resnet50": 18}[args.model]
-    if args.time == "init": start_epochs = 0
-    return start_epochs
+    return hparams(args).start_epoch
 
 def warmup_eps(args):
-    if args.dataset == "tiny-imagenet": return 10
-    if args.dataset == "imagenet": return 5
-    return 0
+    return hparams(args).warmup_epochs
 
 def reduce_eps(args):
-    if args.dataset == "imagenet": return [30, 60, 80] 
-    elif args.dataset == "tiny-imagenet": return [60, 120, 160]
-    return [80, 120]
+    return hparams(args).lr_milestones
 
 def concrete_epochs(args):
     concrete_epoch_ratio = {"short": 0.125, "half": 0.5, "long": 1.0}[args.duration]
     return int(concrete_epoch_ratio * total_epochs(args))
 
 def ddp_network(args):
-    
-    classes = {"cifar10": 10,
-               "cifar100": 100,
-               "tiny-imagenet": 200,
-               "imagenet": 1000}[args.dataset]
-    
-    kwargs = {"outfeatures": classes,
+    hp = hparams(args)
+
+    kwargs = {"outfeatures": hp.num_classes,
               "rank": args.rank,
               "world_size": args.world_size,
               "custom_init": True}
 
     model = None
-    if args.model == "vgg16": model = vgg(depth = 16, **kwargs)
-    if args.model == "resnet20": model = resnet(depth = 20, **kwargs)
-    if args.model == "resnet50": model = resnet(depth = 50, **kwargs)
+    if args.model == "vgg16": model = vgg(depth = hp.model_depth, **kwargs)
+    if args.model == "resnet20": model = resnet(depth = hp.model_depth, **kwargs)
+    if args.model == "resnet50": model = resnet(depth = hp.model_depth, **kwargs)
 
     model = model.cuda()
 
