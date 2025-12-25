@@ -103,7 +103,7 @@ def ddp_network(args):
 
 def run_concrete(name, args,
                  state, spr, 
-                 dt, transforms,):
+                 dt, data_obj,):
     
     if spr == 1.0: return state, None
 
@@ -125,10 +125,13 @@ def run_concrete(name, args,
 
     search = CONCRETE_EXPERIMENTS[args.criteria](**inp_args)
 
-    search.build(spr, torch.optim.Adam, optimizer_kwargs = {'lr': learning_rate(args)}, transforms = transforms, gradbalance = (args.gradstep != "lagrange"))
+    # Get transforms from data_obj
+    tt, et, ft = data_obj.tef_transforms()
+    search.build(spr, torch.optim.Adam, optimizer_kwargs = {'lr': learning_rate(args)}, transforms = (tt, et, ft), gradbalance = (args.gradstep != "lagrange"))
 
     cepochs = concrete_epochs(args)
-    logs, ticket = search.optimize_mask(dt, cepochs, cardinality(args), dynamic_epochs = False, reduce_epochs = [int(0.88 * cepochs)])
+    card = data_obj.cardinality()
+    logs, ticket = search.optimize_mask(dt, cepochs, card, dynamic_epochs = False, reduce_epochs = [int(0.88 * cepochs)])
     
     search.finish()
 
@@ -153,17 +156,22 @@ def _make_trainer(args, state = None, ticket = None):
 
 
 def run_start_train(name, args, 
-                    dt, dv, transforms,): 
+                    dt, dv, data_obj,): 
 
     T = _make_trainer(args)
 
-    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': learning_rate(args), 'momentum': momentum(args), 'weight_decay': weight_decay(args)},
-            loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
-            collective_transforms = tuple(), train_transforms = (transforms[0],),
-            eval_transforms = (transforms[1],), final_collective_transforms = (transforms[2], ),
-            scale_loss = True, gradient_clipnorm = 2.0)
+    # Load transforms from data_obj
+    data_obj.load_transforms(device='cuda')
 
-    T.fit(dt, dv, start_epochs(args), cardinality(args), name + "_pretrain", save = False, save_init = False, validate = False)
+    T.build(optimizer = torch.optim.SGD, 
+            optimizer_kwargs = {'lr': learning_rate(args), 'momentum': momentum(args), 'weight_decay': weight_decay(args)},
+            handle = data_obj,
+            loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
+            scale_loss = True, 
+            gradient_clipnorm = 2.0)
+
+    card = data_obj.cardinality()
+    T.fit(dt, dv, start_epochs(args), card, name + "_pretrain", save = False, save_init = False, validate = False)
 
     T.evaluate(dt)
 
@@ -182,17 +190,21 @@ def run_start_train(name, args,
 
 def run_fit_and_export(name, old_name,
                        args, state, ticket, 
-                       spr, dt, dv, transforms,): #Transforms: DataAug, CenterCrop, Normalize
+                       spr, dt, dv, data_obj,): #Transforms via DataHandle
 
     T = _make_trainer(args, state, ticket)
 
     T.mm.export_ticket(old_name, entry_name = f"{spr * 100:.3e}", root = 0)
 
-    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': learning_rate(args), 'momentum': momentum(args), 'weight_decay': weight_decay(args)},
+    # Load transforms from data_obj
+    data_obj.load_transforms(device='cuda')
+
+    T.build(optimizer = torch.optim.SGD, 
+            optimizer_kwargs = {'lr': learning_rate(args), 'momentum': momentum(args), 'weight_decay': weight_decay(args)},
+            handle = data_obj,
             loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
-            collective_transforms = tuple(), train_transforms = (transforms[0],),
-            eval_transforms = (transforms[1],), final_collective_transforms = (transforms[2], ),
-            scale_loss = True, gradient_clipnorm = 2.0)
+            scale_loss = True, 
+            gradient_clipnorm = 2.0)
 
     T.evaluate(dt)
 

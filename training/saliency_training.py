@@ -1,7 +1,7 @@
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from data import cifar10, cifar100, imagenet
+from data.index import get_data_object
 
 from utils.serialization_utils import logs_to_pickle, save_tensor
 from utils.training_utils import plot_logs
@@ -87,7 +87,7 @@ def ddp_network(args, bn_track = False):
 
     return model
 
-def run_salient(name, args, spr, transforms, state = None): 
+def run_salient(name, args, spr, handle, state = None): 
         
     model = ddp_network(args, bn_track = (args.criteria in ["synflow", "gradmatch"]))
     if state is not None: model.load_state_dict(state)
@@ -106,7 +106,8 @@ def run_salient(name, args, spr, transforms, state = None):
             inp_args.update({"capture_layers": captures, "fake_capture_layers": fcaptures})
 
         pruner = (TYPES[args.criteria])(**inp_args)
-        pruner.build(spr, transforms, input = None)
+        tt, et, ft = handle.tef_transforms()
+        pruner.build(spr, (tt, et, ft), input = None)
         ticket = pruner.grad_mask(steps = args.steps, micro_batch_size = micro_batchsize(args))
         pruner.finish()
 
@@ -134,19 +135,21 @@ def _make_trainer(args, state = None, ticket = None):
 
 def run_fit_and_export(name, old_name,
                        args, state, ticket, 
-                       spr, dt, dv, transforms,): #Transforms: DataAug, Resize, Normalize, Crop
+                       spr, dt, dv, handle,): #Transforms via DataHandle
 
     T = _make_trainer(args, state, ticket)
 
     T.mm.export_ticket(old_name, entry_name = f"{spr * 100:.3e}", root = 0)
 
-    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': learning_rate(args), 'momentum': momentum(args), 'weight_decay': weight_decay(args)},
+    T.build(optimizer = torch.optim.SGD, 
+            optimizer_kwargs = {'lr': learning_rate(args), 'momentum': momentum(args), 'weight_decay': weight_decay(args)},
+            handle = handle,
             loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
-            collective_transforms = tuple(), train_transforms = (transforms[0],),
-            eval_transforms = (transforms[1],), final_collective_transforms = (transforms[2], ),
-            scale_loss = True, gradient_clipnorm = 2.0)
+            scale_loss = True, 
+            gradient_clipnorm = 2.0)
     
-    logs = T.fit(dt, dv, total_epochs(args), cardinality(args), name, validate = True, save = False, save_init = False, start = start_epochs(args))
+    card = handle.cardinality()
+    logs = T.fit(dt, dv, total_epochs(args), card, name, validate = True, save = False, save_init = False, start = start_epochs(args))
 
     T.evaluate(dt)
 
@@ -167,21 +170,23 @@ def run_fit_and_export(name, old_name,
         
         logs_to_pickle(logs, name)
 
-        plot_logs(logs, total_epochs(args), name, cardinality(args), start = start_epochs(args))
+        plot_logs(logs, total_epochs(args), name, card, start = start_epochs(args))
 
 
 def run_start_train(name, args, 
-                    dt, dv, transforms,): 
+                    dt, dv, handle,): 
 
     T = _make_trainer(args)
 
-    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': learning_rate(args), 'momentum': momentum(args), 'weight_decay': weight_decay(args)},
+    T.build(optimizer = torch.optim.SGD, 
+            optimizer_kwargs = {'lr': learning_rate(args), 'momentum': momentum(args), 'weight_decay': weight_decay(args)},
+            handle = handle,
             loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
-            collective_transforms = tuple(), train_transforms = (transforms[0],),
-            eval_transforms = (transforms[1],), final_collective_transforms = (transforms[2], ),
-            scale_loss = True, gradient_clipnorm = 2.0)
+            scale_loss = True, 
+            gradient_clipnorm = 2.0)
 
-    T.fit(dt, dv, start_epochs(args), cardinality(args), name + "_pretrain", save = False, save_init = False, validate = False)
+    card = handle.cardinality()
+    T.fit(dt, dv, start_epochs(args), card, name + "_pretrain", save = False, save_init = False, validate = False)
 
     T.evaluate(dt)
 
@@ -215,19 +220,17 @@ def main(rank, world_size, name: str, args, **kwargs):
 
     old_name = name
 
-    data_path = {"cifar10": cifar10, "cifar100": cifar100, "imagenet": imagenet}[args.dataset]
+    # Create DataHandle for centralized access to data and hparams
+    handle = get_data_object(args.dataset)
+    handle.load_transforms(device='cuda')
 
-    dataAug = torch.jit.script(data_path.DataAugmentation().to('cuda'))
-    normalize = torch.jit.script(data_path.Normalize().to('cuda'))
-    center_crop = torch.jit.script(data_path.CenterCrop().to('cuda'))
-
-    dt, dv = data_path.get_loaders(args.rank, args.world_size, batch_size = batchsize(args))
+    dt, dv = handle.get_loaders(args.rank, args.world_size)
 
     start_start = time.time()
 
     if args.time == "rewind": 
         ostate, _ = run_start_train(name = name, dt = dt, dv = dv, 
-                                    transforms = (dataAug, center_crop, normalize,),
+                                    handle = handle,
                                     args = args)
     else: 
         ostate = None
@@ -244,14 +247,14 @@ def main(rank, world_size, name: str, args, **kwargs):
 
         state, ticket = run_salient(name = name, args = args, 
                                      state = ostate, spr = spr,
-                                     transforms = (center_crop, normalize,),)
+                                     handle = handle,)
 
         torch.cuda.empty_cache()
         gc.collect()
         
         run_fit_and_export(name = name, old_name = old_name, args = args, 
                            state = state, ticket = ticket, spr = spr, dt = dt, dv = dv, 
-                           transforms = (dataAug, center_crop, normalize,))
+                           handle = handle)
 
         
         torch.cuda.empty_cache()
