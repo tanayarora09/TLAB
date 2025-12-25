@@ -2,8 +2,8 @@ import torch
 from torch import nn
 from typing import Tuple, Callable
 
-from models.LotteryLayers import LotteryConv2D, LotteryDense
-from models.base import MaskedModel
+from .LotteryLayers import LotteryConv2D, LotteryDense
+from .base import MaskedModel
 
 import types
 

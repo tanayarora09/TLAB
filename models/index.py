@@ -1,7 +1,7 @@
-from models.base import BaseModel
-from models.resnet import resnet_imagenet, resnet_cifar
-from models.vgg import vgg 
-from models.LotteryLayers import Lottery 
+from .base import BaseModel
+from .resnet import resnet_imagenet, resnet_cifar
+from .vgg import vgg 
+from .LotteryLayers import Lottery 
 
 """
 Implement logic here to get models.

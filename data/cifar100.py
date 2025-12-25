@@ -10,7 +10,8 @@ import random
 from typing import List
 
 from utils.data_utils import jitToList2D
-
+from .hparams import DATASET_HPARAMS
+from .base import make_distributed_loader, make_singleprocess_loader, make_subset, BaseModule
 import os
 import shutil
 import subprocess
@@ -19,7 +20,10 @@ from filelock import FileLock
 
 IS_ORCA = False
 
-dataset_path = "/tmp/CIFAR100/" if IS_ORCA else "/u/tanaya_guest/tlab/datasets/Cifar100/"
+dataset_path = "/tmp/CIFAR100/" if IS_ORCA else "/u/tanaya_guest/tlab/datasets/CIFAR100/"
+
+DATA_HPARAMS = DATASET_HPARAMS["cifar100"]
+
 
 class DataAugmentation(nn.Module):
     
@@ -39,27 +43,8 @@ class DataAugmentation(nn.Module):
         i = torch.randint(0, 40 - 32 + 1, (batch_size,), device=device)
         j = torch.randint(0, 40 - 32 + 1, (batch_size,), device=device)
 
-        # Perform batched cropping
         x = torch.stack([img[:, i_: i_ + 32, j_: j_ + 32] for img, i_, j_ in zip(x, i, j)])
 
-        return x
-
-class Resize(nn.Module):
-
-    def __init__(self):
-        super(Resize, self).__init__()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        #x = TF.resize(x, [224, 224], interpolation=TF.InterpolationMode.BICUBIC)
-        return x
-
-class CenterCrop(nn.Module):
-    def __init__(self):
-        super(CenterCrop, self).__init__()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        #x = TF.center_crop(x, [200, 200])
-        #x = TF.resize(x, [224, 224], interpolation = TF.InterpolationMode.BICUBIC)
         return x
 
 class Normalize(nn.Module):
@@ -81,8 +66,16 @@ class ScriptedToTensor(nn.Module):
         x = TF.to_dtype(x, dtype=torch.float32, scale = True)
         return x
 
+DEFAULT_DATA_MODULE = BaseModule(
+    DATA_HPARAMS,
+    train_transforms=(DataAugmentation,),
+    eval_transforms=tuple(),
+    final_transforms=(Normalize,),
+)
 
-def get_loaders(rank, world_size, batch_size = 512, train = True, validation = True):
+
+
+def get_loaders(rank, world_size, batch_size = DATA_HPARAMS.default_batch_size, train = True, validation = True):
     """
     Iterate if there are weird behaviors with sample counts
     """
@@ -96,43 +89,31 @@ def get_loaders(rank, world_size, batch_size = 512, train = True, validation = T
         train_data = torchvision.datasets.CIFAR100(dataset_path, train = True, download = False,
                                                 transform = ScriptedToTensor())
 
-        dt = DataLoader(train_data, batch_size = batch_size//world_size, 
-                        sampler = DistributedSampler(train_data, rank = rank,
-                                                    num_replicas = world_size,),
-                        pin_memory = True, num_workers = 8, 
-                        persistent_workers = True)
+        dt = make_distributed_loader(train_data, rank, world_size, batch_size)
 
     if validation:
 
         test_data = torchvision.datasets.CIFAR100(dataset_path, train = False, download = False,
                                             transform = ScriptedToTensor())
 
-        dv = DataLoader(test_data, batch_size = batch_size//world_size, 
-                        sampler = DistributedSampler(test_data, rank = rank,
-                                                    num_replicas = world_size), 
-                        pin_memory = True, num_workers = 8, 
-                        persistent_workers = True)
+        dv = make_distributed_loader(test_data, rank, world_size, batch_size)
     
     return dt, dv
 
-def get_partial_train_loader(rank, world_size, data_fraction_factor: float = None, batch_count: float = None, batch_size = 512):
+def get_partial_train_loader(rank, world_size, data_fraction_factor: float = None, batch_count: float = None, batch_size = DATA_HPARAMS.default_batch_size):
     
     if IS_ORCA: _use_scratch_orca()
 
-    train_data = torchvision.datasets.CIFAR10(dataset_path, train = True, download = False,
+    train_data = torchvision.datasets.CIFAR100(dataset_path, train = True, download = False,
                                               transform = ScriptedToTensor())
     
     size = len(train_data)
     if batch_count is None and data_fraction_factor is None: raise ValueError 
-    if batch_count is None: indices = torch.randperm(size)[:(size//data_fraction_factor)]
-    else: indices = torch.randperm(size)[:min(size, (batch_size * batch_count))]
-    train_data = Subset(train_data, indices)
+    if batch_count is None: target_size = size//data_fraction_factor
+    else: target_size = min(size, (batch_size * batch_count))
+    train_data = make_subset(train_data, target_size=target_size)
 
-    dt = DataLoader(train_data, batch_size = batch_size//world_size, 
-                    sampler = DistributedSampler(train_data, rank = rank,
-                                                 num_replicas = world_size,),
-                    pin_memory = True, num_workers = 8, 
-                    persistent_workers = True, drop_last = True)
+    dt = make_distributed_loader(train_data, rank, world_size, batch_size, drop_last = True)
 
     return dt
 
@@ -150,25 +131,18 @@ def get_sp_loaders(batch_size = 128, train = True, validation = True):
         train_data = torchvision.datasets.CIFAR100(dataset_path, train = True, download = False,
                                                 transform = ScriptedToTensor())
 
-        dt = DataLoader(train_data, batch_size = batch_size, 
-                        pin_memory = True, num_workers = 8, 
-                        persistent_workers = True,
-                        shuffle = True)
+        dt = make_singleprocess_loader(train_data, batch_size = batch_size, shuffle = True)
 
     if validation:
 
         test_data = torchvision.datasets.CIFAR100(dataset_path, train = False, download = False,
                                             transform = ScriptedToTensor())
 
-        dt = DataLoader(test_data, batch_size = batch_size, 
-                        pin_memory = True, num_workers = 8, 
-                        persistent_workers = True,
-                        shuffle = True)
+        dv = make_singleprocess_loader(test_data, batch_size = batch_size, shuffle = True)
     
     return dt, dv
 
-
-def custom_fetch_data(dataloader, amount, samples=10, classes=100, sampler_offset=None):
+def custom_fetch_data(dataloader, amount, samples=10, classes=10, sampler_offset=None):
     
     if samples == 0: return None
     
@@ -220,3 +194,4 @@ def _use_scratch_orca():
             print(f"[{os.getpid()}] Copy complete.")
         else:
             print(f"[{os.getpid()}] Dataset already available.")
+

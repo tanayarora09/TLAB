@@ -5,7 +5,7 @@ import torch.distributed as dist
 import numpy as np
 import h5py
 
-from models.LotteryLayers import Lottery
+from .LotteryLayers import Lottery
 
 import torchinfo
 

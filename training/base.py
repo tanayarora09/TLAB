@@ -20,7 +20,7 @@ import h5py
 from models.LotteryLayers import Lottery
 from models.base import MaskedModel
 
-from data.cifar10 import custom_fetch_data
+from data.index import DataHandle
 
 class BaseCNNTrainer:
 
@@ -49,10 +49,7 @@ class BaseCNNTrainer:
 
     def build(self, optimizer,
               optimizer_kwargs: dict, 
-              collective_transforms: Tuple[nn.Module],
-              train_transforms: Tuple[nn.Module],
-              eval_transforms: Tuple[nn.Module],
-              final_collective_transforms: Tuple[nn.Module],
+              handle: DataHandle,
               loss: Callable = nn.CrossEntropyLoss(reduction = "sum"), 
               scale_loss: bool = False, decay: float = 0.0,
               gradient_clipnorm: float = float('inf'), ):
@@ -75,10 +72,7 @@ class BaseCNNTrainer:
 
         self.reset_optimizer()
 
-        self.cT = collective_transforms
-        self.tT = train_transforms
-        self.eT = eval_transforms
-        self.fcT = final_collective_transforms
+        self.handle = handle
         
         self.AMP = scale_loss
         self.reset_loss_scaler()
@@ -257,9 +251,8 @@ class BaseCNNTrainer:
 
                 x, y = x.to('cuda'), y.to('cuda')
 
-                for T in self.cT: x = T(x) # Transforms
-                for T in self.tT: x = T(x)
-                for T in self.fcT: x = T(x)
+                for T in self.handle.tt: x = T(x) 
+                for T in self.handle.ft: x = T(x)
 
                 self.train_step(x, y, accum, accumulation_steps)
 
@@ -410,9 +403,8 @@ class BaseCNNTrainer:
 
                 x, y = x.to('cuda'), y.to('cuda')
                 
-                for T in self.cT: x = T(x) # Transforms
-                for T in self.eT: x = T(x)
-                for T in self.fcT: x = T(x)
+                for T in self.handle.et: x = T(x) # Transforms
+                for T in self.handle.ft: x = T(x)
 
                 self.test_step(x, y)
             
@@ -1021,9 +1013,8 @@ class CNN_DGTS(BaseCNNTrainer):
             x, y = data_list[step//196]
             x, y = x.to('cuda'), y.to('cuda')
 
-            for T in self.cT: x = T(x)
-            for T in self.tT: x = T(x)
-            for T in self.fcT: x = T(x)
+            for T in self.handle.tt: x = T(x)
+            for T in self.handle.ft: x = T(x)
             
             self.init_capture_hooks()
             self.mm(x)
@@ -1188,9 +1179,8 @@ class CNN_DGTS(BaseCNNTrainer):
                 x, y = data_list[step//129]
                 x, y = x.to('cuda'), y.to('cuda')
 
-                for T in self.cT: x = T(x)
-                for T in self.tT: x = T(x)
-                for T in self.fcT: x = T(x)
+                for T in self.handle.tt: x = T(x)
+                for T in self.handle.ft: x = T(x)
                 
                 self.init_capture_hooks()
                 self.mm(x)

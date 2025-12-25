@@ -1,7 +1,7 @@
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from data import cifar10, cifar100, imagenet, tiny_imagenet
+from data.index import get_data_object
 
 from utils.serialization_utils import logs_to_pickle, save_tensor
 from utils.training_utils import plot_logs
@@ -39,9 +39,6 @@ def weight_decay(args):
 
 def total_epochs(args):
     return {"cifar10": 160, "cifar100": 160, "imagenet": 90, "tiny-imagenet": 200}[args.dataset]
-
-def batchsize(args):
-    return 1024 if args.model == "resnet50" else 512
 
 def datasize(args):
     return {"cifar10": 50000, "cifar100": 50000, "tiny-imagenet": 100000,"imagenet": 1281167}[args.dataset]
@@ -253,19 +250,17 @@ def main(rank, world_size, name: str, args, **kwargs):
 
     old_name = name
 
-    data_path = {"cifar10": cifar10, "cifar100": cifar100, "imagenet": imagenet, "tiny-imagenet": tiny_imagenet}[args.dataset]
+    data_obj = get_data_object(args.dataset)
 
-    dataAug = torch.jit.script(data_path.DataAugmentation().to('cuda'))
-    normalize = torch.jit.script(data_path.Normalize().to('cuda'))
-    center_crop = torch.jit.script(data_path.CenterCrop().to('cuda'))
-
-    dt, dv = data_path.get_loaders(args.rank, args.world_size, batch_size = batchsize(args))
+    inp = {"rank": args.rank, "world_size": args.world_size}
+    if args.batchsize: inp["batch_size"] = args.batchsize
+    dt, dv = data_obj.get_loaders(**inp)
 
     start_start = time.time()
 
     if args.time == "rewind": 
         ostate, _ = run_start_train(name = name, dt = dt, dv = dv, 
-                                    transforms = (dataAug, center_crop, normalize,),
+                                    data_obj = data_obj,
                                     args = args)
     else: 
         ostate = None
@@ -281,14 +276,14 @@ def main(rank, world_size, name: str, args, **kwargs):
 
         state, ticket = run_concrete(name = name, args = args, 
                                      state = ostate, spr = spr, dt = dt, 
-                                     transforms = (center_crop, normalize,),)
+                                     data_obj = data_obj,)
 
         torch.cuda.empty_cache()
         gc.collect()
         
         run_fit_and_export(name = name, old_name = old_name, args = args, 
                            state = state, ticket = ticket, spr = spr, dt = dt, dv = dv, 
-                           transforms = (dataAug, center_crop, normalize,))
+                           data_obj = data_obj)
         
         torch.cuda.empty_cache()
         gc.collect()

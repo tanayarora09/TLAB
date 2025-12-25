@@ -16,9 +16,12 @@ from filelock import FileLock
 
 from typing import List, Tuple
 import numpy as np
+from .hparams import DATASET_HPARAMS
+from .base import make_distributed_loader, make_singleprocess_loader, make_subset, BaseModule
 
 IS_ORCA = False
 dataset_path = "/disk/bigstuff/imagenet" if not IS_ORCA else "/scratch/tarora_pdx-imagenet/imagenet"#"/tmp/imagenet
+DATA_HPARAMS = DATASET_HPARAMS["imagenet"]
 
 class NpyImageDataset(torch.utils.data.Dataset):
     def __init__(self, npy_path, transform=None):
@@ -234,12 +237,19 @@ class Normalize(nn.Module):
         x = TF.normalize(x, (0.485, 0.456, 0.406), (0.229, 0.224, 0.225), inplace = False)
         return x
 
-def get_loaders(rank, world_size, batch_size = 1024, train = True, validation = True, shuffle = True):
+DEFAULT_DATA_MODULE = BaseModule(
+    DATA_HPARAMS,
+    train_transforms=(DataAugmentation,),
+    eval_transforms=(CenterCrop,),
+    final_transforms=(Normalize,),
+)
+
+
+def get_loaders(rank, world_size, batch_size = DATA_HPARAMS.default_batch_size, train = True, validation = True, shuffle = True):
     
     if IS_ORCA: _use_scratch_orca()
 
     dt, dv = None, None
-    per_process_batch_size = batch_size // world_size
     
     if train:
         train_transform = T.Compose([ ResizeMax(), ScriptedToTensor()]) 
@@ -248,35 +258,19 @@ def get_loaders(rank, world_size, batch_size = 1024, train = True, validation = 
         train_data = NpyImageDataset("data/imagenet_train.npy", transform = train_transform)
         #torchvision.datasets.ImageFolder(dataset_path + "/train", transform = train_transform)
 
-        dt = DataLoader(
-            train_data, 
-            batch_size = per_process_batch_size, 
-            sampler = DistributedSampler(train_data, rank = rank, num_replicas = world_size, shuffle = shuffle),
-            pin_memory = True, 
-            collate_fn = pad_and_stack_batch,
-            num_workers = 8, 
-            persistent_workers = True
-        )
+        dt = make_distributed_loader(train_data, rank, world_size, batch_size, shuffle = shuffle, collate_fn = pad_and_stack_batch)
 
     if validation:
         eval_transform = T.Compose([ ResizeMax(), ScriptedToTensor()]) 
         
         test_data = torchvision.datasets.ImageFolder(dataset_path + "/val", transform = eval_transform)
 
-        dv = DataLoader(
-            test_data, 
-            batch_size = per_process_batch_size, 
-            sampler = DistributedSampler(test_data, rank = rank, num_replicas = world_size, shuffle = shuffle), 
-            collate_fn = pad_and_stack_batch,
-            pin_memory = True, 
-            num_workers = 8, 
-            persistent_workers = True
-        )
+        dv = make_distributed_loader(test_data, rank, world_size, batch_size, shuffle = shuffle, collate_fn = pad_and_stack_batch)
     
     return dt, dv
 
 
-def get_partial_train_loader(rank, world_size, data_fraction_factor: float = None, batch_count: float = None, batch_size = 1024):
+def get_partial_train_loader(rank, world_size, data_fraction_factor: float = None, batch_count: float = None, batch_size = DATA_HPARAMS.default_batch_size):
     
     if IS_ORCA: _use_scratch_orca()
 
@@ -289,24 +283,15 @@ def get_partial_train_loader(rank, world_size, data_fraction_factor: float = Non
     if batch_count is None and data_fraction_factor is None: raise ValueError 
     
     if batch_count is None: 
-        indices = torch.randperm(size)[:(size//data_fraction_factor)]
+        target_samples = size//data_fraction_factor
     else: 
         per_process_batch_size = batch_size // world_size
         target_samples = int(min(size, per_process_batch_size * batch_count * world_size))
-        indices = torch.randperm(size)[:target_samples]
         
-    train_data = Subset(train_data, indices)
+    train_data = make_subset(train_data, target_samples)
 
-    dt = DataLoader(
-        train_data, 
-        batch_size = batch_size//world_size, 
-        sampler = DistributedSampler(train_data, rank = rank, num_replicas = world_size),
-        pin_memory = True, 
-        collate_fn = pad_and_stack_batch,
-        num_workers = 8, 
-        persistent_workers = True, 
-        drop_last = True
-    )
+    dt = make_distributed_loader(train_data, rank, world_size, batch_size, collate_fn = pad_and_stack_batch, drop_last = True)
+
 
     return dt
 
@@ -323,14 +308,10 @@ def get_sp_loaders(batch_size = 256, train = True, validation = True, shuffle = 
         train_data = NpyImageDataset("data/imagenet_train.npy", transform = train_transform)
         #torchvision.datasets.ImageFolder(dataset_path + "/train", transform = train_transform)
 
-        dt = DataLoader(
+        dt = make_singleprocess_loader(
             train_data, 
-            batch_size = batch_size, 
-            pin_memory = True, 
+            batch_size = batch_size,
             collate_fn = pad_and_stack_batch,
-            num_workers = 8, 
-            persistent_workers = True,
-            shuffle = shuffle
         )
 
     if validation:
@@ -338,15 +319,12 @@ def get_sp_loaders(batch_size = 256, train = True, validation = True, shuffle = 
         
         test_data = torchvision.datasets.ImageFolder(dataset_path + "/val", transform = eval_transform)
 
-        dt = DataLoader(
+        dv = make_singleprocess_loader(
             test_data, 
-            batch_size = batch_size, 
-            pin_memory = True, 
+            batch_size = batch_size,
             collate_fn = pad_and_stack_batch,
-            num_workers = 8, 
-            persistent_workers = True,
-            shuffle = shuffle
         )
+        
     
     return dt, dv
 
