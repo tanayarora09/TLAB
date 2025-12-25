@@ -1,7 +1,7 @@
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from data.cifar10 import *
+from data.index import get_data_object
 
 from utils.serialization_utils import logs_to_pickle, save_tensor
 from utils.training_utils import plot_logs
@@ -23,7 +23,6 @@ import pickle
 import gc
 
 EPOCHS = 160
-CARDINALITY = 98 
 
 
 CONCRETE_EXPERIMENTS = {0: ("Loss", SNIPConcrete),
@@ -56,7 +55,7 @@ def run_concrete(rank, world_size,
                  is_gradnorm, 
                  concrete_epochs,
                  state, spe, spr, 
-                 dt, transforms,):
+                 dt, handle,):
 
     model = ddp_network(rank, world_size, is_vgg)
     model_to_inspect = model.module if world_size > 1 else model
@@ -76,8 +75,11 @@ def run_concrete(rank, world_size,
 
     search = CONCRETE_EXPERIMENTS[type_of_concrete][1](**inp_args)
 
-    search.build(spr, torch.optim.Adam, optimizer_kwargs = {'lr': 1e-1}, transforms = transforms, use_gradnorm_approach = is_gradnorm)
+    # Get transforms from handle
+    tt, et, ft = handle.tef_transforms()
+    search.build(spr, torch.optim.Adam, optimizer_kwargs = {'lr': 1e-1}, transforms = (tt, et, ft), use_gradnorm_approach = is_gradnorm)
 
+    CARDINALITY = handle.cardinality()
     logs, ticket = search.optimize_mask(dt, concrete_epochs, CARDINALITY, dynamic_epochs = False, reduce_epochs = [120], invert_mask = (type_of_sanity == 1))
 
     search.finish()
@@ -109,16 +111,18 @@ def _make_trainer(rank, world_size, is_vgg, state = None, ticket = None):
 
 def run_start_train(rank, world_size, 
                     name, is_vgg, start_epochs, 
-                    dt, dv, transforms,): 
+                    dt, dv, handle,): 
 
     T = _make_trainer(rank, world_size, is_vgg)
 
-    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay': 1e-3},
+    T.build(optimizer = torch.optim.SGD, 
+            optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay': 1e-3},
+            handle = handle,
             loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
-            collective_transforms = (transforms[1], transforms[2]), train_transforms = (transforms[0],),
-            eval_transforms = (transforms[3],), final_collective_transforms = tuple(),
-            scale_loss = True, gradient_clipnorm = 2.0)
+            scale_loss = True, 
+            gradient_clipnorm = 2.0)
 
+    CARDINALITY = handle.cardinality()
     T.fit(dt, dv, start_epochs, CARDINALITY, name + "_pretrain", save = False, save_init = False, validate = False)
 
     T.evaluate(dt)
@@ -143,17 +147,18 @@ def run_fit_and_export(rank, world_size,
                        state, ticket, 
                        is_vgg, start_epochs,
                        spe, spr, type_of_sanity,
-                       dt, dv, transforms,): #Transforms: DataAug, Resize, Normalize, Crop
+                       dt, dv, handle,): #Transforms via DataHandle
 
     T = _make_trainer(rank, world_size, is_vgg, None if type_of_sanity == 2 else state, ticket)
 
     T.mm.export_ticket(old_name, entry_name = f"{spr * 100:.3e}", root = 0)
 
-    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay': 1e-3},
+    T.build(optimizer = torch.optim.SGD, 
+            optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay': 1e-3},
+            handle = handle,
             loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
-            collective_transforms = (transforms[1], transforms[2]), train_transforms = (transforms[0],),
-            eval_transforms = (transforms[3],), final_collective_transforms = tuple(),
-            scale_loss = True, gradient_clipnorm = 2.0)
+            scale_loss = True, 
+            gradient_clipnorm = 2.0)
 
     T.evaluate(dt)
 
@@ -169,6 +174,7 @@ def run_fit_and_export(rank, world_size,
         print("Sparsity: ", T.mm.sparsity)
         orig_train_res.update({('val_' + k): v for k, v in orig_val_res.items()})
 
+    CARDINALITY = handle.cardinality()
     logs = T.fit(dt, dv, EPOCHS, CARDINALITY, name, validate = True, save = False, save_init = False, start = start_epochs)
 
     T.evaluate(dt)
@@ -219,17 +225,15 @@ def main(rank, world_size, name: str, args: list, **kwargs):
 
     old_name = name
 
-    dataAug = torch.jit.script(DataAugmentation().to('cuda'))
-    resize = torch.jit.script(Resize().to('cuda'))
-    normalize = torch.jit.script(Normalize().to('cuda'))
-    center_crop = torch.jit.script(CenterCrop().to('cuda'))
+    # Create DataHandle for centralized access to data and hparams
+    handle = get_data_object("cifar10")
 
-    dt, dv = get_loaders(rank, world_size, batch_size = 512)
+    dt, dv = handle.get_loaders(rank, world_size)
 
     if not is_init: 
         ostate, _ = run_start_train(rank = rank, world_size = world_size, 
                                             name = name, is_vgg = is_vgg, start_epochs = start_epochs,
-                                            dt = dt, dv = dv, transforms = (dataAug, resize, normalize, center_crop,))
+                                            dt = dt, dv = dv, handle = handle)
     else: 
         ostate = None
 
@@ -241,7 +245,7 @@ def main(rank, world_size, name: str, args: list, **kwargs):
         state, ticket = run_concrete(rank = rank, world_size = world_size, name = name, 
                                      is_vgg = is_vgg, type_of_concrete = type_of_concrete, type_of_sanity = type_of_sanity,
                                      is_gradnorm = is_gradnorm, concrete_epochs = concrete_epochs, state = ostate, 
-                                     spe = spe, spr = spr, dt = dt, transforms = (resize, normalize, center_crop,),)
+                                     spe = spe, spr = spr, dt = dt, handle = handle,)
 
         torch.cuda.empty_cache()
         gc.collect()
@@ -249,7 +253,7 @@ def main(rank, world_size, name: str, args: list, **kwargs):
         run_fit_and_export(rank = rank, world_size = world_size, name = name, old_name = old_name, 
                            state = state, ticket = ticket, is_vgg = is_vgg, start_epochs = start_epochs,
                            spe = spe, spr = spr, type_of_sanity = type_of_sanity, dt = dt, dv = dv, 
-                           transforms = (dataAug, resize, normalize, center_crop,))
+                           handle = handle)
         
         torch.cuda.empty_cache()
         gc.collect()

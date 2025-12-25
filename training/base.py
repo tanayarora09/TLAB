@@ -251,8 +251,7 @@ class BaseCNNTrainer:
 
                 x, y = x.to('cuda'), y.to('cuda')
 
-                for T in self.handle.tt: x = T(x) 
-                for T in self.handle.ft: x = T(x)
+                for T in self.handle.train_transforms(): x = T(x)
 
                 self.train_step(x, y, accum, accumulation_steps)
 
@@ -403,8 +402,7 @@ class BaseCNNTrainer:
 
                 x, y = x.to('cuda'), y.to('cuda')
                 
-                for T in self.handle.et: x = T(x) # Transforms
-                for T in self.handle.ft: x = T(x)
+                for T in self.handle.eval_transforms(): x = T(x)
 
                 self.test_step(x, y)
             
@@ -1013,8 +1011,7 @@ class CNN_DGTS(BaseCNNTrainer):
             x, y = data_list[step//196]
             x, y = x.to('cuda'), y.to('cuda')
 
-            for T in self.handle.tt: x = T(x)
-            for T in self.handle.ft: x = T(x)
+            for T in self.handle.train_transforms(): x = T(x)
             
             self.init_capture_hooks()
             self.mm(x)
@@ -1179,8 +1176,7 @@ class CNN_DGTS(BaseCNNTrainer):
                 x, y = data_list[step//129]
                 x, y = x.to('cuda'), y.to('cuda')
 
-                for T in self.handle.tt: x = T(x)
-                for T in self.handle.ft: x = T(x)
+                for T in self.handle.train_transforms(): x = T(x)
                 
                 self.init_capture_hooks()
                 self.mm(x)

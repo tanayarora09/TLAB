@@ -1,7 +1,7 @@
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from data import cifar10, cifar100, imagenet, tiny_imagenet
+from data.index import get_data_object
 
 from utils.serialization_utils import logs_to_pickle
 
@@ -34,15 +34,6 @@ def prune_rate(args):
 def total_epochs(args):
     return {"cifar10": 160, "cifar100": 160, "imagenet": 90, "tiny-imagenet": 200}[args.dataset]
 
-def batchsize(args):
-    return 1024 if args.dataset == "imagenet" else 512
-
-def datasize(args):
-    return {"cifar10": 50000, "cifar100": 50000, "tiny-imagenet": 100000,"imagenet": 1281167}[args.dataset]
-
-def cardinality(args):
-    return math.ceil(datasize(args)/batchsize(args))
-
 def learning_rate(args):
     return {"cifar10": 1e-1, "cifar100": 1e-1, "imagenet": 4e-1, "tiny-imagenet": 4e-1}[args.dataset]
 
@@ -50,9 +41,6 @@ def start_epochs(args):
     start_epochs = {"resnet20": 9, "vgg16": 15, "resnet50": 18}[args.model]
     if args.time == "init": start_epochs = 0
     return start_epochs
-
-def rewind_iteration(args):
-    return int(start_epochs(args) * cardinality(args))
 
 def warmup_eps(args):
     if args.dataset == "imagenet": return 5
@@ -125,13 +113,15 @@ def main(rank, world_size, name: str, args, **kwargs):
         resume_data = resume_data[0]
     resume_data["start_iter"] = args.current_iteration
 
-    data_path = {"cifar10": cifar10, "cifar100": cifar100, "imagenet": imagenet, "tiny-imagenet": tiny_imagenet}[args.dataset]
+    # Create DataHandle for centralized access to data and hparams
+    handle = get_data_object(args.dataset)
+    
+    # Get batch size and cardinality from handle
+    batch_size = handle.batch_size
+    cardinality_val = handle.cardinality()
+    rewind_iter = int(start_epochs(args) * cardinality_val)
 
-    dataAug = torch.jit.script(data_path.DataAugmentation().to('cuda'))
-    normalize = torch.jit.script(data_path.Normalize().to('cuda'))
-    center_crop = torch.jit.script(data_path.CenterCrop().to('cuda'))
-
-    dt, dv = data_path.get_loaders(args.rank, args.world_size, batch_size = batchsize(args))
+    dt, dv = handle.get_loaders(args.rank, args.world_size)
 
     old_name = name
 
@@ -139,18 +129,19 @@ def main(rank, world_size, name: str, args, **kwargs):
 
     T = _make_trainer(args)
 
-    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': learning_rate(args), 'momentum': momentum(args), 'weight_decay': weight_decay(args)},
+    T.build(optimizer = torch.optim.SGD, 
+            optimizer_kwargs = {'lr': learning_rate(args), 'momentum': momentum(args), 'weight_decay': weight_decay(args)},
+            handle = handle,
             loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
-            collective_transforms = tuple(), train_transforms = (dataAug,),
-            eval_transforms = (center_crop,), final_collective_transforms = (normalize, ),
-            scale_loss = True, gradient_clipnorm = 2.0)
+            scale_loss = True, 
+            gradient_clipnorm = 2.0)
 
     time_prep = time.time() - start_time
 
     output = T.TicketIMP(
-        dt, dv, total_epochs(args), cardinality(args),
+        dt, dv, total_epochs(args), cardinality_val,
         old_name, prune_rate(args), args.prune_iterations,
-        rewind_iter=rewind_iteration(args), validate=False,
+        rewind_iter=rewind_iter, validate=False,
         job_data=resume_data,
         partitioned_jobs=getattr(args, "partitioned_jobs", False)
     )

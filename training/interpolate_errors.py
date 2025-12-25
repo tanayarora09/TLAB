@@ -2,7 +2,7 @@ import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 import torch.distributed as dist
 
-from data.cifar10 import *
+from data.index import get_data_object
 
 from utils.serialization_utils import logs_to_pickle, save_tensor
 from utils.training_utils import plot_logs
@@ -33,7 +33,7 @@ def make_interpolated_weights(ckpts: list, alpha: float):
 
 
 @torch.no_grad()
-def get_loss(rank, model, dv, transforms):
+def get_loss(rank, model, dv, handle):
 
     def correct_k(output: torch.Tensor, labels: torch.Tensor, topk: int = 1) -> torch.Tensor:
         """
@@ -55,7 +55,8 @@ def get_loss(rank, model, dv, transforms):
     for x, y, *_ in dv:
         
         x, y = x.cuda(), y.cuda()
-        for T in transforms: x = T(x)
+        for T in handle.et: x = T(x)
+        for T in handle.ft: x = T(x)
 
         output = model(x)
         loss = correct_k(output, y)
@@ -108,14 +109,14 @@ def get_loss(rank, model, dv, transforms):
         return
 """
 
-def calculate_alpha_error(rank, model, dv, transforms, alpha: float, ckpts: list, mean_error: float):
+def calculate_alpha_error(rank, model, dv, handle, alpha: float, ckpts: list, mean_error: float):
 
     ckpt = make_interpolated_weights(ckpts, alpha)
     model.load_state_dict(ckpt)
 
     dist.barrier(device_ids = [rank])
 
-    loss = get_loss(rank, model, dv, transforms)
+    loss = get_loss(rank, model, dv, handle)
 
     dist.barrier(device_ids = [rank])
 
@@ -131,16 +132,15 @@ def main(rank, world_size, name: str, args: list, lock, shared_list, **kwargs):
 
     out = dict()
 
+    # Create DataHandle for centralized access to data and hparams
+    handle = get_data_object("cifar10")
+
     for spe in SPIDXS:
         out[spe] = dict()
 
         curr_name = name[:-1] + f"_{spe}_{EXPERIMENT}"
 
         print(curr_name)
-
-        resize = torch.jit.script(Resize().to('cuda'))
-        normalize = torch.jit.script(Normalize().to('cuda'))
-        center_crop = torch.jit.script(CenterCrop().to('cuda'))
 
         model = VGG(depth = 19, rank = rank, world_size = world_size).to("cuda")
 
@@ -151,7 +151,7 @@ def main(rank, world_size, name: str, args: list, lock, shared_list, **kwargs):
                     output_device = rank, 
                     gradient_as_bucket_view = True)
         
-        _, dv = get_loaders(rank, world_size, batch_size = 512) 
+        _, dv = handle.get_loaders(rank, world_size) 
 
         del _
 
@@ -163,11 +163,11 @@ def main(rank, world_size, name: str, args: list, lock, shared_list, **kwargs):
 
         model.load_state_dict(ckpt1)
 
-        error1 = get_loss(rank, model, dv, (resize, normalize, center_crop, ))
+        error1 = get_loss(rank, model, dv, handle)
 
         model.load_state_dict(ckpt2)
 
-        error2 = get_loss(rank, model, dv, (resize, normalize, center_crop, ))
+        error2 = get_loss(rank, model, dv, handle)
 
         print(curr_name, error1, error2)
 
@@ -176,7 +176,7 @@ def main(rank, world_size, name: str, args: list, lock, shared_list, **kwargs):
 
             alpha = point/20
 
-            err = calculate_alpha_error(rank, model, dv, (resize, normalize, center_crop, ),
+            err = calculate_alpha_error(rank, model, dv, handle,
                                                     alpha, [ckpt1, ckpt2], (error1 + error2)/2)
 
             print(alpha, err)

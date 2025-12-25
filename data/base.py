@@ -43,15 +43,20 @@ class BaseModule:
         self,
         hparams: DatasetHparams,
         *,
+        pre_transforms: Sequence[Callable[[], "nn.Module"]] = (),
         train_transforms: Sequence[Callable[[], "nn.Module"]] = (),
         eval_transforms: Sequence[Callable[[], "nn.Module"]] = (),
         final_transforms: Sequence[Callable[[], "nn.Module"]] = (),
     ):
         self.hparams = hparams
+        self._pre_factories = tuple(pre_transforms)
         self._train_factories = tuple(train_transforms)
         self._eval_factories = tuple(eval_transforms)
         self._final_factories = tuple(final_transforms)
         self._script_cache = {}
+
+    def create_pre_transforms(self):
+        return tuple(factory() for factory in self._pre_factories)
 
     def create_train_transforms(self):
         return tuple(factory() for factory in self._train_factories)
@@ -80,6 +85,7 @@ class BaseModule:
             return tuple(compiled)
 
         scripted = (
+            _compile(self.create_pre_transforms()),
             _compile(self.create_train_transforms()),
             _compile(self.create_eval_transforms()),
             _compile(self.create_final_transforms()),
