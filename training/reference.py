@@ -1,7 +1,7 @@
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from data.cifar10 import *
+from data.index import get_data_object
 
 from utils.serialization_utils import logs_to_pickle, save_tensor
 from utils.training_utils import plot_logs
@@ -16,17 +16,16 @@ import gc
 def main(rank, world_size, name: str, **kwargs):
 
     EPOCHS = 160
-    CARDINALITY = 98
     PRUNE_ITERS = 26
-    REWIND_ITER = (5) * CARDINALITY
-
-    dataAug = torch.jit.script(DataAugmentation().to('cuda'))
-    resize = torch.jit.script(Resize().to('cuda'))
-    normalize = torch.jit.script(Normalize().to('cuda'))
-    center_crop = torch.jit.script(CenterCrop().to('cuda'))
+    
+    # Create DataHandle for centralized access to data and hparams
+    handle = get_data_object("cifar10")
+    handle.load_transforms(device='cuda')
+    
+    CARDINALITY = handle.cardinality()
+    REWIND_ITER = 5 * CARDINALITY
 
     model = vgg(depth = 19, rank = rank, world_size = world_size, custom_init = True)
-
 
     model = DDP(model.to('cuda'), 
                 device_ids = [rank],
@@ -40,13 +39,14 @@ def main(rank, world_size, name: str, **kwargs):
     torch.cuda.empty_cache()
     gc.collect()
     
-    T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay': 1e-3},
-        loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
-        collective_transforms = (resize, normalize), train_transforms = (dataAug,),
-        eval_transforms = (center_crop,), final_collective_transforms = tuple(),
-        scale_loss = True, gradient_clipnorm = 2.0)
+    T.build(optimizer = torch.optim.SGD, 
+            optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay': 1e-3},
+            handle = handle,
+            loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
+            scale_loss = True, 
+            gradient_clipnorm = 2.0)
 
-    dt, dv = get_loaders(rank, world_size, batch_size = 512) 
+    dt, dv = handle.get_loaders(rank, world_size) 
     
 
     logs, sparsities_d = T.TicketIMP(dt, dv, EPOCHS, CARDINALITY, name, 0.8, PRUNE_ITERS, rewind_iter = REWIND_ITER)

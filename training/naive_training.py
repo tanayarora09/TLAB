@@ -1,7 +1,7 @@
 import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 
-from data.cifar10 import *
+from data.index import get_data_object
 
 from utils.serialization_utils import logs_to_pickle, save_tensor
 from utils.training_utils import plot_logs
@@ -23,24 +23,23 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
     is_rand = sp_exp.pop(-1) == 1 # Random Pruning vs Magnitude Pruning (pre init)
 
     EPOCHS = 160
-    CARDINALITY = 98
 
     old_name = name
 
     if rank == 0: h5py.File(f"./logs/TICKETS/{old_name}.h5", "w").close()
 
-    dt, dv = get_loaders(rank, world_size, batch_size = 512) 
+    # Create DataHandle for centralized access to data and hparams
+    handle = get_data_object("cifar10")
+    handle.load_transforms(device='cuda')
+    
+    CARDINALITY = handle.cardinality()
+    dt, dv = handle.get_loaders(rank, world_size) 
 
     for spe in reversed(sp_exp):
 
         name = old_name + f"_{spe:02d}"
 
         sp = 0.8 ** spe
-
-        dataAug = torch.jit.script(DataAugmentation().to('cuda'))
-        resize = torch.jit.script(Resize().to('cuda'))
-        normalize = torch.jit.script(Normalize().to('cuda'))
-        center_crop = torch.jit.script(CenterCrop().to('cuda'))
 
         depth = 16 if is_vgg else 20
         model = (VGG if is_vgg else ResNet)(rank, world_size, depth = depth, custom_init = True).cuda()
@@ -58,11 +57,12 @@ def main(rank, world_size, name: str, sp_exp: list, **kwargs):
 
         T = (VGG_CNN if is_vgg else ResNet_CNN)(model = model, rank = rank, world_size = world_size)
 
-        T.build(optimizer = torch.optim.SGD, optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay' : 1e-3},
+        T.build(optimizer = torch.optim.SGD, 
+                optimizer_kwargs = {'lr': 0.1, 'momentum': 0.9, 'weight_decay': 1e-3},
+                handle = handle,
                 loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
-                collective_transforms = (resize, normalize), train_transforms = (dataAug,),
-                eval_transforms = (center_crop,), final_collective_transforms = tuple(),
-                scale_loss = True, gradient_clipnorm = 2.0)
+                scale_loss = True, 
+                gradient_clipnorm = 2.0)
 
         torch.cuda.empty_cache()
         gc.collect()
