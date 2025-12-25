@@ -2,6 +2,8 @@ import torch
 from torch.nn.parallel import DistributedDataParallel as DDP
 
 from data.index import get_data_object
+from models.index import get_model
+from training.index import get_trainer, build_trainer, get_training_hparams
 
 from utils.serialization_utils import logs_to_pickle, save_tensor
 from utils.training_utils import plot_logs
@@ -9,9 +11,6 @@ from utils.search_utils import plot_logs_concrete
 
 
 from training.base import BaseCNNTrainer
-
-from models.vgg import vgg
-from models.resnet import resnet
 
 from search.salient import *
 from search.concrete import * 
@@ -73,33 +72,8 @@ def concrete_epochs(args):
     return int(concrete_epoch_ratio * total_epochs(args))
 
 def ddp_network(args):
-    
-    classes = {"cifar10": 10,
-               "cifar100": 100,
-               "tiny-imagenet": 200,
-               "imagenet": 1000}[args.dataset]
-    
-    kwargs = {"outfeatures": classes,
-              "rank": args.rank,
-              "world_size": args.world_size,
-              "custom_init": True}
-
-    if args.dataset == "tiny-imagenet": kwargs["dropout"] = 0.5
-
-    model = None
-    if args.model == "vgg16": model = vgg(depth = 16, **kwargs)
-    if args.model == "resnet20": model = resnet(depth = 20, **kwargs)
-    if args.model == "resnet50": model = resnet(depth = 50, **kwargs)
-
-    model = model.cuda()
-
-    if args.world_size > 1:
-        model = DDP(model, 
-            device_ids = [args.rank],
-            output_device = args.rank, 
-            gradient_as_bucket_view = True)
-
-    return model
+    """Create model using centralized get_model function."""
+    return get_model(args, use_ddp=True)
 
 def run_concrete(name, args,
                  state, spr, 
@@ -141,7 +115,7 @@ def run_concrete(name, args,
 
 
 def _make_trainer(args, state = None, ticket = None):
-
+    """Create trainer using centralized functions."""
     model = ddp_network(args)
 
     if state is not None: model.load_state_dict(state)
@@ -151,7 +125,13 @@ def _make_trainer(args, state = None, ticket = None):
     if (args.rank == 0):
         print(f"Training with sparsity {(model_to_inspect.sparsity):.3e}% \n")
 
-    return BaseCNNTrainer(model, args.rank, args.world_size, warmup_epochs = warmup_eps(args), reduce_epochs = reduce_eps(args))
+    # Get training hparams for warmup and reduce epochs
+    train_hparams = get_training_hparams(args)
+    return BaseCNNTrainer(
+        model, args.rank, args.world_size, 
+        warmup_epochs=train_hparams.warmup_epochs, 
+        reduce_epochs=train_hparams.reduce_epochs
+    )
 
 
 
@@ -160,14 +140,11 @@ def run_start_train(name, args,
 
     T = _make_trainer(args)
 
-    T.build(optimizer = torch.optim.SGD, 
-            optimizer_kwargs = {'lr': learning_rate(args), 'momentum': momentum(args), 'weight_decay': weight_decay(args)},
-            handle = data_obj,
-            loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
-            scale_loss = True, 
-            gradient_clipnorm = 2.0)
+    # Use centralized build_trainer
+    build_trainer(T, args, data_obj)
 
     card = data_obj.cardinality()
+    train_hparams = get_training_hparams(args)
     T.fit(dt, dv, start_epochs(args), card, name + "_pretrain", save = False, save_init = False, validate = False)
 
     T.evaluate(dt)
@@ -193,12 +170,8 @@ def run_fit_and_export(name, old_name,
 
     T.mm.export_ticket(old_name, entry_name = f"{spr * 100:.3e}", root = 0)
 
-    T.build(optimizer = torch.optim.SGD, 
-            optimizer_kwargs = {'lr': learning_rate(args), 'momentum': momentum(args), 'weight_decay': weight_decay(args)},
-            handle = data_obj,
-            loss = torch.nn.CrossEntropyLoss(reduction = "sum").to('cuda'),
-            scale_loss = True, 
-            gradient_clipnorm = 2.0)
+    # Use centralized build_trainer
+    build_trainer(T, args, data_obj)
 
     T.evaluate(dt)
 
@@ -214,7 +187,9 @@ def run_fit_and_export(name, old_name,
         print("Sparsity: ", T.mm.sparsity)
         orig_train_res.update({('val_' + k): v for k, v in orig_val_res.items()})
 
-    logs = T.fit(dt, dv, total_epochs(args), cardinality(args), name, validate = True, save = False, save_init = False, start = start_epochs(args))
+    train_hparams = get_training_hparams(args)
+    card = data_obj.cardinality()
+    logs = T.fit(dt, dv, train_hparams.epochs, card, name, validate = True, save = False, save_init = False, start = start_epochs(args))
 
     T.evaluate(dt)
 
@@ -235,7 +210,7 @@ def run_fit_and_export(name, old_name,
         
         logs_to_pickle(logs, name)
 
-        plot_logs(logs, total_epochs(args), name, cardinality(args), start = start_epochs(args))
+        plot_logs(logs, train_hparams.epochs, name, card, start = start_epochs(args))
 
 def main(rank, world_size, name: str, args, **kwargs):
 

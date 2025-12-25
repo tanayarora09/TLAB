@@ -408,3 +408,7 @@ def resnet_cifar(rank: int, world_size: int, depth: int = 20, outfeatures: int =
 
     if depth in valid: return ResNetCifar(rank, world_size, depth, outfeatures, inchannels, custom_init, bn_track, dropout)
     raise ValueError("Invalid ResNet depth for this model file.")
+
+
+# Alias for backwards compatibility - defaults to CIFAR variant
+resnet = resnet_cifar
