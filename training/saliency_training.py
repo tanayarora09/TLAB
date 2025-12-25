@@ -222,7 +222,6 @@ def main(rank, world_size, name: str, args, **kwargs):
 
     # Create DataHandle for centralized access to data and hparams
     handle = get_data_object(args.dataset)
-    handle.load_transforms(device='cuda')
 
     dt, dv = handle.get_loaders(args.rank, args.world_size)
 

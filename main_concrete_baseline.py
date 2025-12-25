@@ -73,10 +73,13 @@ def parse_args():
                         help='Number of independent experiments to run (default: 1).')
     parser.add_argument('--sparsities', nargs='*', type=float, default=None,
                         help='Optional list of density percentages. If not provided, a default range is used.')
+    parser.add_argument('--batchsize', type=int, default=None,
+                        help='Batch size for training (default: dataset-specific default).')
 
     args = parser.parse_args()
 
-    args.sparsities = [sp/100 for sp in args.sparsities]
+    if args.sparsities:
+        args.sparsities = [sp/100 for sp in args.sparsities]
     
     main_kwargs = args
     exp_name = main_kwargs.name

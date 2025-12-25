@@ -20,7 +20,6 @@ def main(rank, world_size, name: str, **kwargs):
     
     # Create DataHandle for centralized access to data and hparams
     handle = get_data_object("cifar10")
-    handle.load_transforms(device='cuda')
     
     CARDINALITY = handle.cardinality()
     REWIND_ITER = 5 * CARDINALITY

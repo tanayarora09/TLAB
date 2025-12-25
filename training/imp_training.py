@@ -115,7 +115,6 @@ def main(rank, world_size, name: str, args, **kwargs):
 
     # Create DataHandle for centralized access to data and hparams
     handle = get_data_object(args.dataset)
-    handle.load_transforms(device='cuda')
     
     # Get batch size and cardinality from handle
     batch_size = handle.batch_size

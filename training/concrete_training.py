@@ -125,9 +125,9 @@ def run_concrete(name, args,
 
     search = CONCRETE_EXPERIMENTS[args.criteria](**inp_args)
 
-    # Get transforms from data_obj
-    tt, et, ft = data_obj.tef_transforms()
-    search.build(spr, torch.optim.Adam, optimizer_kwargs = {'lr': learning_rate(args)}, transforms = (tt, et, ft), gradbalance = (args.gradstep != "lagrange"))
+    # Get transforms from data_obj - now returns 4 tuples (pre, train, eval, final)
+    pt, tt, et, ft = data_obj.ptef_transforms()
+    search.build(spr, torch.optim.Adam, optimizer_kwargs = {'lr': learning_rate(args)}, transforms = (pt, tt, et, ft), gradbalance = (args.gradstep != "lagrange"))
 
     cepochs = concrete_epochs(args)
     card = data_obj.cardinality()
@@ -159,9 +159,6 @@ def run_start_train(name, args,
                     dt, dv, data_obj,): 
 
     T = _make_trainer(args)
-
-    # Load transforms from data_obj
-    data_obj.load_transforms(device='cuda')
 
     T.build(optimizer = torch.optim.SGD, 
             optimizer_kwargs = {'lr': learning_rate(args), 'momentum': momentum(args), 'weight_decay': weight_decay(args)},
@@ -195,9 +192,6 @@ def run_fit_and_export(name, old_name,
     T = _make_trainer(args, state, ticket)
 
     T.mm.export_ticket(old_name, entry_name = f"{spr * 100:.3e}", root = 0)
-
-    # Load transforms from data_obj
-    data_obj.load_transforms(device='cuda')
 
     T.build(optimizer = torch.optim.SGD, 
             optimizer_kwargs = {'lr': learning_rate(args), 'momentum': momentum(args), 'weight_decay': weight_decay(args)},
@@ -262,11 +256,10 @@ def main(rank, world_size, name: str, args, **kwargs):
 
     old_name = name
 
-    data_obj = get_data_object(args.dataset)
+    # Create data handle with args (batch_size will be extracted from args if provided)
+    data_obj = get_data_object(args.dataset, args=args)
 
-    inp = {"rank": args.rank, "world_size": args.world_size}
-    if args.batchsize: inp["batch_size"] = args.batchsize
-    dt, dv = data_obj.get_loaders(**inp)
+    dt, dv = data_obj.get_loaders(args.rank, args.world_size)
 
     start_start = time.time()
 
