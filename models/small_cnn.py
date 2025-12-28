@@ -101,16 +101,16 @@ class OutBlock(nn.Module):
 
 class CNNA(MaskedModel):
     """
-    3 conv layers, width 8
+    3 conv layers, width 13
     """
     def __init__(self, rank, world_size, outfeatures=10, inchannels=3,
                  custom_init=True, bn_track=False):
         super().__init__()
 
-        self.register_module("block0", ConvBlock(inchannels, 8, custom_init, bn_track))
-        self.register_module("block1", ConvBlock(8, 8, custom_init, bn_track))
-        self.register_module("block2", ConvBlock(8, 8, custom_init, bn_track))
-        self.register_module("outblock", OutBlock(8, outfeatures, custom_init))
+        self.register_module("block0", ConvBlock(inchannels, 13, custom_init, bn_track))
+        self.register_module("block1", ConvBlock(13, 13, custom_init, bn_track))
+        self.register_module("block2", ConvBlock(13, 13, custom_init, bn_track))
+        self.register_module("outblock", OutBlock(13, outfeatures, custom_init))
 
         self.layers = ["block0", "block1", "block2"]
         self.init_base(rank, world_size)
@@ -127,15 +127,15 @@ class CNNA(MaskedModel):
 
 class CNNB(MaskedModel):
     """
-    2 conv layers, width 16
+    2 conv layers, width 18
     """
     def __init__(self, rank, world_size, outfeatures=10, inchannels=3,
                  custom_init=True, bn_track=False):
         super().__init__()
 
-        self.register_module("block0", ConvBlock(inchannels, 16, custom_init, bn_track))
-        self.register_module("block1", ConvBlock(16, 16, custom_init, bn_track))
-        self.register_module("outblock", OutBlock(16, outfeatures, custom_init))
+        self.register_module("block0", ConvBlock(inchannels, 18, custom_init, bn_track))
+        self.register_module("block1", ConvBlock(18, 18, custom_init, bn_track))
+        self.register_module("outblock", OutBlock(18, outfeatures, custom_init))
 
         self.layers = ["block0", "block1"]
         self.init_base(rank, world_size)
@@ -152,17 +152,18 @@ class CNNB(MaskedModel):
 
 class CNND(MaskedModel):
     """
-    6 conv layers, width 4
+    6 conv layers, progressive widths: 3->6->9->9->9->9
     """
     def __init__(self, rank, world_size, outfeatures=10, inchannels=3,
                  custom_init=True, bn_track=False):
         super().__init__()
 
-        self.register_module("block0", ConvBlock(inchannels, 4, custom_init, bn_track))
-        for i in range(1, 6):
-            self.register_module(f"block{i}", ConvBlock(4, 4, custom_init, bn_track))
+        self.register_module("block0", ConvBlock(inchannels, 6, custom_init, bn_track))
+        self.register_module("block1", ConvBlock(6, 9, custom_init, bn_track))
+        for i in range(2, 6):
+            self.register_module(f"block{i}", ConvBlock(9, 9, custom_init, bn_track))
 
-        self.register_module("outblock", OutBlock(4, outfeatures, custom_init))
+        self.register_module("outblock", OutBlock(9, outfeatures, custom_init))
         self.layers = [f"block{i}" for i in range(6)]
 
         self.init_base(rank, world_size)
@@ -179,15 +180,15 @@ class CNND(MaskedModel):
 
 class CNNW(MaskedModel):
     """
-    2 layers, width expands to 64 via 1×1 conv
+    2 layers, width expands to 128 via 1×1 conv (13->128)
     """
     def __init__(self, rank, world_size, outfeatures=10, inchannels=3,
                  custom_init=True, bn_track=False):
         super().__init__()
 
-        self.register_module("block0", ConvBlock(inchannels, 32, custom_init, bn_track))
-        self.register_module("block1", Conv1x1Block(32, 64, custom_init, bn_track))
-        self.register_module("outblock", OutBlock(64, outfeatures, custom_init))
+        self.register_module("block0", ConvBlock(inchannels, 13, custom_init, bn_track))
+        self.register_module("block1", Conv1x1Block(13, 128, custom_init, bn_track))
+        self.register_module("outblock", OutBlock(128, outfeatures, custom_init))
 
         self.layers = ["block0", "block1"]
         self.init_base(rank, world_size)
