@@ -220,8 +220,8 @@ class CNND(MaskedModel):
 class CNNW(MaskedModel):
     """
     2 layers with 1×1 expansion
-    With BN: 13->130 (3637 params)
-    Without BN: 13->70 (2054 params)
+    With BN: 11->148 (3733 params)
+    Without BN: 13->74 (2150 params)
     """
     def __init__(self, rank, world_size, outfeatures=10, inchannels=3,
                  custom_init=True, bn_track=False, no_batchnorm=False):
@@ -229,15 +229,15 @@ class CNNW(MaskedModel):
         
         use_bn = not no_batchnorm
         if no_batchnorm:
-            # Without BN: widths 13->70
+            # Without BN: widths 13->74
             self.register_module("block0", ConvBlock(inchannels, 13, custom_init, bn_track, use_bn))
-            self.register_module("block1", Conv1x1Block(13, 70, custom_init, bn_track, use_bn))
-            self.register_module("outblock", OutBlock(70, outfeatures, custom_init))
+            self.register_module("block1", Conv1x1Block(13, 74, custom_init, bn_track, use_bn))
+            self.register_module("outblock", OutBlock(74, outfeatures, custom_init))
         else:
-            # With BN: widths 13->130
-            self.register_module("block0", ConvBlock(inchannels, 13, custom_init, bn_track, use_bn))
-            self.register_module("block1", Conv1x1Block(13, 130, custom_init, bn_track, use_bn))
-            self.register_module("outblock", OutBlock(130, outfeatures, custom_init))
+            # With BN: widths 11->148
+            self.register_module("block0", ConvBlock(inchannels, 11, custom_init, bn_track, use_bn))
+            self.register_module("block1", Conv1x1Block(11, 148, custom_init, bn_track, use_bn))
+            self.register_module("outblock", OutBlock(148, outfeatures, custom_init))
 
         self.layers = ["block0", "block1"]
         self.init_base(rank, world_size)

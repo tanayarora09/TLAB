@@ -173,36 +173,36 @@ def verify_cnnd(inchannels=3, outfeatures=10, with_bn=True):
 def verify_cnnw(inchannels=3, outfeatures=10, with_bn=True):
     """
     CNNW: 1 conv3x3 + 1 conv1x1 expansion
-    With BN: 13->130 (3637 params)
-    Without BN: 13->70 (2054 params)
+    With BN: 11->148 (3733 params)
+    Without BN: 13->74 (2150 params)
     """
     params = 0
     breakdown = []
     
     if with_bn:
-        block0 = calc_conv_block(inchannels, 13, True)
+        block0 = calc_conv_block(inchannels, 11, True)
         params += block0
-        breakdown.append(f"  block0 (3->13 Conv3x3): {block0:5d} params")
+        breakdown.append(f"  block0 (3->11 Conv3x3): {block0:5d} params")
         
-        block1 = calc_conv1x1_block(13, 130, True)
+        block1 = calc_conv1x1_block(11, 148, True)
         params += block1
-        breakdown.append(f"  block1 (13->130 Conv1x1): {block1:5d} params")
+        breakdown.append(f"  block1 (11->148 Conv1x1): {block1:5d} params")
         
-        outblock = calc_out_block(130, outfeatures)
+        outblock = calc_out_block(148, outfeatures)
         params += outblock
-        breakdown.append(f"  outblock (130->10): {outblock:5d} params")
+        breakdown.append(f"  outblock (148->10): {outblock:5d} params")
     else:
         block0 = calc_conv_block(inchannels, 13, False)
         params += block0
         breakdown.append(f"  block0 (3->13 Conv3x3): {block0:5d} params")
         
-        block1 = calc_conv1x1_block(13, 70, False)
+        block1 = calc_conv1x1_block(13, 74, False)
         params += block1
-        breakdown.append(f"  block1 (13->70 Conv1x1): {block1:5d} params")
+        breakdown.append(f"  block1 (13->74 Conv1x1): {block1:5d} params")
         
-        outblock = calc_out_block(70, outfeatures)
+        outblock = calc_out_block(74, outfeatures)
         params += outblock
-        breakdown.append(f"  outblock (70->10): {outblock:5d} params")
+        breakdown.append(f"  outblock (74->10): {outblock:5d} params")
     
     return params, breakdown
 
