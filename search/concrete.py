@@ -15,8 +15,7 @@ import time
 from tqdm import tqdm 
 
 from models.base import MaskedModel
-from data.cifar10 import get_loaders, custom_fetch_data
-
+from data.index import DataHandle
 
 __all__ = ["SNIPConcrete", "GraSPConcrete", "NormalizedMseFeatures", "KldLogit", "OldKld", "StepAlignmentConcrete", "LossChangeConcrete"]
 
@@ -50,7 +49,7 @@ class FrozenConcrete:
         """
         with torch.no_grad():
             return {"loss": (self.eloss.div(self.ecount).detach().item()),
-                    "sparsity": (self.mm.sparsity.detach().item()), 
+                    "sparsity": (self.mm.sparsity), 
                     "true_sparsity": (100 * self.mm.get_true_active().item() / self.mm.num_prunable),}
                     
     
@@ -97,7 +96,7 @@ class FrozenConcrete:
 
     def build(self, desired_sparsity: float, optimizer, 
               optimizer_kwargs: dict, 
-              transforms: Tuple[Callable],
+              handle: DataHandle,
               gradbalance = False):
 
         """
@@ -120,7 +119,7 @@ class FrozenConcrete:
 
         self._loss_scaler_constant = 1.
 
-        self.transforms = transforms
+        self.handle = handle
 
         self.leafed_state_dict = self.m.state_dict()
         
@@ -294,7 +293,7 @@ class FrozenConcrete:
                 iteration = int(epoch * train_cardinality + step + 1)
 
                 x, y = x.cuda(), y.cuda()
-                for T in self.transforms: x = T(x)
+                for T in self.handle.eval_transforms: x = T(x)
                 
                 self.optimize_step(x, y)
 
@@ -325,7 +324,7 @@ class FrozenConcrete:
 
         if self.IsRoot: 
             bar.close()
-            print(f"\nExpected Average Sparsity: {self.mm.sparsity.item()}")
+            print(f"\nExpected Average Sparsity: {self.mm.sparsity}")
             print(f"True On-Gate Sparsity: {100 * (self.mm.get_true_active()/self.mm.num_prunable).item()}")
             print(f"Clipped Sparsity: {(100 * self.spr)}")
 
@@ -692,3 +691,23 @@ class StepAlignmentConcrete(TrajectoryConcrete):
         #max_shift = maxc.div(torch.sqrt(max1 * max2))
 
         return loss / cnt
+
+CONCRETE_PRUNERS = {"loss": SNIPConcrete,
+                        "gradnorm": GraSPConcrete,
+                        "kldlogit": KldLogit,
+                        "oldkld": OldKld,
+                        "msefeature": NormalizedMseFeatures,
+                        "gradmatch": StepAlignmentConcrete,
+                        "deltaloss": LossChangeConcrete}
+
+def get_concrete(name: str) -> Callable:
+    """loss, gradnorm, kldlogit, oldkld, msefeature, gradmatch, deltaloss"""
+    if name not in CONCRETE_PRUNERS:
+        raise ValueError(f"Unknown Concrete Search Type {name}")
+    return CONCRETE_PRUNERS[name]
+
+
+__all__ = [
+    "get_concrete",
+    "FrozenConcrete",
+]

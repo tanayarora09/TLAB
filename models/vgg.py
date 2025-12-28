@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from typing import Tuple, Callable
 
-from .LotteryLayers import LotteryConv2D, LotteryDense
+from .LotteryLayers import LotteryConv2D, LotteryLinear
 from .base import MaskedModel
 
 import types
@@ -133,5 +133,5 @@ class VGG(MaskedModel):
 
         return x
     
-def vgg(rank: int, world_size: int, depth: int = 16, outfeatures: int = 10, inchannels: int = 3, custom_init = True, conv_bias = False, bn_track = False):
+def vgg(rank: int, world_size: int, depth: int = 16, outfeatures: int = 10, inchannels: int = 3, custom_init = True, conv_bias = False, bn_track = False, **kwargs):
     return VGG(rank, world_size, depth, outfeatures, inchannels, custom_init, conv_bias, bn_track)

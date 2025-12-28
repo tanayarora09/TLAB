@@ -2,7 +2,7 @@ import torch
 from torch import nn
 from typing import Tuple, Callable
 
-from .LotteryLayers import LotteryConv2D, LotteryDense
+from .LotteryLayers import LotteryConv2D, LotteryLinear
 from .base import MaskedModel
 
 import types
@@ -45,7 +45,7 @@ def bn(num_filters, custom_init, bn_track):
 
 def fc(infeatures, outfeatures, custom_init):
 
-    fc_obj = LotteryDense(infeatures, outfeatures)
+    fc_obj = LotteryLinear(infeatures, outfeatures)
 
     if custom_init: 
         fc_obj.reset_parameters = types.MethodType(conv_fc_init, fc_obj)
@@ -398,13 +398,23 @@ class ResNetImagenet(MaskedModel):
         return x
 
 
-def resnet_imagenet(rank: int, world_size: int, depth: int = 20, outfeatures: int = 10, inchannels: int = 3, custom_init = True, bn_track = False, dropout = None):
+def resnet_imagenet(rank: int, world_size: int, depth: int = 20, outfeatures: int = 10, inchannels: int = 3, custom_init = True, bn_track = False, dropout = None,):
 
     if depth in ivalid: return ResNetImagenet(rank, world_size, depth, outfeatures, inchannels, custom_init, bn_track, dropout)
-    raise ValueError("Invalid ResNet depth for this model file.")
+    raise ValueError("Invalid ResNet depth for config.")
     
 
 def resnet_cifar(rank: int, world_size: int, depth: int = 20, outfeatures: int = 10, inchannels: int = 3, custom_init = True, bn_track = False, dropout = None):
 
     if depth in valid: return ResNetCifar(rank, world_size, depth, outfeatures, inchannels, custom_init, bn_track, dropout)
-    raise ValueError("Invalid ResNet depth for this model file.")
+    raise ValueError("Invalid ResNet depth for config.")
+
+def resnet(rank: int, world_size: int, depth, is_imagenet, outfeatures: int = 10, inchannels: int = 3, custom_init = True, bn_track = False, dropout = None,  **kwargs):
+    if depth in ivalid and depth in valid: 
+        if is_imagenet: return resnet_imagenet(rank, world_size, depth, outfeatures, inchannels, custom_init, bn_track, dropout)
+    
+    if depth in valid: return resnet_cifar(rank, world_size, depth, outfeatures, inchannels, custom_init, bn_track, dropout)
+
+    elif depth in ivalid: return resnet_imagenet(rank, world_size, depth, outfeatures, inchannels, custom_init, bn_track, dropout)
+
+    raise ValueError("Invalid resnet config.")

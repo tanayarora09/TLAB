@@ -55,13 +55,37 @@ def parse_args():
 
     parser.add_argument('name', type=str, help='The base name for the experiment logs and files.')
 
-    parser.add_argument('--model', type=str, default='resnet20', choices=['resnet20', 'vgg16', 'resnet50'],
+    parser.add_argument('--model', type=str, default='resnet20',
                         help='Model architecture to use (default: resnet20).')
     parser.add_argument('--dataset', type=str, default='cifar10', choices=['cifar10', 'cifar100', 'imagenet', 'tiny-imagenet'],
                         help='Dataset to use (default: cifar10).')
-    parser.add_argument('--time', type=str, default='rewind', choices=['init', 'rewind'],
+    parser.add_argument('--when_to_prune', type=str, default='rewind', choices=['init', 'rewind'],
                         help='Sparsity time strategy (init or rewind) (default: rewind).')
     
+    parser.add_argument('--learning_rate', type=float, default = argparse.SUPPRESS,
+                        help='Learning rate for training (overrides dataset default).')
+    parser.add_argument('--epochs', type=int, default = argparse.SUPPRESS,
+                        help='Number of training epochs (overrides dataset default).')
+    parser.add_argument('--warmup_epochs', type=int, default = argparse.SUPPRESS,
+                        help='Number of warmup epochs (overrides dataset default).')
+    parser.add_argument('--reduce_epochs', nargs='*', type=int, default = argparse.SUPPRESS,
+                        help='Epochs to reduce learning rate (overrides dataset default).')
+    parser.add_argument('--weight_decay', type=float, default = argparse.SUPPRESS,
+                        help='Weight decay for optimizer (overrides dataset default).')
+    parser.add_argument('--momentum', type=float, default=argparse.SUPPRESS,
+                        help='Momentum for optimizer (overrides default 0.9).')
+    parser.add_argument('--rewind_epoch', type=int, default=argparse.SUPPRESS,
+                        help='Epoch to rewind to (overrides dataset/model default).')
+    parser.add_argument('--optimizer', type=str, default=argparse.SUPPRESS,
+                        help='Optimizer to use (overrides default sgd).')
+    parser.add_argument('--gradient_clipnorm', type=float, default=argparse.SUPPRESS,
+                        help='Gradient clipping norm (overrides default 2.0).')
+    parser.add_argument('--scale_loss', type=bool, default=argparse.SUPPRESS,
+                        help='Whether to scale loss by world size (overrides default True).')
+
+    parser.add_argument('--batch_size', type=int, default=argparse.SUPPRESS,
+                        help='Batch size including all gpus (overrides dataset default).')
+
     parser.add_argument('--num', type=int, default=1,
                         help='Number of independent experiments to run (default: 1).')
     parser.add_argument('--prune_iterations', type=int, default=1,
@@ -84,7 +108,7 @@ def parse_args():
 
 if __name__ == "__main__":
 
-    from training import imp_training
+    from experiments import imp
     
     exp_name, num_exp, main_kwargs = parse_args()
 
@@ -92,4 +116,4 @@ if __name__ == "__main__":
         print("--------------------------------------------------------------")
         print("EXPERIMENT NUMBER ", exp)
         print("--------------------------------------------------------------") 
-        main(imp_training.main, exp_name + f"_{exp}", main_kwargs)
+        main(imp.main, exp_name + f"_{exp}", main_kwargs)

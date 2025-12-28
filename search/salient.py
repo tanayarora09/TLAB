@@ -701,3 +701,25 @@ class MSE_Pruner(ActivationSaliencyPruning):
 
     def _hook(self, _, __, output): self.act_w.append(output.view(output.shape[0], -1))
     def _fhook(self, func, _, __, output): self.act_w.append(func(output).view(output.shape[0], -1))
+
+SALIENCY_PRUNERS = {
+        "snip": SNIP_Pruner,
+        "synflow": SynFlow_Pruner,
+        "grasp": GraSP_Pruner,
+        "oldkld": OldKld_Pruner,
+        "mse": MSE_Pruner,
+        "kldlogit": KldLogit_Pruner,
+        "gradmatch": GradMatch_Pruner,
+    }
+
+def get_salient(name: str):
+    
+    if name.lower() in SALIENCY_PRUNERS:
+        return SALIENCY_PRUNERS[name.lower()]
+    else:
+        raise ValueError(f"Pruner '{name}' not recognized. Available pruners: {list(pruners.keys())}")
+    
+
+__all__ = ["get_salient",
+           "SaliencyPruning",
+           "ActivationSaliencyPruning",]

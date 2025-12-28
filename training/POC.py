@@ -13,27 +13,13 @@ from utils.serialization_utils import read_tensor, save_tensor
 import math
 import os
 
-class VGG_CNN(BaseCNNTrainer):
-    def post_epoch_hook(self, epoch, EPOCHS):
-        if (epoch + 1) == 79 or (epoch + 1) == 119: # Epochs 80, 120
-            self.scale_learning_rate(0.1)
-        return 
-    
-class VGG_IMP(BaseIMP):
-    def post_epoch_hook(self, epoch, EPOCHS):
-        if epoch == 78 or epoch == 118: # Epochs 80, 120
-            self.scale_learning_rate(0.1)
-        return 
 
+class POC(BaseIMP):
 
-class VGG_POC(BaseIMP):
-
-    def __init__(self, model: torch.nn.parallel.DistributedDataParallel, rank: int):
-        super(VGG_POC, self).__init__(model, rank)
-        self.IsMetricRoot = rank == 1
 
     def build(self, *args, tickets_dict: dict = None, **kwargs):
         super().build(*args, **kwargs)
+        self.IsMetricRoot = self.RANK == 1
         self.ACTS = tickets_dict != None
         self.TICKETS = tickets_dict # {IMP_ITERATION - 1: (TICKET, SPARSITY_D)}
         self.activation_log = defaultdict(defaultdict) # {IMP_ITERATION: {Epoch:(IMP KL, RAND KL)}}
@@ -203,34 +189,7 @@ class VGG_POC(BaseIMP):
         self.disable_act_hooks()
         self.activation_log[self.__CURR_IMP_ITER][self.__CURREPOCH] = (self.eIkl / self.ecount.detach().item(), self.eRkl / self.ecount.detach().item())
         return
-    
-    def post_epoch_hook(self, epoch):
-        if epoch == 78 or epoch == 118: # Epochs 80, 120
-            self.scale_learning_rate(0.1)
-        return 
 
     def post_step_hook(self, x, y, _):
         with torch.autocast('cuda', dtype = torch.float16, enabled = self.AMP):
             self.collect_activations_and_test(x)
-            #self.clear_act_captures()
-
-
-class VGG_DGTS(CNN_DGTS):
-
-    def __init__(self, *args, **kwargs):
-        super(VGG_DGTS, self).__init__(*args, **kwargs)
-        for name, block in self.mm.named_children():
-            for n, layer in block.named_children():
-                if n.endswith("relu"): self._capture_layers.append(layer)
-                elif n.endswith("fc"): self._fcapture_layers.append((layer, nn.ReLU()))
-        
-    def post_epoch_hook(self, epoch, EPOCHS):
-        if (epoch + 1) == 79 or (epoch + 1) == 119: # Epochs 80, 120
-            self.scale_learning_rate(0.1)
-        return 
-
-    """def pre_epoch_hook(self, epoch, EPOCHS):
-        if (epoch + 1 == 80) or (epoch + 1 == 120):
-            self.scale_learning_rate(0.1)
-        #if (epoch + 1 == (EPOCHS // 2)) or (epoch + 1 == (EPOCHS * 3 // 4)): 
-        #    self.scale_learning_rate(0.1)"""

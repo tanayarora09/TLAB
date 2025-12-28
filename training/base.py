@@ -27,8 +27,7 @@ class BaseCNNTrainer:
     #------------------------------------------ MAIN INIT FUNCTIONS -------------------------------------- #
 
     def __init__(self, model, 
-                 rank: int, world_size: int,
-                 warmup_epochs:int = 0, reduce_epochs: list[int] = []):
+                 rank: int, world_size: int):
         """
         Model has to be DDP.
         Non-Distributed Environments Not Supported.
@@ -44,12 +43,12 @@ class BaseCNNTrainer:
         if self.DISTRIBUTED: self.mm  = getattr(model, 'module')
         else: self.mm = model
 
-        self.warmup_epochs = warmup_epochs
-        self.reduce_epochs = reduce_epochs
+
 
     def build(self, optimizer,
               optimizer_kwargs: dict, 
               handle: DataHandle,
+              warmup_epochs:int = 0, reduce_epochs: list[int] = [],
               loss: Callable = nn.CrossEntropyLoss(reduction = "sum"), 
               scale_loss: bool = False, decay: float = 0.0,
               gradient_clipnorm: float = float('inf'), ):
@@ -71,6 +70,9 @@ class BaseCNNTrainer:
         self.optimizer_kwargs = optimizer_kwargs
 
         self.reset_optimizer()
+
+        self.warmup_epochs = warmup_epochs
+        self.reduce_epochs = reduce_epochs
 
         self.handle = handle
         
@@ -190,19 +192,12 @@ class BaseCNNTrainer:
 
     #------------------------------------------ MAIN TRAIN FUNCTIONS -------------------------------------- #
 
-    def fit(self, train_data: torch.utils.data.DataLoader, validation_data: torch.utils.data.DataLoader,
-            epochs: int, train_cardinality: int, name: str, accumulation_steps: int = 1, save: bool = True, 
-            verbose: bool = False, rewind_iter: int = 500, sampler_offset: int = 0, validate: bool = True, 
-            start = 0, save_init = True) -> dict:
-        """
-        Basic Training Run Implementation.
-        Override by Copy and Pasting.
+    def _loop(self, train_data, validation_data, epochs, train_cardinality, name, accumulation_steps, save, 
+            verbose, rewind_iter, sampler_offset, validate, start, save_init, parent = None, alpha = None, temperature = None):
+        
+        if parent: 
+            if not alpha: raise ValueError()
 
-        train_data and validation_data are expected to be sharded and batched, and use DistributedSampler
-
-        train_cardinality is the number of batches of the train set. It is used for logging.
-
-        """
 
         if self.IsRoot: 
             progress_bar = tqdm(total = epochs, unit = "epoch", colour = "green", bar_format="{l_bar}{bar:25}{r_bar}{bar:-25b}", leave = False, smoothing = 0.8)
@@ -224,7 +219,6 @@ class BaseCNNTrainer:
 
         for epoch in range(start, epochs):
 
-            #if verbose: self.print(f"\nStarting Epoch {epoch + 1}\n", 'red')
             train_start = time.time()
             self.m.train()
 
@@ -247,22 +241,19 @@ class BaseCNNTrainer:
                 if epoch < self.warmup_epochs: self.apply_warmup(iter, self.warmup_epochs * train_cardinality)
                 self.pre_step_hook(step, train_cardinality)
 
-                #dist.barrier(device_ids = [self.RANK])
-
                 x, y = x.to('cuda'), y.to('cuda')
 
-                for T in self.handle.tt: x = T(x) 
-                for T in self.handle.ft: x = T(x)
+                for T in self.handle.train_transforms(): x = T(x) 
 
-                self.train_step(x, y, accum, accumulation_steps)
+                if parent == None: self.train_step(x, y, accum, accumulation_steps)
+                else: self.distill_step(x, y, parent, alpha, temperature, accum, accumulation_steps)
 
                 if not self.post_step_hook(data_list = data_list, step = step, iteration = iter, name = name): 
-                    #if self.IsRoot: progress_bar.close()
                     _break = True
 
                 if accum:
                     
-                    if (step + 1) % (train_cardinality//30) == 0 or (step + 1 == train_cardinality): # Synchronize and Log.
+                    if (step + 1) % (train_cardinality//30) == 0 or (step + 1 == train_cardinality): # Synchronize and Log .
                         
                         self.transfer_metrics()
                         
@@ -276,11 +267,8 @@ class BaseCNNTrainer:
 
             self.post_train_hook()
 
-
-            #if verbose: self.print(f"Training stage took {(time.time() - train_start):.1f} seconds.", 'yellow')
             if validate:
-                #val_start = time.time()
-
+                
                 validation_data.sampler.set_epoch(epoch + epochs * sampler_offset)
 
                 if self.DISTRIBUTED: dist.barrier(device_ids = [self.RANK])
@@ -293,17 +281,12 @@ class BaseCNNTrainer:
 
                     if logs[(epoch + 1) * train_cardinality]['val_loss'] < best_val_loss:
                         best_val_loss = logs[(epoch + 1) * train_cardinality]['val_loss']
-                        #if verbose: self.print(f"\n -- UPDATING BEST WEIGHTS TO {epoch + 1} -- \n", "magenta")
                         best_epoch = epoch + 1
                         #self.save_ckpt(name = name, prefix = "best")
 
-                    #if verbose: self.print(f"Validation stage took {(time.time() - val_start):.1f} seconds.", 'yellow')
-                    
-                    #self.print(f"Total for Epoch: {(time.time() - train_start):.1f} seconds.", 'yellow')
-
             if self.IsRoot:
 
-                self.clear_lines(6 if validate else 4)
+                self.clear_lines(2 + len(logs[(epoch + 1) * train_cardinality]))
 
                 print(self.color_str("\nEpoch ", "white") + self.color_str(epoch + 1, "orange")+ self.color_str(f"/{epochs}: ", "white"))
                 for k, v in logs[(epoch + 1) * train_cardinality].items():
@@ -322,9 +305,35 @@ class BaseCNNTrainer:
         if save: self.save_ckpt(name = name, prefix = "final")
 
         return logs
- 
 
-    #@torch.compile
+    def fit(self, train_data: torch.utils.data.DataLoader, validation_data: torch.utils.data.DataLoader,
+            epochs: int, train_cardinality: int, name: str, accumulation_steps: int = 1, save: bool = True, 
+            verbose: bool = False, rewind_iter: int = 500, sampler_offset: int = 0, validate: bool = True, 
+            start = 0, save_init = True) -> dict:
+        """
+
+        train_data and validation_data are expected to be sharded and batched, and use DistributedSampler
+
+        train_cardinality is the number of batches of the train set. It is used for logging.
+
+        """
+
+        return self._loop(train_data, validation_data, epochs, train_cardinality, name, accumulation_steps, save, verbose,
+                          rewind_iter, sampler_offset, validate, start, save_init, None, None)
+
+
+    def distill(self, train_data: torch.utils.data.DataLoader, validation_data: torch.utils.data.DataLoader, 
+                epochs: int, train_cardinality: int, name: str, 
+                parent: torch.nn.Module, distill_alpha: float, distill_temperature = 5,
+                accumulation_steps: int = 1, save: bool = True, 
+                verbose: bool = False, rewind_iter: int = 500, sampler_offset: int = 0, validate: bool = True, 
+                start = 0, save_init = True) -> dict:
+        
+        return self._loop(train_data, validation_data, epochs, train_cardinality, name, accumulation_steps, save, verbose,
+                          rewind_iter, sampler_offset, validate, start, save_init, parent, distill_alpha, distill_temperature)
+
+
+
     def train_step(self, x: torch.Tensor, y: torch.Tensor, accum: bool = True, accum_steps: int = 1, id: str = None):
 
         with torch.autocast('cuda', dtype = torch.float16, enabled = self.AMP):
@@ -355,7 +364,7 @@ class BaseCNNTrainer:
 
         with torch.no_grad():
 
-            self.loss_tr += loss
+            self.loss_tr += loss.detach()
             corrects = self.correct_k(output, y, topk = (1, 3, 5))
             self.acc_tr += corrects[0]
             self.acc3_tr += corrects[1]
@@ -365,13 +374,63 @@ class BaseCNNTrainer:
         return
     
 
+    def distill_step(self, x: torch.Tensor, y: torch.Tensor, parent: torch.nn.Module, alpha: float, 
+                     T: float, accum: bool = True, accum_steps: int = 1, id: str = None):
+
+        with torch.autocast('cuda', dtype = torch.float16, enabled = self.AMP):
+
+            output = self.m(x)
+
+            with torch.no_grad():
+                teacher = parent(x)
+
+            ce_loss = self.criterion(output, y) #+ self.LD * self.calculate_custom_regularization()
+            kd_loss = F.kl_div(F.log_softmax(output / T, dim = 1), 
+                               F.log_softmax(teacher / T, dim =1),
+                               reduction = "batchmean", log_target = True) * (T * T)
+            
+            loss = alpha * kd_loss + (1.0 - alpha) * ce_loss
+            loss /= accum_steps
+
+        if not accum:
+            
+            if self.DISTRIBUTED:
+                with self.m.no_sync():
+                    self.lossScaler.scale(loss).backward()
+            else:
+                self.lossScaler.scale(loss).backward()
+
+            return
+        
+        self.lossScaler.scale(loss).backward()
+
+        self.lossScaler.unscale_(self.optim)
+        nn.utils.clip_grad_norm_(self.m.parameters(), max_norm = self.gClipNorm)
+
+        self.lossScaler.step(self.optim)
+        self.lossScaler.update()
+
+        self.optim.zero_grad(set_to_none = True)
+
+        with torch.no_grad():
+
+            self.loss_tr += loss.detach()
+            corrects = self.correct_k(output, y, topk = (1, 3, 5))
+            self.acc_tr += corrects[0]
+            self.acc3_tr += corrects[1]
+            self.acc5_tr += corrects[2]
+            self.count_tr += y.size(dim = 0)
+        
+        return
+
+
     #------------------------------------------ TRAINING HOOKS ----------------------------------------------- #
 
     def pre_epoch_hook(self, *args) -> None:
         pass
     
     def post_epoch_hook(self, epoch, epochs, *args, **kwargs) -> None:
-        if (epoch + 1 + 1) in self.reduce_epochs:
+        if (epoch + 1 + 1) in self.reduce_epochs: # 0-indexed, apply change epoch before change should take effect 
             self.scale_learning_rate(0.1)
         return 
 
@@ -387,7 +446,6 @@ class BaseCNNTrainer:
 
     #------------------------------------------ MAIN EVALUATE FUNCTIONS -------------------------------------- #
 
-    #@torch.compile
     def evaluate(self, test_data: torch.utils.data.DataLoader) -> None:
         """
         Evaluate model on dataloader.
@@ -403,8 +461,7 @@ class BaseCNNTrainer:
 
                 x, y = x.to('cuda'), y.to('cuda')
                 
-                for T in self.handle.et: x = T(x) # Transforms
-                for T in self.handle.ft: x = T(x)
+                for T in self.handle.eval_transforms(): x = T(x)
 
                 self.test_step(x, y)
             
@@ -1013,8 +1070,7 @@ class CNN_DGTS(BaseCNNTrainer):
             x, y = data_list[step//196]
             x, y = x.to('cuda'), y.to('cuda')
 
-            for T in self.handle.tt: x = T(x)
-            for T in self.handle.ft: x = T(x)
+            for T in self.handle.train_transforms(): x = T(x)
             
             self.init_capture_hooks()
             self.mm(x)
@@ -1179,8 +1235,7 @@ class CNN_DGTS(BaseCNNTrainer):
                 x, y = data_list[step//129]
                 x, y = x.to('cuda'), y.to('cuda')
 
-                for T in self.handle.tt: x = T(x)
-                for T in self.handle.ft: x = T(x)
+                for T in self.handle.train_transforms(): x = T(x)
                 
                 self.init_capture_hooks()
                 self.mm(x)

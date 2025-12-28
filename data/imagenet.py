@@ -239,6 +239,7 @@ class Normalize(nn.Module):
 
 DEFAULT_DATA_MODULE = BaseModule(
     DATA_HPARAMS,
+    pre_transforms=tuple(),
     train_transforms=(DataAugmentation,),
     eval_transforms=(CenterCrop,),
     final_transforms=(Normalize,),
