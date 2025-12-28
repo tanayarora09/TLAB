@@ -5,6 +5,9 @@ Comprehensive verification of CNN parameter count adjustments.
 This script validates that all CNN models in small_cnn.py have been
 correctly modified to have approximately 3728 parameters (±100) while
 maintaining batch normalization layers.
+
+Target parameter count of 3728 is a project requirement to ensure
+all CNN variants have similar model capacity for fair comparison.
 """
 
 def calc_conv_params(in_ch, out_ch, k):
@@ -116,8 +119,8 @@ def verify_cnnd(inchannels=3, outfeatures=10):
 
 def verify_cnnw(inchannels=3, outfeatures=10):
     """
-    CNNW: 2 layers with 1x1 expansion
-    Architecture: 3 -> 13 -> 128 -> 10
+    CNNW: 1 conv3x3 + 1 conv1x1 expansion
+    Architecture: 3 -> 13 (Conv3x3) -> 128 (Conv1x1) -> 10
     """
     params = 0
     breakdown = []

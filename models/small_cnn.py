@@ -152,7 +152,7 @@ class CNNB(MaskedModel):
 
 class CNND(MaskedModel):
     """
-    6 conv layers, progressive widths: 3->6->9->9->9->9
+    6 conv layers, progressive widths: inchannels->6->9->9->9->9->9->outfeatures
     """
     def __init__(self, rank, world_size, outfeatures=10, inchannels=3,
                  custom_init=True, bn_track=False):
