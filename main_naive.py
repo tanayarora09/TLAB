@@ -57,6 +57,8 @@ def parse_args():
 
     parser.add_argument('--model', type=str, default='resnet20',
                         help='Model architecture to use (default: resnet20).')
+    parser.add_argument('--no_batchnorm', action='store_true',
+                        help='Whether to disable batch normalization (default: False).')
     parser.add_argument('--dataset', type=str, default='cifar10', choices=['cifar10', 'cifar100', 'imagenet', 'tiny-imagenet'],
                         help='Dataset to use (default: cifar10).')
     

@@ -41,7 +41,8 @@ def get_model(args, state = None, ticket = None, use_ddp: bool = True):
     inp = {"rank": args.rank, "world_size": args.world_size, "depth": hparams.depth,
            "outfeatures": hparams.outfeatures, "inchannels": hparams.inchannels, 
            "custom_init": hparams.custom_init, "conv_bias": hparams.conv_bias, 
-           "bn_track": hparams.bn_track, "is_imagenet": "imagenet" in args.dataset}
+           "bn_track": hparams.bn_track, "is_imagenet": "imagenet" in args.dataset,
+           "no_batchnorm": getattr(args, "no_batchnorm", False),}
     
     if hparams.family in FAMILY_TO_CLASS.keys(): 
         model = FAMILY_TO_CLASS[hparams.family](**inp)

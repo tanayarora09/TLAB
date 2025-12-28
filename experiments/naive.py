@@ -21,10 +21,8 @@ def main(rank, world_size, name: str, args, **kwargs):
 
     tParams = get_training_hparams(args)
 
-    name = f"{args.type}_{args.model}_{args.dataset}_{name}"
+    name = f"{args.type + "_" if args.type != "none" else ""}{args.model}_{args.dataset}_{name}"
     old_name = name
-
-    if rank == 0: h5py.File(f"./logs/TICKETS/{old_name}.h5", "w").close()
 
     data_handle = get_data_handle(args)
     data_handle.load_transforms(device = 'cuda')
